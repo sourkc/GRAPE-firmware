@@ -15,10 +15,10 @@ static uint32_t texture_caps(grape_memory_t memory)
     }
 
     if (resolved == GRAPE_MEMORY_PSRAM) {
-        return MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+        return MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_8BIT;
     }
 
-    return MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    return MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT;
 }
 
 esp_err_t grape_texture_create(grape_context_t *context, const grape_texture_desc_t *desc, grape_texture_t **out_texture)

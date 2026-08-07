@@ -154,9 +154,32 @@ static inline rgba8_t read_rgb888(const uint8_t *src)
     };
 }
 
+static void fill_background_cpu(grape_context_t *context, grape_rect_t rect, size_t bpp, rgba8_t background)
+{
+    for (int32_t y = 0; y < rect.height; ++y) {
+        for (int32_t x = 0; x < rect.width; ++x) {
+            size_t offset = ((size_t)y * rect.width + x) * bpp;
+            uint8_t *dst = context->scratch + offset;
+
+            if (context->display_info.format == GRAPE_PIXEL_FORMAT_RGB565) {
+                write_rgb565(dst, background);
+            } else {
+                write_rgb888(dst, background);
+            }
+        }
+    }
+}
+
 esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
 {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
+    int64_t compositor_start_us = grape_profile_timestamp();
+#endif
+
     if (grape_rect_empty(rect)) {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
+        grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
+#endif
         return ESP_OK;
     }
 
@@ -168,6 +191,9 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         bpp;
 
     if (required > context->scratch_size) {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
+        grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
+#endif
         return ESP_ERR_INVALID_SIZE;
     }
 
@@ -178,25 +204,27 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         .a = 255,
     };
 
-    // Fill damaged rect with background
-    for (int32_t y = 0; y < rect.height; ++y) {
-        for (int32_t x = 0; x < rect.width; ++x) {
-            size_t offset =
-                ((size_t)y * rect.width + x) * bpp;
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_FILL
+    int64_t ppa_fill_start_us = grape_profile_timestamp();
+#endif
+    esp_err_t ret = grape_ppa_fill(context, rect, context->background);
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_FILL
+    grape_profile_record(GRAPE_PROFILE_METRIC_PPA_FILL, grape_profile_timestamp() - ppa_fill_start_us);
+#endif
 
-            uint8_t *dst =
-                context->scratch + offset;
-
-            if (context->display_info.format ==
-                GRAPE_PIXEL_FORMAT_RGB565) {
-
-                write_rgb565(dst, background);
-
-            } else {
-
-                write_rgb888(dst, background);
-            }
-        }
+    if (ret == ESP_ERR_NOT_SUPPORTED) {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_CPU_FILL
+        int64_t cpu_fill_start_us = grape_profile_timestamp();
+#endif
+        fill_background_cpu(context, rect, bpp, background);
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_CPU_FILL
+        grape_profile_record(GRAPE_PROFILE_METRIC_CPU_FILL, grape_profile_timestamp() - cpu_fill_start_us);
+#endif
+    } else if (ret != ESP_OK) {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
+        grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
+#endif
+        return ret;
     }
 
     // Composite surfaces (Z-ordered)
@@ -219,6 +247,29 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         if (grape_rect_empty(clipped)) {
             continue;
         }
+
+        bool handled = false;
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_BLEND_DISPATCH
+        int64_t ppa_blend_dispatch_start_us = grape_profile_timestamp();
+#endif
+        ret = grape_ppa_blend_surface(context, surface, rect, &handled);
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_BLEND_DISPATCH
+        grape_profile_record(GRAPE_PROFILE_METRIC_PPA_BLEND_DISPATCH,
+                             grape_profile_timestamp() - ppa_blend_dispatch_start_us);
+#endif
+        if (ret != ESP_OK) {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
+            grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
+#endif
+            return ret;
+        }
+        if (handled) {
+            continue;
+        }
+
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_CPU_SURFACE_RASTER
+        int64_t cpu_surface_start_us = grape_profile_timestamp();
+#endif
 
         for (int32_t y = clipped.y;
              y < clipped.y + clipped.height;
@@ -292,11 +343,29 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
                 }
             }
         }
+
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_CPU_SURFACE_RASTER
+        grape_profile_record(GRAPE_PROFILE_METRIC_CPU_SURFACE_RASTER,
+                             grape_profile_timestamp() - cpu_surface_start_us);
+#endif
     }
 
-    return grape_display_blit(
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DISPLAY_BLIT
+    int64_t display_blit_start_us = grape_profile_timestamp();
+#endif
+    ret = grape_display_blit(
         context->display,
         rect,
         context->scratch
     );
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DISPLAY_BLIT
+    grape_profile_record(GRAPE_PROFILE_METRIC_DISPLAY_BLIT,
+                         grape_profile_timestamp() - display_blit_start_us);
+#endif
+
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
+    grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
+#endif
+
+    return ret;
 }

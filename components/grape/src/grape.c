@@ -1,7 +1,17 @@
 #include <stdlib.h>
 
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "grape_internal.h"
+
+#define GRAPE_PPA_BUFFER_ALIGNMENT 128U
+
+static const char *TAG = "grape";
+
+static size_t align_up(size_t value, size_t alignment)
+{
+    return (value + alignment - 1U) & ~(alignment - 1U);
+}
 
 size_t grape_bytes_per_pixel(grape_pixel_format_t format)
 {
@@ -69,16 +79,52 @@ esp_err_t grape_init(const grape_config_t *config, grape_context_t **out_context
         return ESP_ERR_INVALID_SIZE;
     }
 
-    context->scratch_size = pixels * bpp;
-    context->scratch = heap_caps_malloc(context->scratch_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    size_t logical_size = pixels * bpp;
+    if (logical_size > SIZE_MAX - (GRAPE_PPA_BUFFER_ALIGNMENT - 1U)) {
+        grape_display_close(context->display);
+        free(context);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    context->scratch_size = align_up(logical_size, GRAPE_PPA_BUFFER_ALIGNMENT);
+    bool ppa_buffer_compatible = true;
+
+    context->scratch = heap_caps_malloc(
+        context->scratch_size,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_CACHE_ALIGNED | MALLOC_CAP_8BIT
+    );
+
     if (!context->scratch) {
-        context->scratch = heap_caps_malloc(context->scratch_size, MALLOC_CAP_8BIT);
+        ppa_buffer_compatible = false;
+        context->scratch_size = logical_size;
+        context->scratch = heap_caps_malloc(
+            context->scratch_size,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+        );
+    }
+
+    if (!context->scratch) {
+        context->scratch = heap_caps_malloc(
+            context->scratch_size,
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
+        );
     }
 
     if (!context->scratch) {
         grape_display_close(context->display);
         free(context);
         return ESP_ERR_NO_MEM;
+    }
+
+    if (ppa_buffer_compatible) {
+        ret = grape_ppa_init(context);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "PPA unavailable (%s); using software compositor", esp_err_to_name(ret));
+        } else {
+            ESP_LOGI(TAG, "PPA acceleration enabled");
+        }
+    } else {
+        ESP_LOGW(TAG, "Could not allocate a PPA-compatible scratch buffer; using software compositor");
     }
 
     grape_damage_all(context);
@@ -100,7 +146,8 @@ void grape_deinit(grape_context_t *context)
         grape_texture_destroy(context->textures);
     }
 
-    free(context->scratch);
+    grape_ppa_deinit(context);
+    heap_caps_free(context->scratch);
     grape_display_close(context->display);
     free(context);
 }
@@ -111,15 +158,33 @@ esp_err_t grape_present(grape_context_t *context)
         return ESP_ERR_INVALID_ARG;
     }
 
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
+    int64_t profile_start_us = grape_profile_timestamp();
+#endif
+
     size_t count = context->damage_count;
     for (size_t i = 0; i < count; ++i) {
         esp_err_t ret = grape_compositor_render(context, context->damage[i]);
         if (ret != ESP_OK) {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
+            grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
+#endif
+#if GRAPE_PROFILE_ENABLE
+            grape_profile_report_if_due();
+#endif
             return ret;
         }
     }
 
     context->damage_count = 0;
+
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
+    grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
+#endif
+#if GRAPE_PROFILE_ENABLE
+    grape_profile_report_if_due();
+#endif
+
     return ESP_OK;
 }
 

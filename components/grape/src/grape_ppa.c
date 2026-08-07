@@ -228,7 +228,13 @@ esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_
         .mode = PPA_TRANS_MODE_BLOCKING,
     };
 
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_BLEND_HW
+    int64_t profile_start_us = grape_profile_timestamp();
+#endif
     esp_err_t ret = ppa_do_blend(context->ppa_blend, &config);
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_BLEND_HW
+    grape_profile_record(GRAPE_PROFILE_METRIC_PPA_BLEND_HW, grape_profile_timestamp() - profile_start_us);
+#endif
     if (ret == ESP_OK) {
         *handled = true;
     }

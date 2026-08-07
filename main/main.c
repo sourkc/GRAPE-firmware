@@ -325,8 +325,6 @@ void app_main(void)
 
         ESP_ERROR_CHECK(grape_present(grape));
 
-        ESP_ERROR_CHECK(grape_present(grape));
-
         frame_count++;
 
         int64_t now = esp_timer_get_time();

@@ -62,6 +62,10 @@ bool grape_rect_touches(grape_rect_t a, grape_rect_t b)
 
 esp_err_t grape_damage_add(grape_context_t *context, grape_rect_t rect)
 {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
+    int64_t profile_start_us = grape_profile_timestamp();
+#endif
+
     grape_rect_t screen = {
         .x = 0,
         .y = 0,
@@ -71,6 +75,9 @@ esp_err_t grape_damage_add(grape_context_t *context, grape_rect_t rect)
 
     rect = grape_rect_intersection(rect, screen);
     if (grape_rect_empty(rect)) {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
+        grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_ADD, grape_profile_timestamp() - profile_start_us);
+#endif
         return ESP_OK;
     }
 
@@ -92,6 +99,9 @@ esp_err_t grape_damage_add(grape_context_t *context, grape_rect_t rect)
 
     if (context->damage_count < CONFIG_GRAPE_MAX_DAMAGE_RECTS) {
         context->damage[context->damage_count++] = rect;
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
+        grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_ADD, grape_profile_timestamp() - profile_start_us);
+#endif
         return ESP_OK;
     }
 
@@ -102,6 +112,9 @@ esp_err_t grape_damage_add(grape_context_t *context, grape_rect_t rect)
 
     context->damage[0] = grape_rect_intersection(combined, screen);
     context->damage_count = 1;
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
+    grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_ADD, grape_profile_timestamp() - profile_start_us);
+#endif
     return ESP_OK;
 }
 

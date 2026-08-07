@@ -1,0 +1,29 @@
+# GRAPE compile-time profiler
+
+Profiler switches live in:
+
+`components/grape_common/include/grape/grape_profile_config.h`
+
+Set `GRAPE_PROFILE_ENABLE` to `0` to compile out the profiler globally, or leave it at `1` and toggle each timing independently.
+
+The report interval is controlled by `GRAPE_PROFILE_REPORT_INTERVAL_MS`.
+
+Current timings:
+
+- `GRAPE_PROFILE_PRESENT` - entire `grape_present()` call.
+- `GRAPE_PROFILE_DAMAGE_ADD` - dirty-rectangle insertion/merging.
+- `GRAPE_PROFILE_SURFACE_TRANSFORM` - complete surface transform update, including recache and damage tracking.
+- `GRAPE_PROFILE_SURFACE_RECACHE` - sin/cos cache and transformed-bounds calculation.
+- `GRAPE_PROFILE_COMPOSITOR` - one dirty rectangle from clear through display blit.
+- `GRAPE_PROFILE_PPA_FILL` - PPA background-fill dispatch including the blocking PPA operation.
+- `GRAPE_PROFILE_CPU_FILL` - software background-fill fallback.
+- `GRAPE_PROFILE_PPA_BLEND_DISPATCH` - the full PPA blend fast-path check/configuration/dispatch attempt for one surface.
+- `GRAPE_PROFILE_PPA_BLEND_HW` - time spent specifically in `ppa_do_blend()` for surfaces that actually reach hardware.
+- `GRAPE_PROFILE_CPU_SURFACE_RASTER` - software rasterization of one fallback surface over its clipped bounds.
+- `GRAPE_PROFILE_DISPLAY_BLIT` - full display blit, including waiting until the source buffer is safe to reuse.
+- `GRAPE_PROFILE_LCD_DRAW_SUBMIT` - `esp_lcd_panel_draw_bitmap()` submission only.
+- `GRAPE_PROFILE_LCD_DRAW_WAIT` - wait for `on_color_trans_done` after submission.
+
+Reports contain total, average, maximum, call count, and percentage of the report window. Timings are nested, so percentages and totals are not expected to add to 100%.
+
+Timings add a small amount of measurement overhead because each enabled region calls `esp_timer_get_time()`.

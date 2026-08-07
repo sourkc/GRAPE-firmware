@@ -3,7 +3,9 @@
 #include <math.h>
 
 #include "sdkconfig.h"
+#include "driver/ppa.h"
 #include "grape/grape.h"
+#include "grape/grape_profile.h"
 
 struct grape_texture {
     grape_context_t *context;
@@ -43,6 +45,9 @@ struct grape_context {
     size_t damage_count;
     uint8_t *scratch;
     size_t scratch_size;
+    ppa_client_handle_t ppa_srm;
+    ppa_client_handle_t ppa_blend;
+    ppa_client_handle_t ppa_fill;
 };
 
 size_t grape_bytes_per_pixel(grape_pixel_format_t format);
@@ -56,4 +61,11 @@ grape_rect_t grape_surface_calculate_bounds(const grape_surface_t *surface);
 void grape_surface_recache(grape_surface_t *surface);
 void grape_surface_insert_sorted(grape_context_t *context, grape_surface_t *surface);
 void grape_surface_remove(grape_context_t *context, grape_surface_t *surface);
+
+esp_err_t grape_ppa_init(grape_context_t *context);
+void grape_ppa_deinit(grape_context_t *context);
+esp_err_t grape_ppa_fill(grape_context_t *context, grape_rect_t rect, grape_color_t color);
+esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_t *surface,
+                                  grape_rect_t damage_rect, bool *handled);
+
 esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect);
