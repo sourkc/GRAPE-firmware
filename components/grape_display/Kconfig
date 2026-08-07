@@ -1,0 +1,56 @@
+menu "GRAPE display"
+
+    config GRAPE_DISPLAY_DRIVER_WAVESHARE_P4_BSP
+        bool "Waveshare ESP32-P4 BSP driver"
+        default y
+
+    config GRAPE_DISPLAY_DRIVER_NULL
+        bool "Null display driver"
+        default y
+
+    choice GRAPE_DISPLAY_DEFAULT_DRIVER
+        prompt "Default display driver"
+        depends on GRAPE_DISPLAY_DRIVER_WAVESHARE_P4_BSP || GRAPE_DISPLAY_DRIVER_NULL
+        default GRAPE_DISPLAY_DEFAULT_WAVESHARE_P4_BSP if GRAPE_DISPLAY_DRIVER_WAVESHARE_P4_BSP
+        default GRAPE_DISPLAY_DEFAULT_NULL if GRAPE_DISPLAY_DRIVER_NULL
+
+        config GRAPE_DISPLAY_DEFAULT_WAVESHARE_P4_BSP
+            bool "Waveshare ESP32-P4 BSP"
+            depends on GRAPE_DISPLAY_DRIVER_WAVESHARE_P4_BSP
+
+        config GRAPE_DISPLAY_DEFAULT_NULL
+            bool "Null"
+            depends on GRAPE_DISPLAY_DRIVER_NULL
+    endchoice
+
+    config GRAPE_DISPLAY_BRIGHTNESS
+        int "Initial display brightness"
+        range 0 100
+        default 100
+        depends on GRAPE_DISPLAY_DRIVER_WAVESHARE_P4_BSP
+
+    config GRAPE_NULL_DISPLAY_WIDTH
+        int "Null display width"
+        range 1 8192
+        default 720
+        depends on GRAPE_DISPLAY_DRIVER_NULL
+
+    config GRAPE_NULL_DISPLAY_HEIGHT
+        int "Null display height"
+        range 1 8192
+        default 1280
+        depends on GRAPE_DISPLAY_DRIVER_NULL
+
+    choice GRAPE_NULL_DISPLAY_FORMAT
+        prompt "Null display format"
+        default GRAPE_NULL_DISPLAY_RGB565
+        depends on GRAPE_DISPLAY_DRIVER_NULL
+
+        config GRAPE_NULL_DISPLAY_RGB565
+            bool "RGB565"
+
+        config GRAPE_NULL_DISPLAY_RGB888
+            bool "RGB888"
+    endchoice
+
+endmenu

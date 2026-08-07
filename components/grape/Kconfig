@@ -1,0 +1,19 @@
+menu "GRAPE"
+
+    config GRAPE_MAX_DAMAGE_RECTS
+        int "Maximum damage rectangles"
+        range 1 128
+        default 16
+
+    choice GRAPE_TEXTURE_DEFAULT_MEMORY
+        prompt "Default texture memory"
+        default GRAPE_TEXTURE_DEFAULT_PSRAM
+
+        config GRAPE_TEXTURE_DEFAULT_PSRAM
+            bool "PSRAM"
+
+        config GRAPE_TEXTURE_DEFAULT_INTERNAL
+            bool "Internal RAM"
+    endchoice
+
+endmenu
