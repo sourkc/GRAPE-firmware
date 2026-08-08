@@ -313,6 +313,17 @@ bool grape_debug_is_layer_enabled(const grape_context_t *context,
     return layer_enabled(context, layer);
 }
 
+esp_err_t grape_debug_get_damage_stats(const grape_context_t *context,
+                                       grape_debug_damage_stats_t *out_stats)
+{
+    if (!context || !out_stats) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *out_stats = context->damage.latest_stats;
+    return ESP_OK;
+}
+
 esp_err_t grape_debug_prepare_frame(grape_context_t *context)
 {
     if (!context) {

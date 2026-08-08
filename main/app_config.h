@@ -5,3 +5,6 @@
  * Set to 0 to run the existing interactive/demo animation in main.c.
  */
 #define GRAPE_APP_RUN_BENCHMARK 0
+
+/* Demo diagnostics. */
+#define GRAPE_APP_DAMAGE_STATS_INTERVAL_MS 5000

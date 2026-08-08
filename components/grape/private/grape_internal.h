@@ -67,6 +67,7 @@ typedef struct {
     size_t *active_runs;
     size_t *next_active_runs;
     size_t active_run_capacity;
+    grape_debug_damage_stats_t latest_stats;
 } grape_damage_state_t;
 
 typedef struct {

@@ -29,6 +29,17 @@ typedef struct {
     float phase;
 } demo_square_t;
 
+typedef struct {
+    uint64_t frames;
+    uint64_t dirty_tiles;
+    uint64_t total_tiles;
+    uint64_t initial_rects;
+    uint64_t final_rects;
+    uint64_t final_pixels;
+    uint64_t full_screen_frames;
+    uint64_t fullscreen_pixels;
+} demo_damage_stats_t;
+
 static void fill_square_a8(grape_texture_t *texture)
 {
     uint8_t *base = grape_texture_pixels(texture);
@@ -207,7 +218,9 @@ void app_main(void)
 
     int64_t start_time = esp_timer_get_time();
     int64_t fps_start_time = start_time;
+    int64_t damage_stats_start_time = start_time;
     uint32_t frame_count = 0;
+    demo_damage_stats_t damage_stats = {0};
 
     while (1) {
         int64_t now = esp_timer_get_time();
@@ -255,6 +268,17 @@ void app_main(void)
         ESP_ERROR_CHECK(grape_present(grape));
         frame_count++;
 
+        grape_debug_damage_stats_t frame_damage = {0};
+        ESP_ERROR_CHECK(grape_debug_get_damage_stats(grape, &frame_damage));
+        damage_stats.frames++;
+        damage_stats.dirty_tiles += frame_damage.dirty_tiles;
+        damage_stats.total_tiles = frame_damage.total_tiles;
+        damage_stats.initial_rects += frame_damage.initial_rects;
+        damage_stats.final_rects += frame_damage.final_rects;
+        damage_stats.final_pixels += frame_damage.final_pixels;
+        damage_stats.full_screen_frames += frame_damage.full_screen ? 1U : 0U;
+        damage_stats.fullscreen_pixels = frame_damage.fullscreen_pixels;
+
         now = esp_timer_get_time();
         int64_t elapsed_us = now - fps_start_time;
         if (elapsed_us >= 1000000) {
@@ -262,6 +286,41 @@ void app_main(void)
             printf("FPS: %.2f\n", (float)frame_count / elapsed_seconds);
             frame_count = 0;
             fps_start_time = now;
+        }
+
+        int64_t damage_stats_elapsed_us = now - damage_stats_start_time;
+        if (damage_stats_elapsed_us >= (int64_t)GRAPE_APP_DAMAGE_STATS_INTERVAL_MS * 1000 &&
+            damage_stats.frames > 0) {
+            double frames = (double)damage_stats.frames;
+            double average_pixels = (double)damage_stats.final_pixels / frames;
+            double coverage_percent = damage_stats.fullscreen_pixels > 0
+                ? average_pixels * 100.0 / (double)damage_stats.fullscreen_pixels
+                : 0.0;
+            double tile_percent = damage_stats.total_tiles > 0
+                ? ((double)damage_stats.dirty_tiles / frames) * 100.0 /
+                  (double)damage_stats.total_tiles
+                : 0.0;
+            double full_screen_percent =
+                (double)damage_stats.full_screen_frames * 100.0 / frames;
+
+            printf(
+                "DAMAGE: frames=%" PRIu64
+                " tiles=%.1f/%" PRIu64 " (%.1f%%) initial_rects=%.2f final_rects=%.2f "
+                "pixels=%.0f/%" PRIu64 " (%.1f%%) fullscreen=%.1f%%\n",
+                damage_stats.frames,
+                (double)damage_stats.dirty_tiles / frames,
+                damage_stats.total_tiles,
+                tile_percent,
+                (double)damage_stats.initial_rects / frames,
+                (double)damage_stats.final_rects / frames,
+                average_pixels,
+                damage_stats.fullscreen_pixels,
+                coverage_percent,
+                full_screen_percent
+            );
+
+            damage_stats = (demo_damage_stats_t){0};
+            damage_stats_start_time = now;
         }
 
         vTaskDelay(1);

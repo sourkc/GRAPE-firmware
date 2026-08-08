@@ -31,6 +31,17 @@ static inline void tile_set(uint8_t *bitmap, size_t index)
     bitmap[index >> 3U] |= (uint8_t)(1U << (index & 7U));
 }
 
+static uint32_t count_dirty_tiles(const uint8_t *bitmap, size_t bitmap_size)
+{
+    uint32_t count = 0;
+
+    for (size_t i = 0; i < bitmap_size; ++i) {
+        count += (uint32_t)__builtin_popcount((unsigned)bitmap[i]);
+    }
+
+    return count;
+}
+
 bool grape_rect_empty(grape_rect_t rect)
 {
     return rect.width <= 0 || rect.height <= 0;
@@ -208,7 +219,7 @@ static bool extract_rects(grape_context_t *context,
             }
 
             if (rect_count >= damage->work_rect_capacity) {
-                *out_count = 0;
+                *out_count = rect_count + 1U;
                 return false;
             }
 
@@ -296,7 +307,8 @@ static esp_err_t build_rects(grape_context_t *context,
                              const uint8_t *bitmap,
                              grape_rect_t *out_rects,
                              size_t out_capacity,
-                             size_t *out_count)
+                             size_t *out_count,
+                             grape_debug_damage_stats_t *stats)
 {
     if (!context || !bitmap || !out_rects || out_capacity == 0 || !out_count) {
         return ESP_ERR_INVALID_ARG;
@@ -306,14 +318,33 @@ static esp_err_t build_rects(grape_context_t *context,
     int64_t profile_start_us = grape_profile_timestamp();
 #endif
 
+    if (stats) {
+        *stats = (grape_debug_damage_stats_t){
+            .dirty_tiles = count_dirty_tiles(bitmap, context->damage.bitmap_size),
+            .total_tiles = context->damage.tile_columns * context->damage.tile_rows,
+            .fullscreen_pixels = (uint64_t)context->display_info.width *
+                                 (uint64_t)context->display_info.height,
+        };
+    }
+
     size_t rect_count = 0;
     if (!extract_rects(context, bitmap, &rect_count)) {
         use_full_screen(context, out_rects, out_count);
+        if (stats) {
+            stats->initial_rects = (uint32_t)rect_count;
+            stats->final_rects = 1;
+            stats->final_pixels = stats->fullscreen_pixels;
+            stats->full_screen = true;
+        }
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_PLAN
         grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_PLAN,
                              grape_profile_timestamp() - profile_start_us);
 #endif
         return ESP_OK;
+    }
+
+    if (stats) {
+        stats->initial_rects = (uint32_t)rect_count;
     }
 
     if (rect_count == 0) {
@@ -339,6 +370,11 @@ static esp_err_t build_rects(grape_context_t *context,
 
     if (full_cost <= partial_cost) {
         use_full_screen(context, out_rects, out_count);
+        if (stats) {
+            stats->final_rects = 1;
+            stats->final_pixels = stats->fullscreen_pixels;
+            stats->full_screen = true;
+        }
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_PLAN
         grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_PLAN,
                              grape_profile_timestamp() - profile_start_us);
@@ -348,6 +384,11 @@ static esp_err_t build_rects(grape_context_t *context,
 
     if (rect_count > out_capacity) {
         use_full_screen(context, out_rects, out_count);
+        if (stats) {
+            stats->final_rects = 1;
+            stats->final_pixels = stats->fullscreen_pixels;
+            stats->full_screen = true;
+        }
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_PLAN
         grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_PLAN,
                              grape_profile_timestamp() - profile_start_us);
@@ -359,6 +400,13 @@ static esp_err_t build_rects(grape_context_t *context,
            context->damage.work_rects,
            rect_count * sizeof(out_rects[0]));
     *out_count = rect_count;
+
+    if (stats) {
+        stats->final_rects = (uint32_t)rect_count;
+        for (size_t i = 0; i < rect_count; ++i) {
+            stats->final_pixels += (uint64_t)rect_area(context->damage.work_rects[i]);
+        }
+    }
 
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_PLAN
     grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_PLAN,
@@ -493,6 +541,11 @@ esp_err_t grape_damage_build_logical_rects(grape_context_t *context)
 
     if (!context->damage.has_damage) {
         context->damage.final_rect_count = 0;
+        context->damage.latest_stats = (grape_debug_damage_stats_t){
+            .total_tiles = context->damage.tile_columns * context->damage.tile_rows,
+            .fullscreen_pixels = (uint64_t)context->display_info.width *
+                                 (uint64_t)context->display_info.height,
+        };
         return ESP_OK;
     }
 
@@ -501,7 +554,8 @@ esp_err_t grape_damage_build_logical_rects(grape_context_t *context)
         context->damage.tiles,
         context->damage.final_rects,
         CONFIG_GRAPE_MAX_DAMAGE_RECTS,
-        &context->damage.final_rect_count
+        &context->damage.final_rect_count,
+        &context->damage.latest_stats
     );
 }
 
@@ -548,6 +602,7 @@ esp_err_t grape_damage_build_render_rects(grape_context_t *context,
         context->damage.render_tiles,
         out_rects,
         out_capacity,
-        out_count
+        out_count,
+        NULL
     );
 }
