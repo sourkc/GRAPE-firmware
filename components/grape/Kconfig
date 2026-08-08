@@ -20,6 +20,15 @@ menu "GRAPE"
         range 16 1024
         default 256
 
+    config GRAPE_TEXTURE_OCCUPANCY_CELL_SIZE
+        int "Texture occupancy cell size (texels)"
+        range 2 64
+        default 8
+        help
+            A8 textures are scanned into a coarse occupancy bitmap using
+            square cells of this size. Smaller cells give tighter damage
+            coverage for rotated and irregular textures at higher CPU cost.
+
     choice GRAPE_TEXTURE_DEFAULT_MEMORY
         prompt "Default texture memory"
         default GRAPE_TEXTURE_DEFAULT_PSRAM

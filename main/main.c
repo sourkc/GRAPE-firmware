@@ -38,6 +38,8 @@ typedef struct {
     uint64_t final_pixels;
     uint64_t full_screen_frames;
     uint64_t fullscreen_pixels;
+    uint64_t mark_us;
+    uint64_t plan_us;
 } demo_damage_stats_t;
 
 static void fill_square_a8(grape_texture_t *texture)
@@ -178,7 +180,7 @@ void app_main(void)
         grape_debug_set_layer_enabled(
             grape,
             GRAPE_DEBUG_LAYER_DAMAGE_RECTS,
-            false
+            true
         )
     );
 
@@ -278,6 +280,8 @@ void app_main(void)
         damage_stats.final_pixels += frame_damage.final_pixels;
         damage_stats.full_screen_frames += frame_damage.full_screen ? 1U : 0U;
         damage_stats.fullscreen_pixels = frame_damage.fullscreen_pixels;
+        damage_stats.mark_us += frame_damage.mark_us;
+        damage_stats.plan_us += frame_damage.plan_us;
 
         now = esp_timer_get_time();
         int64_t elapsed_us = now - fps_start_time;
@@ -302,11 +306,16 @@ void app_main(void)
                 : 0.0;
             double full_screen_percent =
                 (double)damage_stats.full_screen_frames * 100.0 / frames;
+            double average_mark_ms =
+                (double)damage_stats.mark_us / frames / 1000.0;
+            double average_plan_ms =
+                (double)damage_stats.plan_us / frames / 1000.0;
 
             printf(
                 "DAMAGE: frames=%" PRIu64
                 " tiles=%.1f/%" PRIu64 " (%.1f%%) initial_rects=%.2f final_rects=%.2f "
-                "pixels=%.0f/%" PRIu64 " (%.1f%%) fullscreen=%.1f%%\n",
+                "pixels=%.0f/%" PRIu64 " (%.1f%%) fullscreen=%.1f%% "
+                "mark=%.3f ms plan=%.3f ms\n",
                 damage_stats.frames,
                 (double)damage_stats.dirty_tiles / frames,
                 damage_stats.total_tiles,
@@ -316,7 +325,9 @@ void app_main(void)
                 average_pixels,
                 damage_stats.fullscreen_pixels,
                 coverage_percent,
-                full_screen_percent
+                full_screen_percent,
+                average_mark_ms,
+                average_plan_ms
             );
 
             damage_stats = (demo_damage_stats_t){0};

@@ -11,5 +11,5 @@ idf_component_register(
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "private"
     REQUIRES grape_common grape_display
-    PRIV_REQUIRES heap esp_driver_ppa
+    PRIV_REQUIRES heap esp_driver_ppa esp_timer
 )

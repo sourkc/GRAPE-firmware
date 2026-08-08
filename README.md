@@ -8,7 +8,7 @@
 - [ ] Re-test PPA-rotated Y shear on ESP32-P4 rev 3.x (GRAY8 SRM is unavailable on the current pre-v3 chip)
   - TEST THIS ONCE CHIP V3.X ARRIVES!
 - [x] Tile-based adaptive damage grouping
-- [ ] Per-texture occupancy masks for transparent/irregular textures
+- [x] Per-texture occupancy masks for transparent/irregular textures
 
 ## Chip revision overlays
 
@@ -41,3 +41,16 @@ ESP_ERROR_CHECK(
 ```
 
 Disable it with the same call and `false`. The previous overlay area is queued as render-only damage so it is repainted once and disappears cleanly. Debug layers are intended for correctness/debugging rather than performance measurements.
+
+## Planned stuff
+- JPEG images (hardware)
+- Vector graphics
+  - Vector surfaces
+  - Font rendering
+  - Eventually maybe SVG rendering
+- GFXLINK
+  - USB
+  - SPI
+- Graphics driver port for PC
+- OpenGL port for ESP32
+- 

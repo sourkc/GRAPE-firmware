@@ -18,6 +18,12 @@ struct grape_texture {
     uint32_t ref_count;
     grape_pixel_format_t format;
     grape_memory_t memory;
+    uint8_t *occupancy;
+    size_t occupancy_bitmap_size;
+    uint32_t occupancy_columns;
+    uint32_t occupancy_rows;
+    bool occupancy_all_full;
+    bool occupancy_all_empty;
 };
 
 struct grape_surface {
@@ -67,6 +73,7 @@ typedef struct {
     size_t *active_runs;
     size_t *next_active_runs;
     size_t active_run_capacity;
+    uint64_t mark_us_current;
     grape_debug_damage_stats_t latest_stats;
 } grape_damage_state_t;
 
@@ -109,6 +116,7 @@ bool grape_rect_touches(grape_rect_t a, grape_rect_t b);
 esp_err_t grape_damage_init(grape_context_t *context);
 void grape_damage_deinit(grape_context_t *context);
 esp_err_t grape_damage_add(grape_context_t *context, grape_rect_t rect);
+esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface);
 void grape_damage_all(grape_context_t *context);
 void grape_damage_clear(grape_context_t *context);
 esp_err_t grape_damage_build_logical_rects(grape_context_t *context);
@@ -122,6 +130,7 @@ grape_rect_t grape_surface_calculate_bounds(const grape_surface_t *surface);
 void grape_surface_recache(grape_surface_t *surface);
 void grape_surface_insert_sorted(grape_context_t *context, grape_surface_t *surface);
 void grape_surface_remove(grape_context_t *context, grape_surface_t *surface);
+esp_err_t grape_texture_rebuild_occupancy(grape_texture_t *texture);
 
 esp_err_t grape_ppa_init(grape_context_t *context);
 void grape_ppa_deinit(grape_context_t *context);

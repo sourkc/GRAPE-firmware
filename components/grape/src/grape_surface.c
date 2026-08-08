@@ -135,15 +135,9 @@ void grape_surface_insert_sorted(grape_context_t *context, grape_surface_t *surf
     }
 }
 
-static esp_err_t surface_damage_change(grape_surface_t *surface, grape_rect_t old_bounds)
+static esp_err_t mark_surface_coverage(grape_surface_t *surface)
 {
-    if (surface->visible) {
-        grape_damage_add(surface->context, surface->bounds);
-    }
-    if (!grape_rect_empty(old_bounds)) {
-        grape_damage_add(surface->context, old_bounds);
-    }
-    return ESP_OK;
+    return grape_damage_add_surface_coverage(surface);
 }
 
 esp_err_t grape_surface_create(grape_context_t *context, grape_texture_t *texture, grape_surface_t **out_surface)
@@ -168,7 +162,14 @@ esp_err_t grape_surface_create(grape_context_t *context, grape_texture_t *textur
 
     grape_surface_recache(surface);
     grape_surface_insert_sorted(context, surface);
-    grape_damage_add(context, surface->bounds);
+
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        grape_surface_remove(context, surface);
+        texture->ref_count--;
+        free(surface);
+        return ret;
+    }
 
     *out_surface = surface;
     return ESP_OK;
@@ -180,11 +181,12 @@ esp_err_t grape_surface_destroy(grape_surface_t *surface)
         return ESP_ERR_INVALID_ARG;
     }
 
-    grape_context_t *context = surface->context;
-    if (surface->visible) {
-        grape_damage_add(context, surface->bounds);
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        return ret;
     }
 
+    grape_context_t *context = surface->context;
     grape_surface_remove(context, surface);
     if (surface->texture && surface->texture->ref_count) {
         surface->texture->ref_count--;
@@ -199,14 +201,19 @@ esp_err_t grape_surface_set_texture(grape_surface_t *surface, grape_texture_t *t
         return ESP_ERR_INVALID_ARG;
     }
 
-    grape_rect_t old_bounds = surface->visible ? surface->bounds : (grape_rect_t){0};
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
     if (surface->texture && surface->texture->ref_count) {
         surface->texture->ref_count--;
     }
     surface->texture = texture;
     texture->ref_count++;
     grape_surface_recache(surface);
-    return surface_damage_change(surface, old_bounds);
+
+    return mark_surface_coverage(surface);
 }
 
 esp_err_t grape_surface_set_transform(grape_surface_t *surface, const grape_transform_t *transform)
@@ -219,10 +226,12 @@ esp_err_t grape_surface_set_transform(grape_surface_t *surface, const grape_tran
     int64_t profile_start_us = grape_profile_timestamp();
 #endif
 
-    grape_rect_t old_bounds = surface->visible ? surface->bounds : (grape_rect_t){0};
-    surface->transform = *transform;
-    grape_surface_recache(surface);
-    esp_err_t ret = surface_damage_change(surface, old_bounds);
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret == ESP_OK) {
+        surface->transform = *transform;
+        grape_surface_recache(surface);
+        ret = mark_surface_coverage(surface);
+    }
 
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SURFACE_TRANSFORM
     grape_profile_record(GRAPE_PROFILE_METRIC_SURFACE_TRANSFORM, grape_profile_timestamp() - profile_start_us);
@@ -283,11 +292,15 @@ esp_err_t grape_surface_set_z(grape_surface_t *surface, int32_t z)
         return ESP_OK;
     }
 
-    grape_rect_t bounds = surface->visible ? surface->bounds : (grape_rect_t){0};
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
     grape_surface_remove(surface->context, surface);
     surface->z = z;
     grape_surface_insert_sorted(surface->context, surface);
-    return grape_damage_add(surface->context, bounds);
+    return ESP_OK;
 }
 
 esp_err_t grape_surface_set_opacity(grape_surface_t *surface, uint8_t opacity)
@@ -298,8 +311,14 @@ esp_err_t grape_surface_set_opacity(grape_surface_t *surface, uint8_t opacity)
     if (surface->opacity == opacity) {
         return ESP_OK;
     }
+
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
     surface->opacity = opacity;
-    return surface->visible ? grape_damage_add(surface->context, surface->bounds) : ESP_OK;
+    return mark_surface_coverage(surface);
 }
 
 esp_err_t grape_surface_set_tint(grape_surface_t *surface, grape_color_t tint)
@@ -307,8 +326,21 @@ esp_err_t grape_surface_set_tint(grape_surface_t *surface, grape_color_t tint)
     if (!surface) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    if (surface->tint.r == tint.r &&
+        surface->tint.g == tint.g &&
+        surface->tint.b == tint.b &&
+        surface->tint.a == tint.a) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
     surface->tint = tint;
-    return surface->visible ? grape_damage_add(surface->context, surface->bounds) : ESP_OK;
+    return mark_surface_coverage(surface);
 }
 
 esp_err_t grape_surface_set_visible(grape_surface_t *surface, bool visible)
@@ -320,10 +352,14 @@ esp_err_t grape_surface_set_visible(grape_surface_t *surface, bool visible)
         return ESP_OK;
     }
 
-    grape_rect_t old_bounds = surface->visible ? surface->bounds : (grape_rect_t){0};
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
     surface->visible = visible;
     grape_surface_recache(surface);
-    return surface_damage_change(surface, old_bounds);
+    return mark_surface_coverage(surface);
 }
 
 const grape_transform_t *grape_surface_transform(const grape_surface_t *surface)

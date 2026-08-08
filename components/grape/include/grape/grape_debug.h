@@ -20,6 +20,8 @@ typedef struct {
     uint32_t final_rects;
     uint64_t final_pixels;
     uint64_t fullscreen_pixels;
+    uint64_t mark_us;
+    uint64_t plan_us;
     bool full_screen;
 } grape_debug_damage_stats_t;
 
