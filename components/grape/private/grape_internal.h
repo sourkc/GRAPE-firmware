@@ -90,6 +90,16 @@ void grape_ppa_deinit(grape_context_t *context);
 esp_err_t grape_ppa_fill(grape_context_t *context, grape_rect_t rect, grape_color_t color);
 esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_t *surface,
                                   grape_rect_t damage_rect, bool *handled);
+esp_err_t grape_ppa_blend_a8_image(grape_context_t *context,
+                                   const uint8_t *pixels,
+                                   uint32_t width,
+                                   uint32_t height,
+                                   float screen_left,
+                                   float screen_top,
+                                   grape_rect_t damage_rect,
+                                   grape_color_t tint,
+                                   uint8_t opacity,
+                                   bool *handled);
 
 esp_err_t grape_shear_rotate_a8(grape_context_t *context, const grape_surface_t *surface,
                                 grape_shear_image_t *out_image);

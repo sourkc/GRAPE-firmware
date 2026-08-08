@@ -138,18 +138,25 @@ static int32_t point_sample_screen_origin(float transformed_origin)
     return (int32_t)ceilf(transformed_origin - 0.5f);
 }
 
-esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_t *surface,
-                                  grape_rect_t damage_rect, bool *handled)
+static esp_err_t blend_a8_image(
+    grape_context_t *context,
+    const uint8_t *pixels,
+    uint32_t width,
+    uint32_t height,
+    grape_rect_t image_rect,
+    grape_rect_t damage_rect,
+    grape_color_t tint,
+    uint8_t opacity,
+    bool *handled
+)
 {
-    if (!context || !surface || !handled) {
+    if (!context || !pixels || !handled || width == 0 || height == 0) {
         return ESP_ERR_INVALID_ARG;
     }
 
     *handled = false;
 
-    if (!context->ppa_blend || !surface->texture ||
-        surface->texture->format != GRAPE_PIXEL_FORMAT_A8 ||
-        !is_identity_linear_transform(surface)) {
+    if (!context->ppa_blend) {
         return ESP_OK;
     }
 
@@ -158,23 +165,13 @@ esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_
         return ESP_OK;
     }
 
-    float left = surface->transform.x - surface->transform.origin_x;
-    float top = surface->transform.y - surface->transform.origin_y;
-
-    grape_rect_t surface_rect = {
-        .x = point_sample_screen_origin(left),
-        .y = point_sample_screen_origin(top),
-        .width = (int32_t)surface->texture->width,
-        .height = (int32_t)surface->texture->height,
-    };
-
-    grape_rect_t clipped = grape_rect_intersection(damage_rect, surface_rect);
+    grape_rect_t clipped = grape_rect_intersection(damage_rect, image_rect);
     if (grape_rect_empty(clipped)) {
         *handled = true;
         return ESP_OK;
     }
 
-    uint8_t alpha_scale = (uint8_t)(((uint16_t)surface->tint.a * surface->opacity + 127U) / 255U);
+    uint8_t alpha_scale = (uint8_t)(((uint16_t)tint.a * opacity + 127U) / 255U);
     if (alpha_scale == 0) {
         *handled = true;
         return ESP_OK;
@@ -182,8 +179,8 @@ esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_
 
     uint32_t bg_x = (uint32_t)(clipped.x - damage_rect.x);
     uint32_t bg_y = (uint32_t)(clipped.y - damage_rect.y);
-    uint32_t fg_x = (uint32_t)(clipped.x - surface_rect.x);
-    uint32_t fg_y = (uint32_t)(clipped.y - surface_rect.y);
+    uint32_t fg_x = (uint32_t)(clipped.x - image_rect.x);
+    uint32_t fg_y = (uint32_t)(clipped.y - image_rect.y);
 
     ppa_blend_oper_config_t config = {
         .in_bg = {
@@ -197,9 +194,9 @@ esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_
             .blend_cm = display_mode,
         },
         .in_fg = {
-            .buffer = surface->texture->pixels,
-            .pic_w = surface->texture->width,
-            .pic_h = surface->texture->height,
+            .buffer = (void *)pixels,
+            .pic_w = width,
+            .pic_h = height,
             .block_w = (uint32_t)clipped.width,
             .block_h = (uint32_t)clipped.height,
             .block_offset_x = fg_x,
@@ -219,9 +216,9 @@ esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_
         .fg_alpha_update_mode = alpha_scale == 255 ? PPA_ALPHA_NO_CHANGE : PPA_ALPHA_SCALE,
         .fg_alpha_scale_ratio = (float)alpha_scale / 255.0f,
         .fg_fix_rgb_val = {
-            .r = surface->tint.r,
-            .g = surface->tint.g,
-            .b = surface->tint.b,
+            .r = tint.r,
+            .g = tint.g,
+            .b = tint.b,
         },
         .bg_ck_en = false,
         .fg_ck_en = false,
@@ -233,10 +230,93 @@ esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_
 #endif
     esp_err_t ret = ppa_do_blend(context->ppa_blend, &config);
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_BLEND_HW
-    grape_profile_record(GRAPE_PROFILE_METRIC_PPA_BLEND_HW, grape_profile_timestamp() - profile_start_us);
+    grape_profile_record(GRAPE_PROFILE_METRIC_PPA_BLEND_HW,
+                         grape_profile_timestamp() - profile_start_us);
 #endif
     if (ret == ESP_OK) {
         *handled = true;
     }
     return ret;
+}
+
+esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_t *surface,
+                                  grape_rect_t damage_rect, bool *handled)
+{
+    if (!context || !surface || !handled) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *handled = false;
+
+    if (!context->ppa_blend || !surface->texture ||
+        surface->texture->format != GRAPE_PIXEL_FORMAT_A8 ||
+        !is_identity_linear_transform(surface)) {
+        return ESP_OK;
+    }
+
+    float left = surface->transform.x - surface->transform.origin_x;
+    float top = surface->transform.y - surface->transform.origin_y;
+
+    grape_rect_t surface_rect = {
+        .x = point_sample_screen_origin(left),
+        .y = point_sample_screen_origin(top),
+        .width = (int32_t)surface->texture->width,
+        .height = (int32_t)surface->texture->height,
+    };
+
+    return blend_a8_image(
+        context,
+        surface->texture->pixels,
+        surface->texture->width,
+        surface->texture->height,
+        surface_rect,
+        damage_rect,
+        surface->tint,
+        surface->opacity,
+        handled
+    );
+}
+
+esp_err_t grape_ppa_blend_a8_image(
+    grape_context_t *context,
+    const uint8_t *pixels,
+    uint32_t width,
+    uint32_t height,
+    float screen_left,
+    float screen_top,
+    grape_rect_t damage_rect,
+    grape_color_t tint,
+    uint8_t opacity,
+    bool *handled
+)
+{
+    if (!handled) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *handled = false;
+
+    if (width > INT32_MAX || height > INT32_MAX ||
+        !isfinite(screen_left) || !isfinite(screen_top)) {
+        return ESP_OK;
+    }
+
+    grape_rect_t image_rect = {
+        .x = point_sample_screen_origin(screen_left),
+        .y = point_sample_screen_origin(screen_top),
+        .width = (int32_t)width,
+        .height = (int32_t)height,
+    };
+
+    return blend_a8_image(
+        context,
+        pixels,
+        width,
+        height,
+        image_rect,
+        damage_rect,
+        tint,
+        opacity,
+        handled
+    );
 }

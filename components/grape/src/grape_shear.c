@@ -32,13 +32,13 @@ static esp_err_t ensure_buffer(uint8_t **buffer, size_t *capacity, size_t requir
 
     uint8_t *replacement = heap_caps_malloc(
         required,
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_8BIT
     );
 
     if (!replacement) {
         replacement = heap_caps_malloc(
             required,
-            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT
         );
     }
 

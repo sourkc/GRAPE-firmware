@@ -318,6 +318,35 @@ static esp_err_t raster_surface_three_shear_a8(
     int64_t shear_composite_start_us = grape_profile_timestamp();
 #endif
 
+    bool ppa_handled = false;
+    ret = grape_ppa_blend_a8_image(
+        context,
+        image.pixels,
+        image.width,
+        image.height,
+        surface->transform.x + image.left,
+        surface->transform.y + image.top,
+        damage_rect,
+        surface->tint,
+        surface->opacity,
+        &ppa_handled
+    );
+    if (ret != ESP_OK) {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_COMPOSITE
+        grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_COMPOSITE,
+                             grape_profile_timestamp() - shear_composite_start_us);
+#endif
+        return ret;
+    }
+
+    if (ppa_handled) {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_COMPOSITE
+        grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_COMPOSITE,
+                             grape_profile_timestamp() - shear_composite_start_us);
+#endif
+        return ESP_OK;
+    }
+
     int32_t scratch_x = clipped.x - damage_rect.x;
 
     for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
