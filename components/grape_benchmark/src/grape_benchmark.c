@@ -94,7 +94,7 @@ static esp_err_t run_measured(
         .frame_min_us = UINT32_MAX,
     };
 
-    grape_profile_reset();
+    grape_telemetry_reset();
 
     int64_t benchmark_start_us = esp_timer_get_time();
 
@@ -134,7 +134,7 @@ static esp_err_t run_measured(
     result->elapsed_us =
         (uint64_t)(esp_timer_get_time() - benchmark_start_us);
 
-    grape_profile_snapshot(&result->profile);
+    grape_telemetry_snapshot(&result->telemetry);
 
     if (result->frames == 0) {
         result->update_min_us = 0;
@@ -271,17 +271,17 @@ esp_err_t grape_benchmark_run(
              (unsigned)total_case_count,
              (unsigned)suite_count);
 
-#if !GRAPE_PROFILE_ENABLE
+#if GRAPE_TELEMETRY_LEVEL < 2
     ESP_LOGW(TAG,
-             "GRAPE profiler is disabled; CSV profiler columns will be zero");
+             "Detailed GRAPE telemetry is disabled; level-2 CSV timing columns will be zero");
 #endif
 
-    bool previous_auto_report = grape_profile_auto_report_enabled();
-    grape_profile_set_auto_report(false);
+    bool previous_auto_report = grape_telemetry_auto_report_enabled();
+    grape_telemetry_set_auto_report(false);
 
     esp_err_t ret = grape_benchmark_report_open(&runtime);
     if (ret != ESP_OK) {
-        grape_profile_set_auto_report(previous_auto_report);
+        grape_telemetry_set_auto_report(previous_auto_report);
         return ret;
     }
 
@@ -325,8 +325,8 @@ esp_err_t grape_benchmark_run(
     int64_t suite_elapsed_us = esp_timer_get_time() - suite_start_us;
 
     grape_benchmark_report_close(&runtime);
-    grape_profile_reset();
-    grape_profile_set_auto_report(previous_auto_report);
+    grape_telemetry_reset();
+    grape_telemetry_set_auto_report(previous_auto_report);
 
     if (ret == ESP_OK) {
         ESP_LOGI(TAG,

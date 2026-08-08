@@ -28,9 +28,9 @@ The important switches are:
 - `GRAPE_BENCHMARK_WRITE_SAMPLES_CSV`
 - the individual `GRAPE_BENCHMARK_SUITE_*` switches
 
-The benchmark disables the profiler's automatic once-per-second report while it
-is running, resets the counters immediately before each measured section, and
-takes a profiler snapshot after the measured frames.
+The benchmark disables telemetry's automatic periodic report while it is
+running, resets the telemetry window immediately before each measured section,
+and takes a telemetry snapshot after the measured frames.
 
 ## Current cases
 
@@ -99,9 +99,9 @@ on GPIO43/44/39/40/41/42 and SDMMC IO power from on-chip LDO channel 4. Card
 formatting on mount failure is disabled.
 
 `grape_benchmark_summary.csv` contains one row per case, including FPS,
-frame/update/present min/average/max values, parameters, and all GRAPE profiler
+frame/update/present min/average/max values, parameters, and all GRAPE telemetry
 totals/averages/max/call counts. The direct wall-clock columns use the
-`*_wall_*` names so they do not collide with profiler metric column names.
+`*_wall_*` names so they do not collide with telemetry timer column names.
 
 `grape_benchmark_samples.csv` contains per-frame update, present, and whole-frame
 timings. Samples are buffered in RAM during the measured section and only
@@ -114,7 +114,7 @@ settings.
 ## Adding future suites
 
 Benchmark cases use setup/step/teardown callbacks. The runner owns warm-up,
-timing, profiling, report writing, and cleanup sequencing.
+timing, telemetry capture, report writing, and cleanup sequencing.
 
 The current cases are in:
 

@@ -5,7 +5,7 @@
 #include "sdkconfig.h"
 #include "driver/ppa.h"
 #include "grape/grape.h"
-#include "grape/grape_profile.h"
+#include "grape/grape_telemetry.h"
 
 struct grape_texture {
     grape_context_t *context;
@@ -90,7 +90,7 @@ typedef struct {
     grape_damage_tile_region_t *suffix_bounds;
     size_t split_region_capacity;
     size_t split_axis_capacity;
-    uint64_t mark_us_current;
+    uint64_t mark_timer_start_us;
     grape_debug_damage_stats_t latest_stats;
 } grape_damage_state_t;
 

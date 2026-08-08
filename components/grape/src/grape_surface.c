@@ -51,9 +51,7 @@ grape_rect_t grape_surface_calculate_bounds(const grape_surface_t *surface)
 
 void grape_surface_recache(grape_surface_t *surface)
 {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SURFACE_RECACHE
-    int64_t profile_start_us = grape_profile_timestamp();
-#endif
+    GRAPE_TIME_SCOPE(SURFACE_RECACHE);
 
     surface->cos_rotation = cosf(surface->transform.rotation);
     surface->sin_rotation = sinf(surface->transform.rotation);
@@ -85,9 +83,6 @@ void grape_surface_recache(grape_surface_t *surface)
 
     surface->bounds = grape_surface_calculate_bounds(surface);
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SURFACE_RECACHE
-    grape_profile_record(GRAPE_PROFILE_METRIC_SURFACE_RECACHE, grape_profile_timestamp() - profile_start_us);
-#endif
 }
 
 void grape_surface_remove(grape_context_t *context, grape_surface_t *surface)
@@ -222,9 +217,7 @@ esp_err_t grape_surface_set_transform(grape_surface_t *surface, const grape_tran
         return ESP_ERR_INVALID_ARG;
     }
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SURFACE_TRANSFORM
-    int64_t profile_start_us = grape_profile_timestamp();
-#endif
+    GRAPE_TIME_SCOPE(SURFACE_TRANSFORM);
 
     esp_err_t ret = mark_surface_coverage(surface);
     if (ret == ESP_OK) {
@@ -232,10 +225,6 @@ esp_err_t grape_surface_set_transform(grape_surface_t *surface, const grape_tran
         grape_surface_recache(surface);
         ret = mark_surface_coverage(surface);
     }
-
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SURFACE_TRANSFORM
-    grape_profile_record(GRAPE_PROFILE_METRIC_SURFACE_TRANSFORM, grape_profile_timestamp() - profile_start_us);
-#endif
 
     return ret;
 }

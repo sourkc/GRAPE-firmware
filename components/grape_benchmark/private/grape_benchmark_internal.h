@@ -5,7 +5,7 @@
 #include <stdio.h>
 
 #include "grape/grape_benchmark.h"
-#include "grape/grape_profile.h"
+#include "grape/grape_telemetry.h"
 
 #define GRAPE_BENCHMARK_MAX_PARAMS 4
 
@@ -65,7 +65,7 @@ typedef struct {
     uint32_t present_max_us;
     uint32_t frame_min_us;
     uint32_t frame_max_us;
-    grape_profile_snapshot_t profile;
+    grape_telemetry_snapshot_t telemetry;
 } grape_benchmark_result_t;
 
 struct grape_benchmark_runtime {

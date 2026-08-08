@@ -172,22 +172,6 @@ esp_err_t grape_display_present(grape_display_t *display)
     return display->driver->present(display);
 }
 
-esp_err_t grape_display_get_frame_stats(const grape_display_t *display,
-                                        grape_display_frame_stats_t *out_stats)
-{
-    if (!display || !out_stats) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    *out_stats = (grape_display_frame_stats_t){0};
-
-    if (!display->driver || !display->driver->get_frame_stats) {
-        return ESP_OK;
-    }
-
-    return display->driver->get_frame_stats(display, out_stats);
-}
-
 esp_err_t grape_display_set_brightness(grape_display_t *display, uint8_t percent)
 {
     if (!display || percent > 100) {

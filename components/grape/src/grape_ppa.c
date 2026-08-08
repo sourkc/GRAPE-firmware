@@ -263,14 +263,10 @@ static esp_err_t blend_a8_image(
         .mode = PPA_TRANS_MODE_BLOCKING,
     };
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_BLEND_HW
-    int64_t profile_start_us = grape_profile_timestamp();
-#endif
-    esp_err_t ret = ppa_do_blend(context->ppa_blend, &config);
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_BLEND_HW
-    grape_profile_record(GRAPE_PROFILE_METRIC_PPA_BLEND_HW,
-                         grape_profile_timestamp() - profile_start_us);
-#endif
+    esp_err_t ret;
+    GRAPE_TIME_BLOCK(PPA_BLEND_HW) {
+        ret = ppa_do_blend(context->ppa_blend, &config);
+    }
     if (ret == ESP_OK) {
         *handled = true;
     }
@@ -437,9 +433,6 @@ esp_err_t grape_ppa_rotate_a8(
         .user_data = NULL,
     };
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_QUARTER_TURN
-    int64_t profile_start_us = grape_profile_timestamp();
-#endif
     ESP_LOGI(
         "grape_ppa",
         "SRM out=%p size=%u in=%p %ux%u -> %ux%u",
@@ -451,11 +444,9 @@ esp_err_t grape_ppa_rotate_a8(
         config.out.pic_w,
         config.out.pic_h
     );
-    ret = ppa_do_scale_rotate_mirror(context->ppa_srm, &config);
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_QUARTER_TURN
-    grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_QUARTER_TURN,
-                         grape_profile_timestamp() - profile_start_us);
-#endif
+    GRAPE_TIME_BLOCK(PPA_ROTATE) {
+        ret = ppa_do_scale_rotate_mirror(context->ppa_srm, &config);
+    }
     if (ret != ESP_OK) {
         return ret;
     }

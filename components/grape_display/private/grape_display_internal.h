@@ -11,8 +11,6 @@ typedef struct grape_display_driver {
                              size_t render_rect_count,
                              grape_display_render_target_t *out_target);
     esp_err_t (*present)(grape_display_t *display);
-    esp_err_t (*get_frame_stats)(const grape_display_t *display,
-                                 grape_display_frame_stats_t *out_stats);
     esp_err_t (*set_brightness)(grape_display_t *display, uint8_t percent);
 } grape_display_driver_t;
 

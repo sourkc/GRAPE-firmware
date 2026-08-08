@@ -7,7 +7,7 @@
 #include "esp_timer.h"
 #include "grape/grape.h"
 #include "grape/grape_benchmark.h"
-#include "grape/grape_debug_config.h"
+#include "grape/grape_telemetry_config.h"
 #include "grape_storage_sd.h"
 
 #include "app_config.h"
@@ -30,7 +30,7 @@ typedef struct {
     float phase;
 } demo_square_t;
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
+#if GRAPE_TELEMETRY_LEVEL >= 1
 typedef struct {
     uint64_t frames;
     uint64_t dirty_tiles;
@@ -225,7 +225,7 @@ void app_main(void)
 
     int64_t start_time = esp_timer_get_time();
     int64_t fps_start_time = start_time;
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
+#if GRAPE_TELEMETRY_LEVEL >= 1
     int64_t damage_stats_start_time = start_time;
     demo_damage_stats_t damage_stats = {0};
 #endif
@@ -277,7 +277,7 @@ void app_main(void)
         ESP_ERROR_CHECK(grape_present(grape));
         frame_count++;
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
+#if GRAPE_TELEMETRY_LEVEL >= 1
         grape_debug_damage_stats_t frame_damage = {0};
         ESP_ERROR_CHECK(grape_debug_get_damage_stats(grape, &frame_damage));
         damage_stats.frames++;
@@ -303,7 +303,7 @@ void app_main(void)
             fps_start_time = now;
         }
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
+#if GRAPE_TELEMETRY_LEVEL >= 1
         int64_t damage_stats_elapsed_us = now - damage_stats_start_time;
         if (damage_stats_elapsed_us >= (int64_t)GRAPE_APP_DAMAGE_STATS_INTERVAL_MS * 1000 &&
             damage_stats.frames > 0) {

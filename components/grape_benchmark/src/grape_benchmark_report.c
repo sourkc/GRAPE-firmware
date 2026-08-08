@@ -12,38 +12,6 @@
 
 static const char *TAG = "grape_bench";
 
-static const char *metric_csv_name(grape_profile_metric_t metric)
-{
-    static const char *const names[GRAPE_PROFILE_METRIC_COUNT] = {
-        [GRAPE_PROFILE_METRIC_PRESENT] = "present",
-        [GRAPE_PROFILE_METRIC_DAMAGE_ADD] = "damage_add",
-        [GRAPE_PROFILE_METRIC_DAMAGE_PLAN] = "damage_plan",
-        [GRAPE_PROFILE_METRIC_SURFACE_TRANSFORM] = "surface_transform",
-        [GRAPE_PROFILE_METRIC_SURFACE_RECACHE] = "surface_recache",
-        [GRAPE_PROFILE_METRIC_COMPOSITOR] = "compositor",
-        [GRAPE_PROFILE_METRIC_PPA_FILL] = "ppa_fill",
-        [GRAPE_PROFILE_METRIC_CPU_FILL] = "cpu_fill",
-        [GRAPE_PROFILE_METRIC_PPA_BLEND_DISPATCH] = "ppa_blend_dispatch",
-        [GRAPE_PROFILE_METRIC_PPA_BLEND_HW] = "ppa_blend_hw",
-        [GRAPE_PROFILE_METRIC_CPU_SURFACE_RASTER] = "cpu_surface_raster",
-        [GRAPE_PROFILE_METRIC_SHEAR_PREP] = "shear_prep",
-        [GRAPE_PROFILE_METRIC_SHEAR_X1] = "shear_x1",
-        [GRAPE_PROFILE_METRIC_SHEAR_Y] = "shear_y",
-        [GRAPE_PROFILE_METRIC_SHEAR_X2] = "shear_x2",
-        [GRAPE_PROFILE_METRIC_SHEAR_CLEAR] = "shear_clear",
-        [GRAPE_PROFILE_METRIC_SHEAR_QUARTER_TURN] = "shear_quarter_turn",
-        [GRAPE_PROFILE_METRIC_SHEAR_COMPOSITE] = "shear_composite",
-        [GRAPE_PROFILE_METRIC_LCD_DRAW_SUBMIT] = "lcd_draw_submit",
-        [GRAPE_PROFILE_METRIC_LCD_DRAW_WAIT] = "lcd_draw_wait",
-    };
-
-    if ((unsigned)metric >= GRAPE_PROFILE_METRIC_COUNT || !names[metric]) {
-        return "unknown";
-    }
-
-    return names[metric];
-}
-
 static bool make_path(
     char *buffer,
     size_t buffer_size,
@@ -85,8 +53,8 @@ static void write_summary_header(FILE *file)
             "present_wall_avg_us,present_wall_min_us,present_wall_max_us,"
             "frame_wall_avg_us,frame_wall_min_us,frame_wall_max_us");
 
-    for (int i = 0; i < GRAPE_PROFILE_METRIC_COUNT; ++i) {
-        const char *name = metric_csv_name((grape_profile_metric_t)i);
+    for (int i = 0; i < GRAPE_TELEMETRY_TIMER_COUNT; ++i) {
+        const char *name = grape_telemetry_timer_csv_name((grape_telemetry_timer_t)i);
         fprintf(file,
                 ",%s_total_us,%s_avg_us,%s_max_us,%s_calls",
                 name, name, name, name);
@@ -211,7 +179,7 @@ void grape_benchmark_report_metadata(grape_benchmark_runtime_t *runtime)
         fprintf(file, "display_format=%d\n", (int)display->format);
     }
 
-    fprintf(file, "profiler_enabled=%d\n", GRAPE_PROFILE_ENABLE);
+    fprintf(file, "telemetry_level=%d\n", GRAPE_TELEMETRY_LEVEL);
     fprintf(file, "warmup_frames=%" PRIu32 "\n", runtime->config.warmup_frames);
     fprintf(file, "measured_frames=%" PRIu32 "\n", runtime->config.measured_frames);
 
@@ -241,19 +209,19 @@ void grape_benchmark_report_case(
         (double)result->frame_total_us / (double)result->frames;
 
     if (runtime->config.log_each_case) {
-        const grape_profile_stat_t *cpu_raster =
-            &result->profile.metrics[GRAPE_PROFILE_METRIC_CPU_SURFACE_RASTER];
-        const grape_profile_stat_t *ppa_blend =
-            &result->profile.metrics[GRAPE_PROFILE_METRIC_PPA_BLEND_HW];
-        const grape_profile_stat_t *lcd_wait =
-            &result->profile.metrics[GRAPE_PROFILE_METRIC_LCD_DRAW_WAIT];
+        const grape_telemetry_stat_t *cpu_raster =
+            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_CPU_SURFACE_RASTER];
+        const grape_telemetry_stat_t *ppa_blend =
+            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_PPA_BLEND_HW];
+        const grape_telemetry_stat_t *refresh_wait =
+            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_DISPLAY_REFRESH_WAIT];
 
         double cpu_raster_per_frame =
             (double)cpu_raster->total_us / (double)result->frames;
         double ppa_blend_per_frame =
             (double)ppa_blend->total_us / (double)result->frames;
-        double lcd_wait_per_frame =
-            (double)lcd_wait->total_us / (double)result->frames;
+        double refresh_wait_per_frame =
+            (double)refresh_wait->total_us / (double)result->frames;
 
         ESP_LOGI(TAG,
                  "%-15s %-28s FPS=%7.2f frame=%7.3f ms present=%7.3f ms update=%7.3f ms",
@@ -265,25 +233,25 @@ void grape_benchmark_report_case(
                  update_avg / 1000.0);
 
         ESP_LOGI(TAG,
-                 "  per-frame: CPU raster=%7.3f ms PPA blend=%7.3f ms LCD wait=%7.3f ms",
+                 "  per-frame: CPU raster=%7.3f ms PPA blend=%7.3f ms refresh wait=%7.3f ms",
                  cpu_raster_per_frame / 1000.0,
                  ppa_blend_per_frame / 1000.0,
-                 lcd_wait_per_frame / 1000.0);
+                 refresh_wait_per_frame / 1000.0);
 
-        const grape_profile_stat_t *shear_prep =
-            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_PREP];
-        const grape_profile_stat_t *shear_x1 =
-            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_X1];
-        const grape_profile_stat_t *shear_y =
-            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_Y];
-        const grape_profile_stat_t *shear_x2 =
-            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_X2];
-        const grape_profile_stat_t *shear_clear =
-            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_CLEAR];
-        const grape_profile_stat_t *shear_composite =
-            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_COMPOSITE];
-        const grape_profile_stat_t *shear_quarter =
-            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_QUARTER_TURN];
+        const grape_telemetry_stat_t *shear_prep =
+            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_PREP];
+        const grape_telemetry_stat_t *shear_x1 =
+            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_X1];
+        const grape_telemetry_stat_t *shear_y =
+            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_Y];
+        const grape_telemetry_stat_t *shear_x2 =
+            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_X2];
+        const grape_telemetry_stat_t *shear_clear =
+            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_CLEAR];
+        const grape_telemetry_stat_t *shear_composite =
+            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_COMPOSITE];
+        const grape_telemetry_stat_t *shear_quarter =
+            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_QUARTER_TURN];
 
         if (shear_prep->calls || shear_x1->calls || shear_y->calls ||
             shear_x2->calls || shear_quarter->calls || shear_composite->calls) {
@@ -346,8 +314,8 @@ void grape_benchmark_report_case(
                 result->frame_min_us,
                 result->frame_max_us);
 
-        for (int i = 0; i < GRAPE_PROFILE_METRIC_COUNT; ++i) {
-            const grape_profile_stat_t *stat = &result->profile.metrics[i];
+        for (int i = 0; i < GRAPE_TELEMETRY_TIMER_COUNT; ++i) {
+            const grape_telemetry_stat_t *stat = &result->telemetry.timers[i];
             double avg = stat->calls
                 ? (double)stat->total_us / (double)stat->calls
                 : 0.0;

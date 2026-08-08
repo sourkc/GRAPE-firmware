@@ -2,12 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "grape/grape_debug_config.h"
-
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-#include "esp_timer.h"
-#endif
-
 #include "grape_internal.h"
 
 static grape_rect_t screen_bounds(const grape_context_t *context)
@@ -362,13 +356,7 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
         return ESP_OK;
     }
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-    int64_t mark_start_us = esp_timer_get_time();
-#endif
-
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
-    int64_t profile_start_us = grape_profile_timestamp();
-#endif
+    GRAPE_TIME_SCOPE(DAMAGE_MARK);
 
     const uint32_t cell_size = CONFIG_GRAPE_TEXTURE_OCCUPANCY_CELL_SIZE;
     const float m00 = surface->cos_rotation * surface->transform.scale_x;
@@ -400,15 +388,6 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
             surface->context->damage.has_damage = true;
         }
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-        surface->context->damage.mark_us_current +=
-            (uint64_t)(esp_timer_get_time() - mark_start_us);
-#endif
-
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
-        grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_ADD,
-                             grape_profile_timestamp() - profile_start_us);
-#endif
         return ESP_OK;
     }
 
@@ -474,15 +453,6 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
         surface->context->damage.has_damage = true;
     }
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-    surface->context->damage.mark_us_current +=
-        (uint64_t)(esp_timer_get_time() - mark_start_us);
-#endif
-
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
-    grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_ADD,
-                         grape_profile_timestamp() - profile_start_us);
-#endif
     return ESP_OK;
 }
 
@@ -713,9 +683,7 @@ static esp_err_t build_rects(grape_context_t *context,
         return ESP_ERR_INVALID_ARG;
     }
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_PLAN
-    int64_t profile_start_us = grape_profile_timestamp();
-#endif
+    GRAPE_TIME_SCOPE(DAMAGE_PLAN);
 
     grape_damage_state_t *damage = &context->damage;
     grape_damage_tile_region_t root = {0};
@@ -733,10 +701,6 @@ static esp_err_t build_rects(grape_context_t *context,
 
     if (dirty_tiles == 0 || tile_region_empty(root)) {
         *out_count = 0;
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_PLAN
-        grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_PLAN,
-                             grape_profile_timestamp() - profile_start_us);
-#endif
         return ESP_OK;
     }
 
@@ -839,10 +803,6 @@ static esp_err_t build_rects(grape_context_t *context,
             stats->final_pixels = fullscreen_pixels;
             stats->full_screen = true;
         }
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_PLAN
-        grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_PLAN,
-                             grape_profile_timestamp() - profile_start_us);
-#endif
         return ESP_OK;
     }
 
@@ -854,13 +814,8 @@ static esp_err_t build_rects(grape_context_t *context,
         stats->final_pixels = final_pixels;
     }
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_PLAN
-    grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_PLAN,
-                         grape_profile_timestamp() - profile_start_us);
-#endif
     return ESP_OK;
 }
-
 
 esp_err_t grape_damage_init(grape_context_t *context)
 {
@@ -918,6 +873,9 @@ esp_err_t grape_damage_init(grape_context_t *context)
         return ESP_ERR_NO_MEM;
     }
 
+    damage->mark_timer_start_us = grape_telemetry_timer_cumulative_us(
+        GRAPE_TELEMETRY_TIMER_DAMAGE_MARK
+    );
     return ESP_OK;
 }
 
@@ -945,13 +903,7 @@ esp_err_t grape_damage_add(grape_context_t *context, grape_rect_t rect)
         return ESP_ERR_INVALID_ARG;
     }
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-    int64_t mark_start_us = esp_timer_get_time();
-#endif
-
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
-    int64_t profile_start_us = grape_profile_timestamp();
-#endif
+    GRAPE_TIME_SCOPE(DAMAGE_MARK);
 
     if (mark_rect(
             context->damage.tiles,
@@ -961,15 +913,6 @@ esp_err_t grape_damage_add(grape_context_t *context, grape_rect_t rect)
         context->damage.has_damage = true;
     }
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-    context->damage.mark_us_current +=
-        (uint64_t)(esp_timer_get_time() - mark_start_us);
-#endif
-
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
-    grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_ADD,
-                         grape_profile_timestamp() - profile_start_us);
-#endif
     return ESP_OK;
 }
 
@@ -994,7 +937,9 @@ void grape_damage_clear(grape_context_t *context)
     memset(context->damage.render_tiles, 0, context->damage.bitmap_size);
     context->damage.has_damage = false;
     context->damage.final_rect_count = 0;
-    context->damage.mark_us_current = 0;
+    context->damage.mark_timer_start_us = grape_telemetry_timer_cumulative_us(
+        GRAPE_TELEMETRY_TIMER_DAMAGE_MARK
+    );
 }
 
 esp_err_t grape_damage_build_logical_rects(grape_context_t *context)
@@ -1056,12 +1001,13 @@ esp_err_t grape_damage_build_render_rects(grape_context_t *context,
         return ESP_ERR_INVALID_ARG;
     }
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-    int64_t plan_start_us = esp_timer_get_time();
-    uint64_t mark_us = context->damage.mark_us_current;
-#endif
-
     grape_damage_state_t *damage = &context->damage;
+    uint64_t mark_total_us = grape_telemetry_timer_cumulative_us(
+        GRAPE_TELEMETRY_TIMER_DAMAGE_MARK
+    );
+    uint64_t plan_total_before = grape_telemetry_timer_cumulative_us(
+        GRAPE_TELEMETRY_TIMER_DAMAGE_PLAN
+    );
     memcpy(damage->render_tiles, damage->current_visible_tiles, damage->bitmap_size);
     bitmap_or(
         damage->render_tiles,
@@ -1082,14 +1028,11 @@ esp_err_t grape_damage_build_render_rects(grape_context_t *context,
         &damage->latest_stats
     );
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-    damage->latest_stats.mark_us = mark_us;
-    damage->latest_stats.plan_us =
-        (uint64_t)(esp_timer_get_time() - plan_start_us);
-#else
-    damage->latest_stats.mark_us = 0;
-    damage->latest_stats.plan_us = 0;
-#endif
+    uint64_t plan_total_after = grape_telemetry_timer_cumulative_us(
+        GRAPE_TELEMETRY_TIMER_DAMAGE_PLAN
+    );
+    damage->latest_stats.mark_us = mark_total_us - damage->mark_timer_start_us;
+    damage->latest_stats.plan_us = plan_total_after - plan_total_before;
 
     return ret;
 }

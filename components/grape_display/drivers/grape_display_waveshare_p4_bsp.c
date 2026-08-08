@@ -11,12 +11,7 @@
 #include "esp_log.h"
 #include "bsp/display.h"
 #include "grape_display_internal.h"
-#include "grape/grape_profile.h"
-#include "grape/grape_diagnostics_config.h"
-
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-#include "esp_timer.h"
-#endif
+#include "grape/grape_telemetry.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -34,7 +29,6 @@ typedef struct {
     volatile bool swap_armed;
     uint32_t dirty_y_min;
     uint32_t dirty_y_max;
-    uint64_t refresh_wait_us;
 } waveshare_state_t;
 
 static bool IRAM_ATTR waveshare_color_trans_done(
@@ -299,52 +293,35 @@ static esp_err_t waveshare_present(grape_display_t *display)
     }
     state->swap_armed = false;
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_LCD_DRAW_SUBMIT
-    int64_t draw_submit_start_us = grape_profile_timestamp();
-#endif
     if (state->dirty_y_min >= state->dirty_y_max ||
         state->dirty_y_max > display->info.height) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t ret = esp_lcd_panel_draw_bitmap(
-        state->handles.panel,
-        0,
-        state->dirty_y_min,
-        display->info.width,
-        state->dirty_y_max,
-        state->back_buffer
-    );
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_LCD_DRAW_SUBMIT
-    grape_profile_record(GRAPE_PROFILE_METRIC_LCD_DRAW_SUBMIT,
-                         grape_profile_timestamp() - draw_submit_start_us);
-#endif
+    esp_err_t ret;
+    GRAPE_TIME_BLOCK(DISPLAY_SUBMIT) {
+        ret = esp_lcd_panel_draw_bitmap(
+            state->handles.panel,
+            0,
+            state->dirty_y_min,
+            display->info.width,
+            state->dirty_y_max,
+            state->back_buffer
+        );
+    }
 
     if (ret != ESP_OK) {
         state->swap_armed = false;
         return ret;
     }
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_LCD_DRAW_WAIT
-    int64_t draw_wait_start_us = grape_profile_timestamp();
-#endif
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-    int64_t refresh_wait_start_us = esp_timer_get_time();
-#endif
-    BaseType_t refresh_complete = xSemaphoreTake(
-        state->refresh_done,
-        pdMS_TO_TICKS(1000)
-    );
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-    state->refresh_wait_us =
-        (uint64_t)(esp_timer_get_time() - refresh_wait_start_us);
-#else
-    state->refresh_wait_us = 0;
-#endif
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_LCD_DRAW_WAIT
-    grape_profile_record(GRAPE_PROFILE_METRIC_LCD_DRAW_WAIT,
-                         grape_profile_timestamp() - draw_wait_start_us);
-#endif
+    BaseType_t refresh_complete;
+    GRAPE_TIME_BLOCK(DISPLAY_REFRESH_WAIT) {
+        refresh_complete = xSemaphoreTake(
+            state->refresh_done,
+            pdMS_TO_TICKS(1000)
+        );
+    }
 
     if (refresh_complete != pdTRUE) {
         state->swap_armed = false;
@@ -355,24 +332,6 @@ static esp_err_t waveshare_present(grape_display_t *display)
     state->front_buffer = state->back_buffer;
     state->back_buffer = old_front;
 
-    return ESP_OK;
-}
-
-static esp_err_t waveshare_get_frame_stats(const grape_display_t *display,
-                                             grape_display_frame_stats_t *out_stats)
-{
-    if (!display || !out_stats) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    const waveshare_state_t *state = display->driver_data;
-    if (!state) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    *out_stats = (grape_display_frame_stats_t){
-        .refresh_wait_us = state->refresh_wait_us,
-    };
     return ESP_OK;
 }
 
@@ -388,6 +347,5 @@ const grape_display_driver_t grape_display_driver_waveshare_p4_bsp = {
     .close = waveshare_close,
     .begin_frame = waveshare_begin_frame,
     .present = waveshare_present,
-    .get_frame_stats = waveshare_get_frame_stats,
     .set_brightness = waveshare_set_brightness,
 };

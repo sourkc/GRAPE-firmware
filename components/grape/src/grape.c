@@ -4,7 +4,6 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "grape_internal.h"
-#include "grape/grape_debug_config.h"
 
 static const char *TAG = "grape";
 
@@ -130,22 +129,14 @@ esp_err_t grape_present(grape_context_t *context)
         return ESP_ERR_INVALID_ARG;
     }
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-    int64_t profile_start_us = grape_profile_timestamp();
-#endif
+    grape_telemetry_report_if_due();
+    GRAPE_TIME_SCOPE(PRESENT);
 
     esp_err_t ret = ESP_OK;
 
     if (grape_debug_is_layer_enabled(context, GRAPE_DEBUG_LAYER_DAMAGE_RECTS)) {
         ret = grape_damage_build_logical_rects(context);
         if (ret != ESP_OK) {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-            grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
-                                 grape_profile_timestamp() - profile_start_us);
-#endif
-#if GRAPE_PROFILE_ENABLE
-            grape_profile_report_if_due();
-#endif
             return ret;
         }
     } else {
@@ -154,13 +145,6 @@ esp_err_t grape_present(grape_context_t *context)
 
     ret = grape_debug_prepare_frame(context);
     if (ret != ESP_OK) {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-        grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
-                             grape_profile_timestamp() - profile_start_us);
-#endif
-#if GRAPE_PROFILE_ENABLE
-        grape_profile_report_if_due();
-#endif
         return ret;
     }
 
@@ -171,13 +155,6 @@ esp_err_t grape_present(grape_context_t *context)
     );
     if (ret != ESP_OK) {
         grape_debug_reset_frame(context);
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-        grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
-                             grape_profile_timestamp() - profile_start_us);
-#endif
-#if GRAPE_PROFILE_ENABLE
-        grape_profile_report_if_due();
-#endif
         return ret;
     }
 
@@ -193,13 +170,6 @@ esp_err_t grape_present(grape_context_t *context)
     );
     if (ret != ESP_OK) {
         grape_debug_reset_frame(context);
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-        grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
-                             grape_profile_timestamp() - profile_start_us);
-#endif
-#if GRAPE_PROFILE_ENABLE
-        grape_profile_report_if_due();
-#endif
         return ret;
     }
 
@@ -214,13 +184,6 @@ esp_err_t grape_present(grape_context_t *context)
         if (ret != ESP_OK) {
             context->display_backbuffer_needs_full_redraw = true;
             grape_debug_reset_frame(context);
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-            grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
-                                 grape_profile_timestamp() - profile_start_us);
-#endif
-#if GRAPE_PROFILE_ENABLE
-            grape_profile_report_if_due();
-#endif
             return ret;
         }
 
@@ -232,54 +195,37 @@ esp_err_t grape_present(grape_context_t *context)
                 context->render_target = (grape_display_render_target_t){0};
                 context->display_backbuffer_needs_full_redraw = true;
                 grape_debug_reset_frame(context);
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-                grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
-                                     grape_profile_timestamp() - profile_start_us);
-#endif
-#if GRAPE_PROFILE_ENABLE
-                grape_profile_report_if_due();
-#endif
                 return ret;
             }
         }
 
+        uint64_t refresh_wait_before = grape_telemetry_timer_cumulative_us(
+            GRAPE_TELEMETRY_TIMER_DISPLAY_REFRESH_WAIT
+        );
+
         ret = grape_display_present(context->display);
         context->render_target = (grape_display_render_target_t){0};
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-        grape_display_frame_stats_t display_stats = {0};
-        if (grape_display_get_frame_stats(context->display, &display_stats) == ESP_OK) {
-            context->damage.latest_stats.refresh_wait_us = display_stats.refresh_wait_us;
-        }
-#endif
+        uint64_t refresh_wait_after = grape_telemetry_timer_cumulative_us(
+            GRAPE_TELEMETRY_TIMER_DISPLAY_REFRESH_WAIT
+        );
+        context->damage.latest_stats.refresh_wait_us =
+            refresh_wait_after - refresh_wait_before;
 
         if (ret != ESP_OK) {
             context->display_backbuffer_needs_full_redraw = true;
             grape_debug_reset_frame(context);
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-            grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
-                                 grape_profile_timestamp() - profile_start_us);
-#endif
-#if GRAPE_PROFILE_ENABLE
-            grape_profile_report_if_due();
-#endif
             return ret;
         }
 
         grape_damage_commit_visible(context);
         context->display_backbuffer_needs_full_redraw = false;
+    } else {
+        context->damage.latest_stats.refresh_wait_us = 0;
     }
 
     grape_damage_clear(context);
     grape_debug_finish_frame(context);
-
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-    grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
-                         grape_profile_timestamp() - profile_start_us);
-#endif
-#if GRAPE_PROFILE_ENABLE
-    grape_profile_report_if_due();
-#endif
 
     return ESP_OK;
 }

@@ -318,9 +318,7 @@ static esp_err_t raster_surface_three_shear_a8(
         return ESP_OK;
     }
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_COMPOSITE
-    int64_t shear_composite_start_us = grape_profile_timestamp();
-#endif
+    GRAPE_TIME_SCOPE(SHEAR_COMPOSITE);
 
     bool ppa_handled = false;
     ret = grape_ppa_blend_a8_image(
@@ -336,18 +334,10 @@ static esp_err_t raster_surface_three_shear_a8(
         &ppa_handled
     );
     if (ret != ESP_OK) {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_COMPOSITE
-        grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_COMPOSITE,
-                             grape_profile_timestamp() - shear_composite_start_us);
-#endif
         return ret;
     }
 
     if (ppa_handled) {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_COMPOSITE
-        grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_COMPOSITE,
-                             grape_profile_timestamp() - shear_composite_start_us);
-#endif
         return ESP_OK;
     }
 
@@ -425,11 +415,6 @@ static esp_err_t raster_surface_three_shear_a8(
         }
     }
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_COMPOSITE
-    grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_COMPOSITE,
-                         grape_profile_timestamp() - shear_composite_start_us);
-#endif
-
     return ESP_OK;
 }
 
@@ -451,14 +436,9 @@ static void fill_background_cpu(grape_context_t *context, grape_rect_t rect, siz
 
 esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
 {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
-    int64_t compositor_start_us = grape_profile_timestamp();
-#endif
+    GRAPE_TIME_SCOPE(COMPOSITOR);
 
     if (grape_rect_empty(rect)) {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
-        grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
-#endif
         return ESP_OK;
     }
 
@@ -470,9 +450,6 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         rect.x < 0 || rect.y < 0 ||
         (uint32_t)(rect.x + rect.width) > context->render_target.width ||
         (uint32_t)(rect.y + rect.height) > context->render_target.height) {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
-        grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
-#endif
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -483,26 +460,16 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         .a = 255,
     };
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_FILL
-    int64_t ppa_fill_start_us = grape_profile_timestamp();
-#endif
-    esp_err_t ret = grape_ppa_fill(context, rect, context->background);
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_FILL
-    grape_profile_record(GRAPE_PROFILE_METRIC_PPA_FILL, grape_profile_timestamp() - ppa_fill_start_us);
-#endif
+    esp_err_t ret;
+    GRAPE_TIME_BLOCK(PPA_FILL) {
+        ret = grape_ppa_fill(context, rect, context->background);
+    }
 
     if (ret == ESP_ERR_NOT_SUPPORTED) {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_CPU_FILL
-        int64_t cpu_fill_start_us = grape_profile_timestamp();
-#endif
-        fill_background_cpu(context, rect, bpp, background);
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_CPU_FILL
-        grape_profile_record(GRAPE_PROFILE_METRIC_CPU_FILL, grape_profile_timestamp() - cpu_fill_start_us);
-#endif
+        GRAPE_TIME_BLOCK(CPU_FILL) {
+            fill_background_cpu(context, rect, bpp, background);
+        }
     } else if (ret != ESP_OK) {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
-        grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
-#endif
         return ret;
     }
 
@@ -530,18 +497,10 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         bool handled = false;
 
         if (context->rotation_backend == GRAPE_ROTATION_BACKEND_AUTO) {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_BLEND_DISPATCH
-            int64_t ppa_blend_dispatch_start_us = grape_profile_timestamp();
-#endif
-            ret = grape_ppa_blend_surface(context, surface, rect, &handled);
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_BLEND_DISPATCH
-            grape_profile_record(GRAPE_PROFILE_METRIC_PPA_BLEND_DISPATCH,
-                                 grape_profile_timestamp() - ppa_blend_dispatch_start_us);
-#endif
+            GRAPE_TIME_BLOCK(PPA_BLEND_DISPATCH) {
+                ret = grape_ppa_blend_surface(context, surface, rect, &handled);
+            }
             if (ret != ESP_OK) {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
-                grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
-#endif
                 return ret;
             }
             if (handled) {
@@ -549,46 +508,27 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
             }
         }
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_CPU_SURFACE_RASTER
-        int64_t cpu_surface_start_us = grape_profile_timestamp();
-#endif
+        GRAPE_TIME_BLOCK(CPU_SURFACE_RASTER) {
+            if (context->rotation_backend == GRAPE_ROTATION_BACKEND_THREE_SHEAR) {
+                ret = raster_surface_three_shear_a8(
+                    context,
+                    surface,
+                    rect,
+                    clipped,
+                    bpp,
+                    &handled
+                );
+                if (ret != ESP_OK) {
+                    return ret;
+                }
+            }
 
-        if (context->rotation_backend == GRAPE_ROTATION_BACKEND_THREE_SHEAR) {
-            ret = raster_surface_three_shear_a8(
-                context,
-                surface,
-                rect,
-                clipped,
-                bpp,
-                &handled
-            );
-            if (ret != ESP_OK) {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_CPU_SURFACE_RASTER
-                grape_profile_record(GRAPE_PROFILE_METRIC_CPU_SURFACE_RASTER,
-                                     grape_profile_timestamp() - cpu_surface_start_us);
-#endif
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
-                grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
-#endif
-                return ret;
+            if (!handled) {
+                raster_surface_cpu(context, surface, rect, clipped, bpp);
             }
         }
-
-        if (!handled) {
-            raster_surface_cpu(context, surface, rect, clipped, bpp);
-        }
-
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_CPU_SURFACE_RASTER
-        grape_profile_record(GRAPE_PROFILE_METRIC_CPU_SURFACE_RASTER,
-                             grape_profile_timestamp() - cpu_surface_start_us);
-#endif
     }
 
     grape_debug_render(context, rect);
-
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
-    grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
-#endif
-
     return ESP_OK;
 }

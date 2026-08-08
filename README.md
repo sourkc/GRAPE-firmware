@@ -45,6 +45,14 @@ ESP_ERROR_CHECK(
 
 Disable it with the same call and `false`. The previous overlay area is queued as render-only damage so it is repainted once and disappears cleanly. Debug layers are intended for correctness/debugging rather than performance measurements.
 
+## Telemetry
+
+GRAPE uses one compile-time telemetry system for coarse diagnostics and detailed
+profiling. Set `GRAPE_TELEMETRY_LEVEL` in
+`components/grape_common/include/grape/grape_telemetry_config.h` to `0`, `1`, or
+`2`. See `TELEMETRY.md` for timer registration, scope/block instrumentation, and
+benchmark integration.
+
 ## Planned stuff
 - JPEG images (hardware)
 - Vector graphics
