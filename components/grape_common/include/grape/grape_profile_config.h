@@ -20,6 +20,13 @@
 #define GRAPE_PROFILE_PPA_BLEND_DISPATCH        1
 #define GRAPE_PROFILE_PPA_BLEND_HW              1
 #define GRAPE_PROFILE_CPU_SURFACE_RASTER        1
+#define GRAPE_PROFILE_SHEAR_PREP                 1
+#define GRAPE_PROFILE_SHEAR_X1                   1
+#define GRAPE_PROFILE_SHEAR_Y                    1
+#define GRAPE_PROFILE_SHEAR_X2                   1
+#define GRAPE_PROFILE_SHEAR_CLEAR                1
+#define GRAPE_PROFILE_SHEAR_QUARTER_TURN         1
+#define GRAPE_PROFILE_SHEAR_COMPOSITE            1
 #define GRAPE_PROFILE_DISPLAY_BLIT              1
 #define GRAPE_PROFILE_LCD_DRAW_SUBMIT           1
 #define GRAPE_PROFILE_LCD_DRAW_WAIT             1

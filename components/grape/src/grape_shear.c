@@ -154,7 +154,14 @@ static void shear_x(
 )
 {
     size_t output_stride = output_bounds->width;
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_CLEAR
+    int64_t clear_start_us = grape_profile_timestamp();
+#endif
     memset(output, 0, output_stride * output_bounds->height);
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_CLEAR
+    grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_CLEAR,
+                         grape_profile_timestamp() - clear_start_us);
+#endif
 
     for (uint32_t out_y = 0; out_y < output_bounds->height; ++out_y) {
         float y =
@@ -215,7 +222,14 @@ static void shear_y(
 )
 {
     size_t output_stride = output_bounds->width;
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_CLEAR
+    int64_t clear_start_us = grape_profile_timestamp();
+#endif
     memset(output, 0, output_stride * output_bounds->height);
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_CLEAR
+    grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_CLEAR,
+                         grape_profile_timestamp() - clear_start_us);
+#endif
 
     for (uint32_t out_x = 0; out_x < output_bounds->width; ++out_x) {
         float x =
@@ -272,7 +286,7 @@ static void shear_y(
     }
 }
 
-static esp_err_t rotate_quarter_turn_a8(
+static esp_err_t rotate_quarter_turn_a8_impl(
     grape_context_t *context,
     const grape_surface_t *surface,
     float angle,
@@ -359,6 +373,26 @@ static esp_err_t rotate_quarter_turn_a8(
     return ESP_OK;
 }
 
+static esp_err_t rotate_quarter_turn_a8(
+    grape_context_t *context,
+    const grape_surface_t *surface,
+    float angle,
+    grape_shear_image_t *out_image
+)
+{
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_QUARTER_TURN
+    int64_t start_us = grape_profile_timestamp();
+#endif
+    esp_err_t ret = rotate_quarter_turn_a8_impl(
+        context, surface, angle, out_image
+    );
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_QUARTER_TURN
+    grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_QUARTER_TURN,
+                         grape_profile_timestamp() - start_us);
+#endif
+    return ret;
+}
+
 esp_err_t grape_shear_rotate_a8(
     grape_context_t *context,
     const grape_surface_t *surface,
@@ -401,6 +435,10 @@ esp_err_t grape_shear_rotate_a8(
     if (fabsf(fabsf(angle) - GRAPE_SHEAR_PI * 0.5f) <= GRAPE_SHEAR_EPSILON) {
         return rotate_quarter_turn_a8(context, surface, angle, out_image);
     }
+
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_PREP
+    int64_t shear_prep_start_us = grape_profile_timestamp();
+#endif
 
     float shear_x_coefficient = surface->shear_cache_valid
         ? surface->shear_x_coefficient
@@ -487,6 +525,11 @@ esp_err_t grape_shear_rotate_a8(
         return ret;
     }
 
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_PREP
+    grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_PREP,
+                         grape_profile_timestamp() - shear_prep_start_us);
+#endif
+
     shear_source_t source = {
         .pixels = surface->texture->pixels,
         .stride = surface->texture->stride,
@@ -496,12 +539,19 @@ esp_err_t grape_shear_rotate_a8(
         .height = surface->texture->height,
     };
 
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_X1
+    int64_t shear_x1_start_us = grape_profile_timestamp();
+#endif
     shear_x(
         &source,
         shear_x_coefficient,
         &stage1,
         context->shear_buffer_a
     );
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_X1
+    grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_X1,
+                         grape_profile_timestamp() - shear_x1_start_us);
+#endif
 
     source = (shear_source_t) {
         .pixels = context->shear_buffer_a,
@@ -512,12 +562,19 @@ esp_err_t grape_shear_rotate_a8(
         .height = stage1.height,
     };
 
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_Y
+    int64_t shear_y_start_us = grape_profile_timestamp();
+#endif
     shear_y(
         &source,
         shear_y_coefficient,
         &stage2,
         context->shear_buffer_b
     );
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_Y
+    grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_Y,
+                         grape_profile_timestamp() - shear_y_start_us);
+#endif
 
     source = (shear_source_t) {
         .pixels = context->shear_buffer_b,
@@ -528,12 +585,19 @@ esp_err_t grape_shear_rotate_a8(
         .height = stage2.height,
     };
 
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_X2
+    int64_t shear_x2_start_us = grape_profile_timestamp();
+#endif
     shear_x(
         &source,
         shear_x_coefficient,
         &stage3,
         context->shear_buffer_a
     );
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_X2
+    grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_X2,
+                         grape_profile_timestamp() - shear_x2_start_us);
+#endif
 
     *out_image = (grape_shear_image_t) {
         .pixels = context->shear_buffer_a,

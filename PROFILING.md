@@ -20,6 +20,13 @@ Current timings:
 - `GRAPE_PROFILE_PPA_BLEND_DISPATCH` - the full PPA blend fast-path check/configuration/dispatch attempt for one surface.
 - `GRAPE_PROFILE_PPA_BLEND_HW` - time spent specifically in `ppa_do_blend()` for surfaces that actually reach hardware.
 - `GRAPE_PROFILE_CPU_SURFACE_RASTER` - software rasterization of one fallback surface over its clipped bounds.
+- `GRAPE_PROFILE_SHEAR_PREP` - three-shear bounds, buffer-size calculations, and reusable-buffer checks before the passes.
+- `GRAPE_PROFILE_SHEAR_X1` - complete first horizontal shear pass, including its output-buffer clear.
+- `GRAPE_PROFILE_SHEAR_Y` - complete vertical shear pass, including its output-buffer clear.
+- `GRAPE_PROFILE_SHEAR_X2` - complete second horizontal shear pass, including its output-buffer clear.
+- `GRAPE_PROFILE_SHEAR_CLEAR` - time spent specifically clearing shear output buffers. This is nested inside X1/Y/X2.
+- `GRAPE_PROFILE_SHEAR_QUARTER_TURN` - the special exact ±90° path.
+- `GRAPE_PROFILE_SHEAR_COMPOSITE` - compositing the completed A8 shear image into GRAPE's display scratch buffer.
 - `GRAPE_PROFILE_DISPLAY_BLIT` - full display blit, including waiting until the source buffer is safe to reuse.
 - `GRAPE_PROFILE_LCD_DRAW_SUBMIT` - `esp_lcd_panel_draw_bitmap()` submission only.
 - `GRAPE_PROFILE_LCD_DRAW_WAIT` - wait for `on_color_trans_done` after submission.

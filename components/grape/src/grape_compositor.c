@@ -314,6 +314,10 @@ static esp_err_t raster_surface_three_shear_a8(
         return ESP_OK;
     }
 
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_COMPOSITE
+    int64_t shear_composite_start_us = grape_profile_timestamp();
+#endif
+
     int32_t scratch_x = clipped.x - damage_rect.x;
 
     for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
@@ -388,6 +392,11 @@ static esp_err_t raster_surface_three_shear_a8(
             destination += bpp;
         }
     }
+
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_COMPOSITE
+    grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_COMPOSITE,
+                         grape_profile_timestamp() - shear_composite_start_us);
+#endif
 
     return ESP_OK;
 }

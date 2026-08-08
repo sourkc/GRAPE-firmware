@@ -25,6 +25,13 @@ static const char *metric_csv_name(grape_profile_metric_t metric)
         [GRAPE_PROFILE_METRIC_PPA_BLEND_DISPATCH] = "ppa_blend_dispatch",
         [GRAPE_PROFILE_METRIC_PPA_BLEND_HW] = "ppa_blend_hw",
         [GRAPE_PROFILE_METRIC_CPU_SURFACE_RASTER] = "cpu_surface_raster",
+        [GRAPE_PROFILE_METRIC_SHEAR_PREP] = "shear_prep",
+        [GRAPE_PROFILE_METRIC_SHEAR_X1] = "shear_x1",
+        [GRAPE_PROFILE_METRIC_SHEAR_Y] = "shear_y",
+        [GRAPE_PROFILE_METRIC_SHEAR_X2] = "shear_x2",
+        [GRAPE_PROFILE_METRIC_SHEAR_CLEAR] = "shear_clear",
+        [GRAPE_PROFILE_METRIC_SHEAR_QUARTER_TURN] = "shear_quarter_turn",
+        [GRAPE_PROFILE_METRIC_SHEAR_COMPOSITE] = "shear_composite",
         [GRAPE_PROFILE_METRIC_DISPLAY_BLIT] = "display_blit",
         [GRAPE_PROFILE_METRIC_LCD_DRAW_SUBMIT] = "lcd_draw_submit",
         [GRAPE_PROFILE_METRIC_LCD_DRAW_WAIT] = "lcd_draw_wait",
@@ -262,6 +269,49 @@ void grape_benchmark_report_case(
                  cpu_raster_per_frame / 1000.0,
                  ppa_blend_per_frame / 1000.0,
                  lcd_wait_per_frame / 1000.0);
+
+        const grape_profile_stat_t *shear_prep =
+            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_PREP];
+        const grape_profile_stat_t *shear_x1 =
+            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_X1];
+        const grape_profile_stat_t *shear_y =
+            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_Y];
+        const grape_profile_stat_t *shear_x2 =
+            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_X2];
+        const grape_profile_stat_t *shear_clear =
+            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_CLEAR];
+        const grape_profile_stat_t *shear_composite =
+            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_COMPOSITE];
+        const grape_profile_stat_t *shear_quarter =
+            &result->profile.metrics[GRAPE_PROFILE_METRIC_SHEAR_QUARTER_TURN];
+
+        if (shear_prep->calls || shear_x1->calls || shear_y->calls ||
+            shear_x2->calls || shear_quarter->calls || shear_composite->calls) {
+            double prep_per_frame =
+                (double)shear_prep->total_us / (double)result->frames;
+            double x1_per_frame =
+                (double)shear_x1->total_us / (double)result->frames;
+            double y_per_frame =
+                (double)shear_y->total_us / (double)result->frames;
+            double x2_per_frame =
+                (double)shear_x2->total_us / (double)result->frames;
+            double clear_per_frame =
+                (double)shear_clear->total_us / (double)result->frames;
+            double composite_per_frame =
+                (double)shear_composite->total_us / (double)result->frames;
+            double quarter_per_frame =
+                (double)shear_quarter->total_us / (double)result->frames;
+
+            ESP_LOGI(TAG,
+                     "  shear: prep=%7.3f ms X1=%7.3f ms Y=%7.3f ms X2=%7.3f ms clear=%7.3f ms composite=%7.3f ms quarter=%7.3f ms",
+                     prep_per_frame / 1000.0,
+                     x1_per_frame / 1000.0,
+                     y_per_frame / 1000.0,
+                     x2_per_frame / 1000.0,
+                     clear_per_frame / 1000.0,
+                     composite_per_frame / 1000.0,
+                     quarter_per_frame / 1000.0);
+        }
     }
 
     if (runtime->summary_csv) {
