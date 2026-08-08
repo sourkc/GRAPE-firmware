@@ -30,6 +30,12 @@ struct grape_surface {
     grape_color_t tint;
     float cos_rotation;
     float sin_rotation;
+    float local_x_from_screen_x;
+    float local_x_from_screen_y;
+    float local_x_offset;
+    float local_y_from_screen_x;
+    float local_y_from_screen_y;
+    float local_y_offset;
     int32_t z;
     uint8_t opacity;
     bool visible;

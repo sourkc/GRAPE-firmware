@@ -27,3 +27,20 @@ Current timings:
 Reports contain total, average, maximum, call count, and percentage of the report window. Timings are nested, so percentages and totals are not expected to add to 100%.
 
 Timings add a small amount of measurement overhead because each enabled region calls `esp_timer_get_time()`.
+
+## Benchmark integration
+
+The benchmark component temporarily disables the profiler's automatic interval
+reporting, resets the counters after its warm-up frames, and captures a
+`grape_profile_snapshot_t` after each measured case.
+
+The snapshot API is intentionally public to GRAPE components:
+
+```c
+grape_profile_snapshot_t snapshot;
+grape_profile_snapshot(&snapshot);
+```
+
+This lets benchmarks/reporters consume the same counters without parsing serial
+log text. Automatic reporting is restored when the benchmark exits.
+

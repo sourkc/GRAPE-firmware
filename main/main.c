@@ -5,6 +5,10 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "grape/grape.h"
+#include "grape/grape_benchmark.h"
+#include "grape_storage_sd.h"
+
+#include "app_config.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -151,6 +155,21 @@ void app_main(void)
     grape_config_t config = GRAPE_CONFIG_DEFAULT();
 
     ESP_ERROR_CHECK(grape_init(&config, &grape));
+
+#if GRAPE_APP_RUN_BENCHMARK
+    ESP_ERROR_CHECK(grape_storage_sd_mount());
+
+    grape_benchmark_config_t benchmark_config = GRAPE_BENCHMARK_CONFIG_DEFAULT();
+
+    ESP_ERROR_CHECK(
+        grape_benchmark_run(grape, &benchmark_config)
+    );
+
+    ESP_ERROR_CHECK(grape_storage_sd_unmount());
+
+    grape_deinit(grape);
+    return;
+#endif
 
     /*************
      TEXTURE INIT
@@ -318,10 +337,10 @@ void app_main(void)
 
         grape_surface_set_position(squares[2], t_original[2].x + 64.0f * animation1, t_original[2].y + 64.0f * animation1);
         grape_surface_set_scale(squares[3], t.scale_x, t.scale_y);
-        grape_surface_set_rotation(squares[4], t.rotation);
+        // grape_surface_set_rotation(squares[4], t.rotation);
         grape_surface_set_position(squares[5], t_original[5].x + 64.0f * animation1, t_original[5].y + 64.0f * animation1);
         grape_surface_set_scale(squares[5], t.scale_x, t.scale_y);
-        grape_surface_set_rotation(squares[5], t.rotation);
+        // grape_surface_set_rotation(squares[5], t.rotation);
 
         ESP_ERROR_CHECK(grape_present(grape));
 

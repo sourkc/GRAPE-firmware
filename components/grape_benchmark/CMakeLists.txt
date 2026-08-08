@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "src/grape_benchmark.c"
+        "src/grape_benchmark_report.c"
+        "src/grape_benchmark_registry.c"
+        "src/cases/grape_benchmark_shapes.c"
+    INCLUDE_DIRS "include"
+    PRIV_INCLUDE_DIRS "private"
+    REQUIRES grape grape_common esp_timer
+    PRIV_REQUIRES log heap esp_system esp_hw_support
+)

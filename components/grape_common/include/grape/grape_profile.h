@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "grape/grape_profile_config.h"
@@ -29,6 +30,18 @@ typedef enum {
     GRAPE_PROFILE_METRIC_COUNT,
 } grape_profile_metric_t;
 
+typedef struct {
+    uint64_t total_us;
+    uint64_t max_us;
+    uint32_t calls;
+} grape_profile_stat_t;
+
+typedef struct {
+    grape_profile_stat_t metrics[GRAPE_PROFILE_METRIC_COUNT];
+} grape_profile_snapshot_t;
+
+const char *grape_profile_metric_name(grape_profile_metric_t metric);
+
 #if GRAPE_PROFILE_ENABLE
 
 static inline int64_t grape_profile_timestamp(void)
@@ -39,6 +52,9 @@ static inline int64_t grape_profile_timestamp(void)
 void grape_profile_record(grape_profile_metric_t metric, int64_t elapsed_us);
 void grape_profile_report_if_due(void);
 void grape_profile_reset(void);
+void grape_profile_snapshot(grape_profile_snapshot_t *out_snapshot);
+void grape_profile_set_auto_report(bool enabled);
+bool grape_profile_auto_report_enabled(void);
 
 #else
 
@@ -59,6 +75,25 @@ static inline void grape_profile_report_if_due(void)
 
 static inline void grape_profile_reset(void)
 {
+}
+
+static inline void grape_profile_snapshot(grape_profile_snapshot_t *out_snapshot)
+{
+    if (!out_snapshot) {
+        return;
+    }
+
+    *out_snapshot = (grape_profile_snapshot_t){0};
+}
+
+static inline void grape_profile_set_auto_report(bool enabled)
+{
+    (void)enabled;
+}
+
+static inline bool grape_profile_auto_report_enabled(void)
+{
+    return false;
 }
 
 #endif

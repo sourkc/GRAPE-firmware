@@ -57,6 +57,22 @@ void grape_surface_recache(grape_surface_t *surface)
 
     surface->cos_rotation = cosf(surface->transform.rotation);
     surface->sin_rotation = sinf(surface->transform.rotation);
+
+    float inv_scale_x = 1.0f / surface->transform.scale_x;
+    float inv_scale_y = 1.0f / surface->transform.scale_y;
+
+    surface->local_x_from_screen_x = surface->cos_rotation * inv_scale_x;
+    surface->local_x_from_screen_y = surface->sin_rotation * inv_scale_x;
+    surface->local_x_offset = surface->transform.origin_x
+                       - surface->local_x_from_screen_x * surface->transform.x
+                       - surface->local_x_from_screen_y * surface->transform.y;
+
+    surface->local_y_from_screen_x = -surface->sin_rotation * inv_scale_y;
+    surface->local_y_from_screen_y = surface->cos_rotation * inv_scale_y;
+    surface->local_y_offset = surface->transform.origin_y
+                       - surface->local_y_from_screen_x * surface->transform.x
+                       - surface->local_y_from_screen_y * surface->transform.y;
+
     surface->bounds = grape_surface_calculate_bounds(surface);
 
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SURFACE_RECACHE

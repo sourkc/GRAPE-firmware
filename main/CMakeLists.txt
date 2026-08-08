@@ -3,5 +3,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES
         grape
+        grape_benchmark
+        grape_storage
         esp_timer
 )
