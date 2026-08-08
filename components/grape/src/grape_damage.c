@@ -2,7 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "grape/grape_debug_config.h"
+
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
 #include "esp_timer.h"
+#endif
+
 #include "grape_internal.h"
 
 static grape_rect_t screen_bounds(const grape_context_t *context)
@@ -30,17 +35,6 @@ static inline bool tile_get(const uint8_t *bitmap, size_t index)
 static inline void tile_set(uint8_t *bitmap, size_t index)
 {
     bitmap[index >> 3U] |= (uint8_t)(1U << (index & 7U));
-}
-
-static uint32_t count_dirty_tiles(const uint8_t *bitmap, size_t bitmap_size)
-{
-    uint32_t count = 0;
-
-    for (size_t i = 0; i < bitmap_size; ++i) {
-        count += (uint32_t)__builtin_popcount((unsigned)bitmap[i]);
-    }
-
-    return count;
 }
 
 bool grape_rect_empty(grape_rect_t rect)
@@ -228,7 +222,9 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
         return ESP_OK;
     }
 
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
     int64_t mark_start_us = esp_timer_get_time();
+#endif
 
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
     int64_t profile_start_us = grape_profile_timestamp();
@@ -308,8 +304,10 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
         surface->context->damage.has_damage = true;
     }
 
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
     surface->context->damage.mark_us_current +=
         (uint64_t)(esp_timer_get_time() - mark_start_us);
+#endif
 
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
     grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_ADD,
@@ -318,16 +316,57 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
     return ESP_OK;
 }
 
-static grape_rect_t tile_run_rect(const grape_context_t *context,
-                                  uint32_t row,
-                                  uint32_t start_column,
-                                  uint32_t end_column)
+static bool tile_region_empty(grape_damage_tile_region_t region)
 {
+    return region.x0 >= region.x1 || region.y0 >= region.y1;
+}
+
+static void tile_region_add_tile(grape_damage_tile_region_t *region,
+                                 uint32_t x,
+                                 uint32_t y)
+{
+    if (tile_region_empty(*region)) {
+        *region = (grape_damage_tile_region_t){
+            .x0 = x,
+            .y0 = y,
+            .x1 = x + 1U,
+            .y1 = y + 1U,
+        };
+        return;
+    }
+
+    if (x < region->x0) region->x0 = x;
+    if (y < region->y0) region->y0 = y;
+    if (x + 1U > region->x1) region->x1 = x + 1U;
+    if (y + 1U > region->y1) region->y1 = y + 1U;
+}
+
+static grape_damage_tile_region_t tile_region_union(grape_damage_tile_region_t a,
+                                                     grape_damage_tile_region_t b)
+{
+    if (tile_region_empty(a)) return b;
+    if (tile_region_empty(b)) return a;
+
+    return (grape_damage_tile_region_t){
+        .x0 = a.x0 < b.x0 ? a.x0 : b.x0,
+        .y0 = a.y0 < b.y0 ? a.y0 : b.y0,
+        .x1 = a.x1 > b.x1 ? a.x1 : b.x1,
+        .y1 = a.y1 > b.y1 ? a.y1 : b.y1,
+    };
+}
+
+static grape_rect_t tile_region_pixel_rect(const grape_context_t *context,
+                                           grape_damage_tile_region_t region)
+{
+    if (tile_region_empty(region)) {
+        return (grape_rect_t){0, 0, 0, 0};
+    }
+
     const int32_t tile_size = CONFIG_GRAPE_DAMAGE_TILE_SIZE;
-    int32_t x0 = (int32_t)start_column * tile_size;
-    int32_t y0 = (int32_t)row * tile_size;
-    int32_t x1 = (int32_t)end_column * tile_size;
-    int32_t y1 = y0 + tile_size;
+    int32_t x0 = (int32_t)region.x0 * tile_size;
+    int32_t y0 = (int32_t)region.y0 * tile_size;
+    int32_t x1 = (int32_t)region.x1 * tile_size;
+    int32_t y1 = (int32_t)region.y1 * tile_size;
 
     if (x1 > (int32_t)context->display_info.width) {
         x1 = (int32_t)context->display_info.width;
@@ -344,132 +383,145 @@ static grape_rect_t tile_run_rect(const grape_context_t *context,
     };
 }
 
-static bool extract_rects(grape_context_t *context,
-                          const uint8_t *bitmap,
-                          size_t *out_count)
+static int64_t tile_region_pixel_area(const grape_context_t *context,
+                                      grape_damage_tile_region_t region)
 {
-    grape_damage_state_t *damage = &context->damage;
-    size_t rect_count = 0;
-    size_t active_count = 0;
-    size_t *active = damage->active_runs;
-    size_t *next_active = damage->next_active_runs;
+    return rect_area(tile_region_pixel_rect(context, region));
+}
 
-    for (uint32_t row = 0; row < damage->tile_rows; ++row) {
-        size_t next_count = 0;
-        uint32_t column = 0;
+static uint32_t scan_dirty_root(const grape_damage_state_t *damage,
+                                const uint8_t *bitmap,
+                                grape_damage_tile_region_t *out_root)
+{
+    uint32_t dirty_count = 0;
+    grape_damage_tile_region_t root = {0};
 
-        while (column < damage->tile_columns) {
-            while (column < damage->tile_columns &&
-                   !tile_get(bitmap, tile_index(damage, column, row))) {
-                column++;
-            }
-
-            if (column >= damage->tile_columns) {
-                break;
-            }
-
-            uint32_t start = column;
-            while (column < damage->tile_columns &&
-                   tile_get(bitmap, tile_index(damage, column, row))) {
-                column++;
-            }
-
-            grape_rect_t run = tile_run_rect(context, row, start, column);
-            bool extended = false;
-
-            for (size_t i = 0; i < active_count; ++i) {
-                size_t index = active[i];
-                grape_rect_t *candidate = &damage->work_rects[index];
-
-                if (candidate->x == run.x &&
-                    candidate->width == run.width &&
-                    candidate->y + candidate->height == run.y) {
-                    candidate->height += run.height;
-                    next_active[next_count++] = index;
-                    extended = true;
-                    break;
-                }
-            }
-
-            if (extended) {
+    for (uint32_t y = 0; y < damage->tile_rows; ++y) {
+        for (uint32_t x = 0; x < damage->tile_columns; ++x) {
+            if (!tile_get(bitmap, tile_index(damage, x, y))) {
                 continue;
             }
 
-            if (rect_count >= damage->work_rect_capacity) {
-                *out_count = rect_count + 1U;
-                return false;
-            }
-
-            damage->work_rects[rect_count] = run;
-            next_active[next_count++] = rect_count;
-            rect_count++;
+            dirty_count++;
+            tile_region_add_tile(&root, x, y);
         }
-
-        size_t *swap = active;
-        active = next_active;
-        next_active = swap;
-        active_count = next_count;
     }
 
-    *out_count = rect_count;
-    return true;
+    *out_root = root;
+    return dirty_count;
 }
 
-static int64_t merge_score(grape_rect_t a, grape_rect_t b)
+static void build_axis_bounds(grape_damage_state_t *damage,
+                              const uint8_t *bitmap,
+                              grape_damage_tile_region_t bounds)
 {
-    grape_rect_t merged = grape_rect_union(a, b);
-    grape_rect_t overlap = grape_rect_intersection(a, b);
-    int64_t union_area = rect_area(a) + rect_area(b) - rect_area(overlap);
-    int64_t extra_area = rect_area(merged) - union_area;
+    size_t width = (size_t)(bounds.x1 - bounds.x0);
+    size_t height = (size_t)(bounds.y1 - bounds.y0);
 
-    return (int64_t)CONFIG_GRAPE_DAMAGE_RECT_OVERHEAD_PIXELS - extra_area;
+    memset(damage->column_bounds, 0, width * sizeof(damage->column_bounds[0]));
+    memset(damage->row_bounds, 0, height * sizeof(damage->row_bounds[0]));
+
+    for (uint32_t y = bounds.y0; y < bounds.y1; ++y) {
+        for (uint32_t x = bounds.x0; x < bounds.x1; ++x) {
+            if (!tile_get(bitmap, tile_index(damage, x, y))) {
+                continue;
+            }
+
+            tile_region_add_tile(&damage->column_bounds[x - bounds.x0], x, y);
+            tile_region_add_tile(&damage->row_bounds[y - bounds.y0], x, y);
+        }
+    }
 }
 
-static void merge_best_pair(grape_rect_t *rects,
-                            size_t *count,
-                            size_t first,
-                            size_t second)
+static void consider_split(const grape_context_t *context,
+                           grape_damage_split_region_t *region,
+                           grape_damage_tile_region_t first,
+                           grape_damage_tile_region_t second,
+                           int64_t parent_cost)
 {
-    rects[first] = grape_rect_union(rects[first], rects[second]);
-    rects[second] = rects[*count - 1U];
-    (*count)--;
+    if (tile_region_empty(first) || tile_region_empty(second)) {
+        return;
+    }
+
+    int64_t split_cost = tile_region_pixel_area(context, first) +
+                         tile_region_pixel_area(context, second) +
+                         2LL * (int64_t)CONFIG_GRAPE_DAMAGE_RECT_OVERHEAD_PIXELS;
+    int64_t saving = parent_cost - split_cost;
+
+    if (saving > region->split_saving) {
+        region->split_saving = saving;
+        region->split_a = first;
+        region->split_b = second;
+    }
 }
 
-static void optimize_rects(grape_context_t *context,
-                           size_t *rect_count)
+static void find_best_split(grape_context_t *context,
+                            const uint8_t *bitmap,
+                            grape_damage_split_region_t *region,
+                            uint32_t *candidate_count)
 {
+    region->split_a = (grape_damage_tile_region_t){0};
+    region->split_b = (grape_damage_tile_region_t){0};
+    region->split_saving = INT64_MIN;
+
+    grape_damage_tile_region_t bounds = region->bounds;
+    size_t width = (size_t)(bounds.x1 - bounds.x0);
+    size_t height = (size_t)(bounds.y1 - bounds.y0);
+    if (width <= 1U && height <= 1U) {
+        return;
+    }
+
     grape_damage_state_t *damage = &context->damage;
-    size_t count = *rect_count;
+    build_axis_bounds(damage, bitmap, bounds);
 
-    while (count > 1U) {
-        size_t best_first = 0;
-        size_t best_second = 1;
-        int64_t best_score = INT64_MIN;
+    int64_t parent_cost = tile_region_pixel_area(context, bounds) +
+                          (int64_t)CONFIG_GRAPE_DAMAGE_RECT_OVERHEAD_PIXELS;
 
-        for (size_t i = 0; i + 1U < count; ++i) {
-            for (size_t j = i + 1U; j < count; ++j) {
-                int64_t score = merge_score(damage->work_rects[i], damage->work_rects[j]);
-                if (score > best_score) {
-                    best_score = score;
-                    best_first = i;
-                    best_second = j;
-                }
-            }
+    if (width > 1U) {
+        damage->suffix_bounds[width] = (grape_damage_tile_region_t){0};
+        for (size_t i = width; i-- > 0U;) {
+            damage->suffix_bounds[i] = tile_region_union(
+                damage->column_bounds[i],
+                damage->suffix_bounds[i + 1U]
+            );
         }
 
-        if (count <= CONFIG_GRAPE_MAX_DAMAGE_RECTS && best_score <= 0) {
-            break;
+        grape_damage_tile_region_t prefix = {0};
+        for (size_t cut = 1U; cut < width; ++cut) {
+            prefix = tile_region_union(prefix, damage->column_bounds[cut - 1U]);
+            (*candidate_count)++;
+            consider_split(
+                context,
+                region,
+                prefix,
+                damage->suffix_bounds[cut],
+                parent_cost
+            );
         }
-
-        merge_best_pair(
-            damage->work_rects,
-            &count,
-            best_first,
-            best_second
-        );
     }
 
-    *rect_count = count;
+    if (height > 1U) {
+        damage->suffix_bounds[height] = (grape_damage_tile_region_t){0};
+        for (size_t i = height; i-- > 0U;) {
+            damage->suffix_bounds[i] = tile_region_union(
+                damage->row_bounds[i],
+                damage->suffix_bounds[i + 1U]
+            );
+        }
+
+        grape_damage_tile_region_t prefix = {0};
+        for (size_t cut = 1U; cut < height; ++cut) {
+            prefix = tile_region_union(prefix, damage->row_bounds[cut - 1U]);
+            (*candidate_count)++;
+            consider_split(
+                context,
+                region,
+                prefix,
+                damage->suffix_bounds[cut],
+                parent_cost
+            );
+        }
+    }
 }
 
 static void use_full_screen(grape_context_t *context,
@@ -495,36 +547,21 @@ static esp_err_t build_rects(grape_context_t *context,
     int64_t profile_start_us = grape_profile_timestamp();
 #endif
 
+    grape_damage_state_t *damage = &context->damage;
+    grape_damage_tile_region_t root = {0};
+    uint32_t dirty_tiles = scan_dirty_root(damage, bitmap, &root);
+    uint64_t fullscreen_pixels = (uint64_t)context->display_info.width *
+                                 (uint64_t)context->display_info.height;
+
     if (stats) {
         *stats = (grape_debug_damage_stats_t){
-            .dirty_tiles = count_dirty_tiles(bitmap, context->damage.bitmap_size),
-            .total_tiles = context->damage.tile_columns * context->damage.tile_rows,
-            .fullscreen_pixels = (uint64_t)context->display_info.width *
-                                 (uint64_t)context->display_info.height,
+            .dirty_tiles = dirty_tiles,
+            .total_tiles = damage->tile_columns * damage->tile_rows,
+            .fullscreen_pixels = fullscreen_pixels,
         };
     }
 
-    size_t rect_count = 0;
-    if (!extract_rects(context, bitmap, &rect_count)) {
-        use_full_screen(context, out_rects, out_count);
-        if (stats) {
-            stats->initial_rects = (uint32_t)rect_count;
-            stats->final_rects = 1;
-            stats->final_pixels = stats->fullscreen_pixels;
-            stats->full_screen = true;
-        }
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_PLAN
-        grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_PLAN,
-                             grape_profile_timestamp() - profile_start_us);
-#endif
-        return ESP_OK;
-    }
-
-    if (stats) {
-        stats->initial_rects = (uint32_t)rect_count;
-    }
-
-    if (rect_count == 0) {
+    if (dirty_tiles == 0 || tile_region_empty(root)) {
         *out_count = 0;
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_PLAN
         grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_PLAN,
@@ -533,12 +570,90 @@ static esp_err_t build_rects(grape_context_t *context,
         return ESP_OK;
     }
 
-    optimize_rects(context, &rect_count);
+    size_t region_limit = out_capacity;
+    if (region_limit > damage->split_region_capacity) {
+        region_limit = damage->split_region_capacity;
+    }
+    if (region_limit == 0) {
+        return ESP_ERR_INVALID_SIZE;
+    }
 
-    int64_t partial_cost = (int64_t)rect_count *
+    uint32_t split_candidates = 0;
+    uint32_t planner_splits = 0;
+    size_t region_count = 1;
+    damage->split_regions[0] = (grape_damage_split_region_t){
+        .bounds = root,
+        .split_saving = INT64_MIN,
+    };
+
+    if (region_limit > 1U) {
+        find_best_split(
+            context,
+            bitmap,
+            &damage->split_regions[0],
+            &split_candidates
+        );
+    }
+
+    while (region_count < region_limit) {
+        size_t best_index = SIZE_MAX;
+        int64_t best_saving = 0;
+
+        for (size_t i = 0; i < region_count; ++i) {
+            if (damage->split_regions[i].split_saving > best_saving) {
+                best_saving = damage->split_regions[i].split_saving;
+                best_index = i;
+            }
+        }
+
+        if (best_index == SIZE_MAX) {
+            break;
+        }
+
+        grape_damage_tile_region_t first = damage->split_regions[best_index].split_a;
+        grape_damage_tile_region_t second = damage->split_regions[best_index].split_b;
+
+        damage->split_regions[best_index] = (grape_damage_split_region_t){
+            .bounds = first,
+            .split_saving = INT64_MIN,
+        };
+        damage->split_regions[region_count] = (grape_damage_split_region_t){
+            .bounds = second,
+            .split_saving = INT64_MIN,
+        };
+
+        region_count++;
+        planner_splits++;
+
+        if (region_count < region_limit) {
+            find_best_split(
+                context,
+                bitmap,
+                &damage->split_regions[best_index],
+                &split_candidates
+            );
+            find_best_split(
+                context,
+                bitmap,
+                &damage->split_regions[region_count - 1U],
+                &split_candidates
+            );
+        }
+    }
+
+    int64_t partial_cost = (int64_t)region_count *
                            (int64_t)CONFIG_GRAPE_DAMAGE_RECT_OVERHEAD_PIXELS;
-    for (size_t i = 0; i < rect_count; ++i) {
-        partial_cost += rect_area(context->damage.work_rects[i]);
+    uint64_t final_pixels = 0;
+
+    for (size_t i = 0; i < region_count; ++i) {
+        grape_rect_t rect = tile_region_pixel_rect(
+            context,
+            damage->split_regions[i].bounds
+        );
+        out_rects[i] = rect;
+        int64_t area = rect_area(rect);
+        partial_cost += area;
+        final_pixels += (uint64_t)area;
     }
 
     grape_rect_t screen = screen_bounds(context);
@@ -548,8 +663,10 @@ static esp_err_t build_rects(grape_context_t *context,
     if (full_cost <= partial_cost) {
         use_full_screen(context, out_rects, out_count);
         if (stats) {
+            stats->planner_splits = planner_splits;
+            stats->split_candidates = split_candidates;
             stats->final_rects = 1;
-            stats->final_pixels = stats->fullscreen_pixels;
+            stats->final_pixels = fullscreen_pixels;
             stats->full_screen = true;
         }
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_PLAN
@@ -559,30 +676,12 @@ static esp_err_t build_rects(grape_context_t *context,
         return ESP_OK;
     }
 
-    if (rect_count > out_capacity) {
-        use_full_screen(context, out_rects, out_count);
-        if (stats) {
-            stats->final_rects = 1;
-            stats->final_pixels = stats->fullscreen_pixels;
-            stats->full_screen = true;
-        }
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_PLAN
-        grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_PLAN,
-                             grape_profile_timestamp() - profile_start_us);
-#endif
-        return ESP_OK;
-    }
-
-    memcpy(out_rects,
-           context->damage.work_rects,
-           rect_count * sizeof(out_rects[0]));
-    *out_count = rect_count;
-
+    *out_count = region_count;
     if (stats) {
-        stats->final_rects = (uint32_t)rect_count;
-        for (size_t i = 0; i < rect_count; ++i) {
-            stats->final_pixels += (uint64_t)rect_area(context->damage.work_rects[i]);
-        }
+        stats->planner_splits = planner_splits;
+        stats->split_candidates = split_candidates;
+        stats->final_rects = (uint32_t)region_count;
+        stats->final_pixels = final_pixels;
     }
 
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_PLAN
@@ -591,6 +690,7 @@ static esp_err_t build_rects(grape_context_t *context,
 #endif
     return ESP_OK;
 }
+
 
 esp_err_t grape_damage_init(grape_context_t *context)
 {
@@ -618,23 +718,28 @@ esp_err_t grape_damage_init(grape_context_t *context)
     damage->tile_columns = (uint32_t)columns;
     damage->tile_rows = (uint32_t)rows;
     damage->bitmap_size = (tile_count + 7U) / 8U;
-    damage->work_rect_capacity = CONFIG_GRAPE_DAMAGE_MAX_WORK_RECTS;
-    if (damage->work_rect_capacity < CONFIG_GRAPE_MAX_DAMAGE_RECTS) {
-        damage->work_rect_capacity = CONFIG_GRAPE_MAX_DAMAGE_RECTS;
-    }
-    damage->active_run_capacity = columns;
+    damage->split_region_capacity = CONFIG_GRAPE_MAX_DAMAGE_RECTS;
+    damage->split_axis_capacity = columns > rows ? columns : rows;
 
     damage->tiles = calloc(1, damage->bitmap_size);
     damage->render_tiles = calloc(1, damage->bitmap_size);
-    damage->work_rects = calloc(damage->work_rect_capacity, sizeof(damage->work_rects[0]));
-    damage->active_runs = calloc(damage->active_run_capacity, sizeof(damage->active_runs[0]));
-    damage->next_active_runs = calloc(damage->active_run_capacity, sizeof(damage->next_active_runs[0]));
+    damage->split_regions = calloc(
+        damage->split_region_capacity,
+        sizeof(damage->split_regions[0])
+    );
+    damage->column_bounds = calloc(columns, sizeof(damage->column_bounds[0]));
+    damage->row_bounds = calloc(rows, sizeof(damage->row_bounds[0]));
+    damage->suffix_bounds = calloc(
+        damage->split_axis_capacity + 1U,
+        sizeof(damage->suffix_bounds[0])
+    );
 
     if (!damage->tiles ||
         !damage->render_tiles ||
-        !damage->work_rects ||
-        !damage->active_runs ||
-        !damage->next_active_runs) {
+        !damage->split_regions ||
+        !damage->column_bounds ||
+        !damage->row_bounds ||
+        !damage->suffix_bounds) {
         grape_damage_deinit(context);
         return ESP_ERR_NO_MEM;
     }
@@ -651,9 +756,10 @@ void grape_damage_deinit(grape_context_t *context)
     grape_damage_state_t *damage = &context->damage;
     free(damage->tiles);
     free(damage->render_tiles);
-    free(damage->work_rects);
-    free(damage->active_runs);
-    free(damage->next_active_runs);
+    free(damage->split_regions);
+    free(damage->column_bounds);
+    free(damage->row_bounds);
+    free(damage->suffix_bounds);
     *damage = (grape_damage_state_t){0};
 }
 
@@ -663,7 +769,9 @@ esp_err_t grape_damage_add(grape_context_t *context, grape_rect_t rect)
         return ESP_ERR_INVALID_ARG;
     }
 
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
     int64_t mark_start_us = esp_timer_get_time();
+#endif
 
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
     int64_t profile_start_us = grape_profile_timestamp();
@@ -677,8 +785,10 @@ esp_err_t grape_damage_add(grape_context_t *context, grape_rect_t rect)
         context->damage.has_damage = true;
     }
 
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
     context->damage.mark_us_current +=
         (uint64_t)(esp_timer_get_time() - mark_start_us);
+#endif
 
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
     grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_ADD,
@@ -722,8 +832,10 @@ esp_err_t grape_damage_build_logical_rects(grape_context_t *context)
         return ESP_ERR_INVALID_ARG;
     }
 
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
     int64_t plan_start_us = esp_timer_get_time();
     uint64_t mark_us = context->damage.mark_us_current;
+#endif
 
     esp_err_t ret = ESP_OK;
     if (!context->damage.has_damage) {
@@ -744,9 +856,14 @@ esp_err_t grape_damage_build_logical_rects(grape_context_t *context)
         );
     }
 
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
     context->damage.latest_stats.mark_us = mark_us;
     context->damage.latest_stats.plan_us =
         (uint64_t)(esp_timer_get_time() - plan_start_us);
+#else
+    context->damage.latest_stats.mark_us = 0;
+    context->damage.latest_stats.plan_us = 0;
+#endif
     return ret;
 }
 

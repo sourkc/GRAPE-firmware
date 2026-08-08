@@ -60,6 +60,20 @@ typedef struct {
 } grape_shear_image_t;
 
 typedef struct {
+    uint32_t x0;
+    uint32_t y0;
+    uint32_t x1;
+    uint32_t y1;
+} grape_damage_tile_region_t;
+
+typedef struct {
+    grape_damage_tile_region_t bounds;
+    grape_damage_tile_region_t split_a;
+    grape_damage_tile_region_t split_b;
+    int64_t split_saving;
+} grape_damage_split_region_t;
+
+typedef struct {
     uint8_t *tiles;
     uint8_t *render_tiles;
     size_t bitmap_size;
@@ -68,11 +82,12 @@ typedef struct {
     bool has_damage;
     grape_rect_t final_rects[CONFIG_GRAPE_MAX_DAMAGE_RECTS];
     size_t final_rect_count;
-    grape_rect_t *work_rects;
-    size_t work_rect_capacity;
-    size_t *active_runs;
-    size_t *next_active_runs;
-    size_t active_run_capacity;
+    grape_damage_split_region_t *split_regions;
+    grape_damage_tile_region_t *column_bounds;
+    grape_damage_tile_region_t *row_bounds;
+    grape_damage_tile_region_t *suffix_bounds;
+    size_t split_region_capacity;
+    size_t split_axis_capacity;
     uint64_t mark_us_current;
     grape_debug_damage_stats_t latest_stats;
 } grape_damage_state_t;

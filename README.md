@@ -9,6 +9,8 @@
   - TEST THIS ONCE CHIP V3.X ARRIVES!
 - [x] Tile-based adaptive damage grouping
 - [x] Per-texture occupancy masks for transparent/irregular textures
+- [ ] Merge the different debug options into one unified system
+- [ ] Build a proper benchmark
 
 ## Chip revision overlays
 

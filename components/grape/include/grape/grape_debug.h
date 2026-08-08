@@ -16,7 +16,8 @@ typedef enum {
 typedef struct {
     uint32_t dirty_tiles;
     uint32_t total_tiles;
-    uint32_t initial_rects;
+    uint32_t planner_splits;
+    uint32_t split_candidates;
     uint32_t final_rects;
     uint64_t final_pixels;
     uint64_t fullscreen_pixels;

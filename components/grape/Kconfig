@@ -15,11 +15,6 @@ menu "GRAPE"
         range 0 65536
         default 1024
 
-    config GRAPE_DAMAGE_MAX_WORK_RECTS
-        int "Maximum intermediate damage rectangles"
-        range 16 1024
-        default 256
-
     config GRAPE_TEXTURE_OCCUPANCY_CELL_SIZE
         int "Texture occupancy cell size (texels)"
         range 2 64

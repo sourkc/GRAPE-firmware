@@ -7,6 +7,7 @@
 #include "esp_timer.h"
 #include "grape/grape.h"
 #include "grape/grape_benchmark.h"
+#include "grape/grape_debug_config.h"
 #include "grape_storage_sd.h"
 
 #include "app_config.h"
@@ -29,11 +30,13 @@ typedef struct {
     float phase;
 } demo_square_t;
 
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
 typedef struct {
     uint64_t frames;
     uint64_t dirty_tiles;
     uint64_t total_tiles;
-    uint64_t initial_rects;
+    uint64_t planner_splits;
+    uint64_t split_candidates;
     uint64_t final_rects;
     uint64_t final_pixels;
     uint64_t full_screen_frames;
@@ -41,6 +44,7 @@ typedef struct {
     uint64_t mark_us;
     uint64_t plan_us;
 } demo_damage_stats_t;
+#endif
 
 static void fill_square_a8(grape_texture_t *texture)
 {
@@ -180,7 +184,7 @@ void app_main(void)
         grape_debug_set_layer_enabled(
             grape,
             GRAPE_DEBUG_LAYER_DAMAGE_RECTS,
-            true
+            false
         )
     );
 
@@ -220,9 +224,11 @@ void app_main(void)
 
     int64_t start_time = esp_timer_get_time();
     int64_t fps_start_time = start_time;
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
     int64_t damage_stats_start_time = start_time;
-    uint32_t frame_count = 0;
     demo_damage_stats_t damage_stats = {0};
+#endif
+    uint32_t frame_count = 0;
 
     while (1) {
         int64_t now = esp_timer_get_time();
@@ -270,18 +276,21 @@ void app_main(void)
         ESP_ERROR_CHECK(grape_present(grape));
         frame_count++;
 
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
         grape_debug_damage_stats_t frame_damage = {0};
         ESP_ERROR_CHECK(grape_debug_get_damage_stats(grape, &frame_damage));
         damage_stats.frames++;
         damage_stats.dirty_tiles += frame_damage.dirty_tiles;
         damage_stats.total_tiles = frame_damage.total_tiles;
-        damage_stats.initial_rects += frame_damage.initial_rects;
+        damage_stats.planner_splits += frame_damage.planner_splits;
+        damage_stats.split_candidates += frame_damage.split_candidates;
         damage_stats.final_rects += frame_damage.final_rects;
         damage_stats.final_pixels += frame_damage.final_pixels;
         damage_stats.full_screen_frames += frame_damage.full_screen ? 1U : 0U;
         damage_stats.fullscreen_pixels = frame_damage.fullscreen_pixels;
         damage_stats.mark_us += frame_damage.mark_us;
         damage_stats.plan_us += frame_damage.plan_us;
+#endif
 
         now = esp_timer_get_time();
         int64_t elapsed_us = now - fps_start_time;
@@ -292,6 +301,7 @@ void app_main(void)
             fps_start_time = now;
         }
 
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
         int64_t damage_stats_elapsed_us = now - damage_stats_start_time;
         if (damage_stats_elapsed_us >= (int64_t)GRAPE_APP_DAMAGE_STATS_INTERVAL_MS * 1000 &&
             damage_stats.frames > 0) {
@@ -313,14 +323,15 @@ void app_main(void)
 
             printf(
                 "DAMAGE: frames=%" PRIu64
-                " tiles=%.1f/%" PRIu64 " (%.1f%%) initial_rects=%.2f final_rects=%.2f "
+                " tiles=%.1f/%" PRIu64 " (%.1f%%) splits=%.2f candidates=%.1f final_rects=%.2f "
                 "pixels=%.0f/%" PRIu64 " (%.1f%%) fullscreen=%.1f%% "
                 "mark=%.3f ms plan=%.3f ms\n",
                 damage_stats.frames,
                 (double)damage_stats.dirty_tiles / frames,
                 damage_stats.total_tiles,
                 tile_percent,
-                (double)damage_stats.initial_rects / frames,
+                (double)damage_stats.planner_splits / frames,
+                (double)damage_stats.split_candidates / frames,
                 (double)damage_stats.final_rects / frames,
                 average_pixels,
                 damage_stats.fullscreen_pixels,
@@ -333,7 +344,8 @@ void app_main(void)
             damage_stats = (demo_damage_stats_t){0};
             damage_stats_start_time = now;
         }
+#endif
 
-        vTaskDelay(1);
+        // vTaskDelay(1);
     }
 }
