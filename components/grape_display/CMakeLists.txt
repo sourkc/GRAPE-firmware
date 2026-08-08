@@ -15,4 +15,5 @@ idf_component_register(
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "private"
     REQUIRES grape_common esp_lcd
+    PRIV_REQUIRES esp_timer
 )

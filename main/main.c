@@ -43,6 +43,8 @@ typedef struct {
     uint64_t fullscreen_pixels;
     uint64_t mark_us;
     uint64_t plan_us;
+    uint64_t fb_sync_us;
+    uint64_t refresh_wait_us;
 } demo_damage_stats_t;
 #endif
 
@@ -290,6 +292,8 @@ void app_main(void)
         damage_stats.fullscreen_pixels = frame_damage.fullscreen_pixels;
         damage_stats.mark_us += frame_damage.mark_us;
         damage_stats.plan_us += frame_damage.plan_us;
+        damage_stats.fb_sync_us += frame_damage.fb_sync_us;
+        damage_stats.refresh_wait_us += frame_damage.refresh_wait_us;
 #endif
 
         now = esp_timer_get_time();
@@ -320,12 +324,16 @@ void app_main(void)
                 (double)damage_stats.mark_us / frames / 1000.0;
             double average_plan_ms =
                 (double)damage_stats.plan_us / frames / 1000.0;
+            double average_fb_sync_ms =
+                (double)damage_stats.fb_sync_us / frames / 1000.0;
+            double average_refresh_wait_ms =
+                (double)damage_stats.refresh_wait_us / frames / 1000.0;
 
             printf(
                 "DAMAGE: frames=%" PRIu64
                 " tiles=%.1f/%" PRIu64 " (%.1f%%) splits=%.2f candidates=%.1f final_rects=%.2f "
                 "pixels=%.0f/%" PRIu64 " (%.1f%%) fullscreen=%.1f%% "
-                "mark=%.3f ms plan=%.3f ms\n",
+                "mark=%.3f ms plan=%.3f ms fb_sync=%.3f ms refresh_wait=%.3f ms\n",
                 damage_stats.frames,
                 (double)damage_stats.dirty_tiles / frames,
                 damage_stats.total_tiles,
@@ -338,7 +346,9 @@ void app_main(void)
                 coverage_percent,
                 full_screen_percent,
                 average_mark_ms,
-                average_plan_ms
+                average_plan_ms,
+                average_fb_sync_ms,
+                average_refresh_wait_ms
             );
 
             damage_stats = (demo_damage_stats_t){0};

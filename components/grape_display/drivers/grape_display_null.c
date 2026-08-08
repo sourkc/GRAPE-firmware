@@ -19,11 +19,25 @@ static void null_close(grape_display_t *display)
     (void)display;
 }
 
+static esp_err_t null_begin_frame(grape_display_t *display, const grape_rect_t *sync_rects, size_t sync_rect_count)
+{
+    (void)display;
+    (void)sync_rects;
+    (void)sync_rect_count;
+    return ESP_OK;
+}
+
 static esp_err_t null_blit(grape_display_t *display, grape_rect_t rect, const void *pixels)
 {
     (void)display;
     (void)rect;
     (void)pixels;
+    return ESP_OK;
+}
+
+static esp_err_t null_present(grape_display_t *display)
+{
+    (void)display;
     return ESP_OK;
 }
 
@@ -38,6 +52,8 @@ const grape_display_driver_t grape_display_driver_null = {
     .name = "null",
     .open = null_open,
     .close = null_close,
+    .begin_frame = null_begin_frame,
     .blit = null_blit,
+    .present = null_present,
     .set_brightness = null_set_brightness,
 };

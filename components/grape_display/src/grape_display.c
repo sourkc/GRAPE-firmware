@@ -96,6 +96,22 @@ const grape_display_info_t *grape_display_get_info(const grape_display_t *displa
     return display ? &display->info : NULL;
 }
 
+
+esp_err_t grape_display_begin_frame(grape_display_t *display,
+                                    const grape_rect_t *sync_rects,
+                                    size_t sync_rect_count)
+{
+    if (!display || (sync_rect_count > 0 && !sync_rects)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!display->driver || !display->driver->begin_frame) {
+        return ESP_OK;
+    }
+
+    return display->driver->begin_frame(display, sync_rects, sync_rect_count);
+}
+
 esp_err_t grape_display_blit(grape_display_t *display, grape_rect_t rect, const void *pixels)
 {
     if (!display || !display->driver || !display->driver->blit || !pixels || rect.width <= 0 || rect.height <= 0) {
@@ -109,6 +125,36 @@ esp_err_t grape_display_blit(grape_display_t *display, grape_rect_t rect, const 
     }
 
     return display->driver->blit(display, rect, pixels);
+}
+
+
+esp_err_t grape_display_present(grape_display_t *display)
+{
+    if (!display) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!display->driver || !display->driver->present) {
+        return ESP_OK;
+    }
+
+    return display->driver->present(display);
+}
+
+esp_err_t grape_display_get_frame_stats(const grape_display_t *display,
+                                        grape_display_frame_stats_t *out_stats)
+{
+    if (!display || !out_stats) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *out_stats = (grape_display_frame_stats_t){0};
+
+    if (!display->driver || !display->driver->get_frame_stats) {
+        return ESP_OK;
+    }
+
+    return display->driver->get_frame_stats(display, out_stats);
 }
 
 esp_err_t grape_display_set_brightness(grape_display_t *display, uint8_t percent)

@@ -28,9 +28,9 @@ Current timings:
 - `GRAPE_PROFILE_SHEAR_CLEAR` - time spent specifically clearing shear output buffers. This is nested inside X1/Y/X2.
 - `GRAPE_PROFILE_SHEAR_QUARTER_TURN` - the special exact ±90° path.
 - `GRAPE_PROFILE_SHEAR_COMPOSITE` - compositing the completed A8 shear image into GRAPE's display scratch buffer.
-- `GRAPE_PROFILE_DISPLAY_BLIT` - full display blit, including waiting until the source buffer is safe to reuse.
-- `GRAPE_PROFILE_LCD_DRAW_SUBMIT` - `esp_lcd_panel_draw_bitmap()` submission only.
-- `GRAPE_PROFILE_LCD_DRAW_WAIT` - wait for `on_color_trans_done` after submission.
+- `GRAPE_PROFILE_DISPLAY_BLIT` - copy one rendered dirty rectangle from GRAPE scratch into the display backbuffer.
+- `GRAPE_PROFILE_LCD_DRAW_SUBMIT` - submit the completed backbuffer as the next DPI framebuffer.
+- `GRAPE_PROFILE_LCD_DRAW_WAIT` - wait for the refresh boundary that makes the submitted framebuffer active.
 
 Reports contain total, average, maximum, call count, and percentage of the report window. Timings are nested, so percentages and totals are not expected to add to 100%.
 

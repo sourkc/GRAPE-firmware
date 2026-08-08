@@ -121,6 +121,9 @@ struct grape_context {
     grape_rotation_backend_t rotation_backend;
     grape_shear_y_backend_t shear_y_backend;
     grape_debug_state_t debug;
+    grape_rect_t previous_render_rects[CONFIG_GRAPE_MAX_DAMAGE_RECTS];
+    size_t previous_render_rect_count;
+    bool display_backbuffer_needs_full_sync;
 };
 
 size_t grape_bytes_per_pixel(grape_pixel_format_t format);

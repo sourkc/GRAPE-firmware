@@ -1,9 +1,15 @@
 #include <inttypes.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "grape_internal.h"
+#include "grape/grape_debug_config.h"
+
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
+#include "esp_timer.h"
+#endif
 
 #define GRAPE_PPA_BUFFER_ALIGNMENT 128U
 
@@ -227,9 +233,36 @@ esp_err_t grape_present(grape_context_t *context)
         return ret;
     }
 
-    for (size_t i = 0; i < render_damage_count; ++i) {
-        ret = grape_compositor_render(context, render_damage[i]);
+    if (render_damage_count > 0) {
+        grape_rect_t full_screen = {
+            .x = 0,
+            .y = 0,
+            .width = (int32_t)context->display_info.width,
+            .height = (int32_t)context->display_info.height,
+        };
+
+        const grape_rect_t *sync_rects = context->previous_render_rects;
+        size_t sync_rect_count = context->previous_render_rect_count;
+
+        if (context->display_backbuffer_needs_full_sync) {
+            sync_rects = &full_screen;
+            sync_rect_count = 1;
+        }
+
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
+        int64_t fb_sync_start_us = esp_timer_get_time();
+#endif
+        ret = grape_display_begin_frame(
+            context->display,
+            sync_rects,
+            sync_rect_count
+        );
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
+        context->damage.latest_stats.fb_sync_us =
+            (uint64_t)(esp_timer_get_time() - fb_sync_start_us);
+#endif
         if (ret != ESP_OK) {
+            context->display_backbuffer_needs_full_sync = true;
             grape_debug_reset_frame(context);
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
             grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
@@ -239,6 +272,48 @@ esp_err_t grape_present(grape_context_t *context)
 #endif
             return ret;
         }
+
+        for (size_t i = 0; i < render_damage_count; ++i) {
+            ret = grape_compositor_render(context, render_damage[i]);
+            if (ret != ESP_OK) {
+                context->display_backbuffer_needs_full_sync = true;
+                grape_debug_reset_frame(context);
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
+                grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
+#endif
+#if GRAPE_PROFILE_ENABLE
+                grape_profile_report_if_due();
+#endif
+                return ret;
+            }
+        }
+
+        ret = grape_display_present(context->display);
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
+        grape_display_frame_stats_t display_stats = {0};
+        if (grape_display_get_frame_stats(context->display, &display_stats) == ESP_OK) {
+            context->damage.latest_stats.refresh_wait_us = display_stats.refresh_wait_us;
+        }
+#endif
+        if (ret != ESP_OK) {
+            context->display_backbuffer_needs_full_sync = true;
+            grape_debug_reset_frame(context);
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
+            grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
+#endif
+#if GRAPE_PROFILE_ENABLE
+            grape_profile_report_if_due();
+#endif
+            return ret;
+        }
+
+        memcpy(
+            context->previous_render_rects,
+            render_damage,
+            render_damage_count * sizeof(render_damage[0])
+        );
+        context->previous_render_rect_count = render_damage_count;
+        context->display_backbuffer_needs_full_sync = false;
     }
 
     grape_damage_clear(context);
