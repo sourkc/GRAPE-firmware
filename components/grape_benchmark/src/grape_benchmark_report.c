@@ -74,9 +74,9 @@ static void write_summary_header(FILE *file)
             "param0_name,param0_value,param1_name,param1_value,"
             "param2_name,param2_value,param3_name,param3_value,"
             "frames,elapsed_us,fps,"
-            "update_avg_us,update_min_us,update_max_us,"
-            "present_avg_us,present_min_us,present_max_us,"
-            "frame_avg_us,frame_min_us,frame_max_us");
+            "update_wall_avg_us,update_wall_min_us,update_wall_max_us,"
+            "present_wall_avg_us,present_wall_min_us,present_wall_max_us,"
+            "frame_wall_avg_us,frame_wall_min_us,frame_wall_max_us");
 
     for (int i = 0; i < GRAPE_PROFILE_METRIC_COUNT; ++i) {
         const char *name = metric_csv_name((grape_profile_metric_t)i);

@@ -46,11 +46,31 @@ The initial shape suite covers:
 - stationary and moving overlap
 - opacity values
 - fixed scale values
-- fixed rotation angles from 0 to 90 degrees in 5 degree increments
+- affine rotation from 0 to 90 degrees in 5 degree increments
+- three-shear rotation from 0 to 90 degrees in 5 degree increments
 - 45-degree rotation combined with several scales
 
 Movement is deterministic and based on frame number rather than wall-clock time,
 so different renderer versions perform the same sequence of transforms.
+
+The rotation suite deliberately forces the two CPU rotation backends instead of
+using the normal automatic/PPA path. The CSV groups are `rotation_affine` and
+`rotation_shear`, with the angle stored in the `angle_deg` parameter. This makes
+frame time and CPU raster time directly plottable against rotation angle for both
+methods.
+
+The three-shear backend is currently experimental. It handles A8 textures at
+1:1 scale for normalized rotations from -90 to +90 degrees. Unsupported surfaces
+fall back to the affine rasterizer. `GRAPE_ROTATION_BACKEND_AUTO` preserves the
+normal renderer behavior and does not select the experimental shear path yet.
+
+The first shear implementation uses point sampling in the three shear passes.
+Because the image is resampled three times, edge pixels can differ slightly from
+the single-pass affine reference. Exact +/-90 degree rotations use a dedicated
+quarter-turn copy inside the shear backend to avoid the edge loss caused by three
+successive nearest-neighbor resamples at that boundary. The affine backend
+remains available for visual and performance comparison while the shear path is
+evaluated.
 
 ## Reports
 
@@ -80,7 +100,8 @@ formatting on mount failure is disabled.
 
 `grape_benchmark_summary.csv` contains one row per case, including FPS,
 frame/update/present min/average/max values, parameters, and all GRAPE profiler
-totals/averages/max/call counts.
+totals/averages/max/call counts. The direct wall-clock columns use the
+`*_wall_*` names so they do not collide with profiler metric column names.
 
 `grape_benchmark_samples.csv` contains per-frame update, present, and whole-frame
 timings. Samples are buffered in RAM during the measured section and only

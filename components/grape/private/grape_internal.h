@@ -36,10 +36,22 @@ struct grape_surface {
     float local_y_from_screen_x;
     float local_y_from_screen_y;
     float local_y_offset;
+    float normalized_rotation;
+    float shear_x_coefficient;
     int32_t z;
     uint8_t opacity;
     bool visible;
+    bool shear_cache_valid;
 };
+
+typedef struct {
+    const uint8_t *pixels;
+    size_t stride;
+    float left;
+    float top;
+    uint32_t width;
+    uint32_t height;
+} grape_shear_image_t;
 
 struct grape_context {
     grape_display_t *display;
@@ -54,6 +66,11 @@ struct grape_context {
     ppa_client_handle_t ppa_srm;
     ppa_client_handle_t ppa_blend;
     ppa_client_handle_t ppa_fill;
+    uint8_t *shear_buffer_a;
+    uint8_t *shear_buffer_b;
+    size_t shear_buffer_a_size;
+    size_t shear_buffer_b_size;
+    grape_rotation_backend_t rotation_backend;
 };
 
 size_t grape_bytes_per_pixel(grape_pixel_format_t format);
@@ -73,5 +90,8 @@ void grape_ppa_deinit(grape_context_t *context);
 esp_err_t grape_ppa_fill(grape_context_t *context, grape_rect_t rect, grape_color_t color);
 esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_t *surface,
                                   grape_rect_t damage_rect, bool *handled);
+
+esp_err_t grape_shear_rotate_a8(grape_context_t *context, const grape_surface_t *surface,
+                                grape_shear_image_t *out_image);
 
 esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect);

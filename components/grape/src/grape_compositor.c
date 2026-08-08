@@ -284,6 +284,114 @@ static void raster_surface_cpu(grape_context_t *context, const grape_surface_t *
     }
 }
 
+static esp_err_t raster_surface_three_shear_a8(
+    grape_context_t *context,
+    const grape_surface_t *surface,
+    grape_rect_t damage_rect,
+    grape_rect_t clipped,
+    size_t bpp,
+    bool *handled
+)
+{
+    if (!handled) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *handled = false;
+
+    grape_shear_image_t image;
+    esp_err_t ret = grape_shear_rotate_a8(context, surface, &image);
+    if (ret == ESP_ERR_NOT_SUPPORTED) {
+        return ESP_OK;
+    }
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    *handled = true;
+
+    if (surface->tint.a == 0 || surface->opacity == 0) {
+        return ESP_OK;
+    }
+
+    int32_t scratch_x = clipped.x - damage_rect.x;
+
+    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
+        float local_y =
+            ((float)y + 0.5f) -
+            surface->transform.y;
+
+        int64_t source_y =
+            (int64_t)floorf(local_y - image.top);
+
+        if (source_y < 0 || source_y >= (int64_t)image.height) {
+            continue;
+        }
+
+        float first_local_x =
+            ((float)clipped.x + 0.5f) -
+            surface->transform.x;
+
+        int64_t source_x =
+            (int64_t)floorf(first_local_x - image.left);
+        int64_t destination_x = 0;
+
+        if (source_x < 0) {
+            destination_x = -source_x;
+            source_x = 0;
+        }
+
+        if (destination_x >= clipped.width ||
+            source_x >= (int64_t)image.width) {
+            continue;
+        }
+
+        size_t available_destination =
+            (size_t)clipped.width - (size_t)destination_x;
+        size_t available_source =
+            (size_t)image.width - (size_t)source_x;
+        size_t pixel_count =
+            available_destination < available_source
+                ? available_destination
+                : available_source;
+
+        const uint8_t *source =
+            image.pixels +
+            (size_t)source_y * image.stride +
+            (size_t)source_x;
+
+        int32_t scratch_y = y - damage_rect.y;
+        uint8_t *destination =
+            context->scratch +
+            (((size_t)scratch_y * damage_rect.width +
+              (size_t)(scratch_x + destination_x)) * bpp);
+
+        for (size_t i = 0; i < pixel_count; ++i) {
+            uint8_t alpha = source[i];
+            if (alpha != 0) {
+                rgba8_t color = {
+                    .r = surface->tint.r,
+                    .g = surface->tint.g,
+                    .b = surface->tint.b,
+                    .a = mul8(
+                        mul8(alpha, surface->tint.a),
+                        surface->opacity
+                    ),
+                };
+                composite_source_pixel(
+                    destination,
+                    context->display_info.format,
+                    color
+                );
+            }
+
+            destination += bpp;
+        }
+    }
+
+    return ESP_OK;
+}
+
 static void fill_background_cpu(grape_context_t *context, grape_rect_t rect, size_t bpp, rgba8_t background)
 {
     for (int32_t y = 0; y < rect.height; ++y) {
@@ -379,29 +487,55 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         }
 
         bool handled = false;
+
+        if (context->rotation_backend == GRAPE_ROTATION_BACKEND_AUTO) {
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_BLEND_DISPATCH
-        int64_t ppa_blend_dispatch_start_us = grape_profile_timestamp();
+            int64_t ppa_blend_dispatch_start_us = grape_profile_timestamp();
 #endif
-        ret = grape_ppa_blend_surface(context, surface, rect, &handled);
+            ret = grape_ppa_blend_surface(context, surface, rect, &handled);
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PPA_BLEND_DISPATCH
-        grape_profile_record(GRAPE_PROFILE_METRIC_PPA_BLEND_DISPATCH,
-                             grape_profile_timestamp() - ppa_blend_dispatch_start_us);
+            grape_profile_record(GRAPE_PROFILE_METRIC_PPA_BLEND_DISPATCH,
+                                 grape_profile_timestamp() - ppa_blend_dispatch_start_us);
 #endif
-        if (ret != ESP_OK) {
+            if (ret != ESP_OK) {
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
-            grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
+                grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
 #endif
-            return ret;
-        }
-        if (handled) {
-            continue;
+                return ret;
+            }
+            if (handled) {
+                continue;
+            }
         }
 
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_CPU_SURFACE_RASTER
         int64_t cpu_surface_start_us = grape_profile_timestamp();
 #endif
 
-        raster_surface_cpu(context, surface, rect, clipped, bpp);
+        if (context->rotation_backend == GRAPE_ROTATION_BACKEND_THREE_SHEAR) {
+            ret = raster_surface_three_shear_a8(
+                context,
+                surface,
+                rect,
+                clipped,
+                bpp,
+                &handled
+            );
+            if (ret != ESP_OK) {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_CPU_SURFACE_RASTER
+                grape_profile_record(GRAPE_PROFILE_METRIC_CPU_SURFACE_RASTER,
+                                     grape_profile_timestamp() - cpu_surface_start_us);
+#endif
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
+                grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
+#endif
+                return ret;
+            }
+        }
+
+        if (!handled) {
+            raster_surface_cpu(context, surface, rect, clipped, bpp);
+        }
 
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_CPU_SURFACE_RASTER
         grape_profile_record(GRAPE_PROFILE_METRIC_CPU_SURFACE_RASTER,

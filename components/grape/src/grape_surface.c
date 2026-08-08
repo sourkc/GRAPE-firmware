@@ -58,6 +58,16 @@ void grape_surface_recache(grape_surface_t *surface)
     surface->cos_rotation = cosf(surface->transform.rotation);
     surface->sin_rotation = sinf(surface->transform.rotation);
 
+    if (surface->context->rotation_backend == GRAPE_ROTATION_BACKEND_THREE_SHEAR) {
+        surface->normalized_rotation =
+            atan2f(surface->sin_rotation, surface->cos_rotation);
+        surface->shear_x_coefficient =
+            -tanf(surface->normalized_rotation * 0.5f);
+        surface->shear_cache_valid = true;
+    } else {
+        surface->shear_cache_valid = false;
+    }
+
     float inv_scale_x = 1.0f / surface->transform.scale_x;
     float inv_scale_y = 1.0f / surface->transform.scale_y;
 

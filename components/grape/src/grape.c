@@ -64,6 +64,7 @@ esp_err_t grape_init(const grape_config_t *config, grape_context_t **out_context
 
     context->display_info = *info;
     context->background = resolved.background;
+    context->rotation_backend = GRAPE_ROTATION_BACKEND_AUTO;
 
     size_t bpp = grape_bytes_per_pixel(info->format);
     if (info->width == 0 || info->height == 0 || bpp == 0 || info->width > SIZE_MAX / info->height) {
@@ -147,6 +148,8 @@ void grape_deinit(grape_context_t *context)
     }
 
     grape_ppa_deinit(context);
+    heap_caps_free(context->shear_buffer_a);
+    heap_caps_free(context->shear_buffer_b);
     heap_caps_free(context->scratch);
     grape_display_close(context->display);
     free(context);
@@ -213,6 +216,35 @@ esp_err_t grape_set_background(grape_context_t *context, grape_color_t color)
     context->background = color;
     grape_damage_all(context);
     return ESP_OK;
+}
+
+esp_err_t grape_set_rotation_backend(grape_context_t *context, grape_rotation_backend_t backend)
+{
+    if (!context ||
+        backend < GRAPE_ROTATION_BACKEND_AUTO ||
+        backend > GRAPE_ROTATION_BACKEND_THREE_SHEAR) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (context->rotation_backend == backend) {
+        return ESP_OK;
+    }
+
+    context->rotation_backend = backend;
+
+    for (grape_surface_t *surface = context->surfaces;
+         surface;
+         surface = surface->next) {
+        grape_surface_recache(surface);
+    }
+
+    grape_damage_all(context);
+    return ESP_OK;
+}
+
+grape_rotation_backend_t grape_get_rotation_backend(const grape_context_t *context)
+{
+    return context ? context->rotation_backend : GRAPE_ROTATION_BACKEND_AUTO;
 }
 
 const grape_display_info_t *grape_get_display_info(const grape_context_t *context)
