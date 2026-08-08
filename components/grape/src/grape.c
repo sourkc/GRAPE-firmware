@@ -65,6 +65,7 @@ esp_err_t grape_init(const grape_config_t *config, grape_context_t **out_context
     context->display_info = *info;
     context->background = resolved.background;
     context->rotation_backend = GRAPE_ROTATION_BACKEND_AUTO;
+    context->shear_y_backend = GRAPE_SHEAR_Y_BACKEND_DIRECT;
 
     size_t bpp = grape_bytes_per_pixel(info->format);
     if (info->width == 0 || info->height == 0 || bpp == 0 || info->width > SIZE_MAX / info->height) {
@@ -245,6 +246,28 @@ esp_err_t grape_set_rotation_backend(grape_context_t *context, grape_rotation_ba
 grape_rotation_backend_t grape_get_rotation_backend(const grape_context_t *context)
 {
     return context ? context->rotation_backend : GRAPE_ROTATION_BACKEND_AUTO;
+}
+
+esp_err_t grape_set_shear_y_backend(grape_context_t *context, grape_shear_y_backend_t backend)
+{
+    if (!context ||
+        backend < GRAPE_SHEAR_Y_BACKEND_DIRECT ||
+        backend > GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (context->shear_y_backend == backend) {
+        return ESP_OK;
+    }
+
+    context->shear_y_backend = backend;
+    grape_damage_all(context);
+    return ESP_OK;
+}
+
+grape_shear_y_backend_t grape_get_shear_y_backend(const grape_context_t *context)
+{
+    return context ? context->shear_y_backend : GRAPE_SHEAR_Y_BACKEND_DIRECT;
 }
 
 const grape_display_info_t *grape_get_display_info(const grape_context_t *context)

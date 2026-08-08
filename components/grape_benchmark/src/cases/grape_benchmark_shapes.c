@@ -35,6 +35,7 @@ typedef struct {
     float scale;
     uint8_t square_opacity;
     grape_rotation_backend_t rotation_backend;
+    grape_shear_y_backend_t shear_y_backend;
 } shape_case_config_t;
 
 typedef struct {
@@ -50,6 +51,7 @@ typedef struct {
     float square_base_y;
     grape_context_t *grape;
     grape_rotation_backend_t previous_rotation_backend;
+    grape_shear_y_backend_t previous_shear_y_backend;
 } shape_case_state_t;
 
 static void fill_square(grape_texture_t *texture)
@@ -122,6 +124,10 @@ static void destroy_shape_state(shape_case_state_t *state)
             state->grape,
             state->previous_rotation_backend
         );
+        grape_set_shear_y_backend(
+            state->grape,
+            state->previous_shear_y_backend
+        );
     }
 
     free(state);
@@ -146,11 +152,19 @@ static esp_err_t shape_setup(
     state->grape = runtime->grape;
     state->previous_rotation_backend =
         grape_get_rotation_backend(runtime->grape);
+    state->previous_shear_y_backend =
+        grape_get_shear_y_backend(runtime->grape);
 
     esp_err_t ret = grape_set_rotation_backend(
         runtime->grape,
         config->rotation_backend
     );
+    if (ret == ESP_OK) {
+        ret = grape_set_shear_y_backend(
+            runtime->grape,
+            config->shear_y_backend
+        );
+    }
     if (ret != ESP_OK) {
         destroy_shape_state(state);
         return ret;
@@ -483,11 +497,35 @@ static void shape_teardown(
             .scale = 1.0f, \
             .square_opacity = 255, \
             .rotation_backend = backend_value, \
+            .shear_y_backend = GRAPE_SHEAR_Y_BACKEND_DIRECT, \
         }, \
         .setup = shape_setup, \
         .step = shape_step, \
         .teardown = shape_teardown, \
         .params = { { .name = "angle_deg", .value = rotation_value } }, \
+    }
+
+#define SHAPE_ROTATION_CASE_Y(group_value, name_value, rotation_value, backend_value, shear_y_backend_value) \
+    { \
+        .group = group_value, \
+        .name = name_value, \
+        .user_data = &(const shape_case_config_t){ \
+            .subject = BENCH_SUBJECT_SQUARE, \
+            .motion = BENCH_MOTION_NONE, \
+            .overlap = false, \
+            .rotation_deg = rotation_value, \
+            .scale = 1.0f, \
+            .square_opacity = 255, \
+            .rotation_backend = backend_value, \
+            .shear_y_backend = shear_y_backend_value, \
+        }, \
+        .setup = shape_setup, \
+        .step = shape_step, \
+        .teardown = shape_teardown, \
+        .params = { \
+            { .name = "angle_deg", .value = rotation_value }, \
+            { .name = "shear_y_backend", .value = (double)(shear_y_backend_value) }, \
+        }, \
     }
 
 static const grape_benchmark_case_t s_cases[] = {
@@ -565,6 +603,25 @@ static const grape_benchmark_case_t s_cases[] = {
     SHAPE_ROTATION_CASE("rotation_shear", "square_rotation_80", 80.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR),
     SHAPE_ROTATION_CASE("rotation_shear", "square_rotation_85", 85.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR),
     SHAPE_ROTATION_CASE("rotation_shear", "square_rotation_90", 90.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_00", 0.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_05", 5.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_10", 10.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_15", 15.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_20", 20.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_25", 25.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_30", 30.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_35", 35.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_40", 40.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_45", 45.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_50", 50.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_55", 55.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_60", 60.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_65", 65.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_70", 70.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_75", 75.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_80", 80.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_85", 85.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_90", 90.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
 #endif
 
 #if GRAPE_BENCHMARK_SUITE_ROTATION_SCALE

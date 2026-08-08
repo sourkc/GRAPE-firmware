@@ -71,6 +71,7 @@ struct grape_context {
     size_t shear_buffer_a_size;
     size_t shear_buffer_b_size;
     grape_rotation_backend_t rotation_backend;
+    grape_shear_y_backend_t shear_y_backend;
 };
 
 size_t grape_bytes_per_pixel(grape_pixel_format_t format);
@@ -100,6 +101,12 @@ esp_err_t grape_ppa_blend_a8_image(grape_context_t *context,
                                    grape_color_t tint,
                                    uint8_t opacity,
                                    bool *handled);
+esp_err_t grape_ppa_rotate_a8(grape_context_t *context,
+                              const grape_shear_image_t *input_image,
+                              bool clockwise,
+                              uint8_t *output_buffer,
+                              size_t output_buffer_size,
+                              grape_shear_image_t *out_image);
 
 esp_err_t grape_shear_rotate_a8(grape_context_t *context, const grape_surface_t *surface,
                                 grape_shear_image_t *out_image);

@@ -6,6 +6,8 @@
 - [x] USE PPA for rotation and scaling!
 - [ ] grape_texture_invalidate_rect(texture, x, y, w, h); (I forgot what this means)
 - [ ] Test Y-shear transpose/PPA rotate to move all shears to the X axis (prolly won't work)
+  - TEST THIS ONCE CHIP V3.X ARRIVES!
+-  [ ] 
 
 ## Chip revision overlays
 

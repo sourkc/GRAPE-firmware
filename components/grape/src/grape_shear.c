@@ -32,13 +32,13 @@ static esp_err_t ensure_buffer(uint8_t **buffer, size_t *capacity, size_t requir
 
     uint8_t *replacement = heap_caps_malloc(
         required,
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_8BIT
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_CACHE_ALIGNED | MALLOC_CAP_8BIT
     );
 
     if (!replacement) {
         replacement = heap_caps_malloc(
             required,
-            MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_CACHE_ALIGNED | MALLOC_CAP_8BIT
         );
     }
 
@@ -144,6 +144,127 @@ static esp_err_t transformed_bounds(
     };
 
     return ESP_OK;
+}
+
+static esp_err_t transformed_bounds_from_rect(
+    float left,
+    float top,
+    float right,
+    float bottom,
+    float m00,
+    float m01,
+    float m10,
+    float m11,
+    shear_bounds_t *out_bounds
+)
+{
+    float xs[4] = {
+        m00 * left + m01 * top,
+        m00 * right + m01 * top,
+        m00 * left + m01 * bottom,
+        m00 * right + m01 * bottom,
+    };
+
+    float ys[4] = {
+        m10 * left + m11 * top,
+        m10 * right + m11 * top,
+        m10 * left + m11 * bottom,
+        m10 * right + m11 * bottom,
+    };
+
+    float min_x = xs[0];
+    float max_x = xs[0];
+    float min_y = ys[0];
+    float max_y = ys[0];
+
+    for (int i = 1; i < 4; ++i) {
+        if (xs[i] < min_x) min_x = xs[i];
+        if (xs[i] > max_x) max_x = xs[i];
+        if (ys[i] < min_y) min_y = ys[i];
+        if (ys[i] > max_y) max_y = ys[i];
+    }
+
+    if (!isfinite(min_x) || !isfinite(max_x) ||
+        !isfinite(min_y) || !isfinite(max_y)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    float left_f = floorf(min_x);
+    float top_f = floorf(min_y);
+    float right_f = ceilf(max_x);
+    float bottom_f = ceilf(max_y);
+
+    if (left_f < (float)INT32_MIN || left_f > (float)INT32_MAX ||
+        top_f < (float)INT32_MIN || top_f > (float)INT32_MAX ||
+        right_f < (float)INT32_MIN || right_f > (float)INT32_MAX ||
+        bottom_f < (float)INT32_MIN || bottom_f > (float)INT32_MAX) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    int32_t out_left = (int32_t)left_f;
+    int32_t out_top = (int32_t)top_f;
+    int32_t out_right = (int32_t)right_f;
+    int32_t out_bottom = (int32_t)bottom_f;
+
+    int64_t width = (int64_t)out_right - out_left;
+    int64_t height = (int64_t)out_bottom - out_top;
+
+    if (width <= 0 || height <= 0 ||
+        width > UINT32_MAX || height > UINT32_MAX) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    *out_bounds = (shear_bounds_t) {
+        .left = out_left,
+        .top = out_top,
+        .width = (uint32_t)width,
+        .height = (uint32_t)height,
+    };
+
+    return ESP_OK;
+}
+
+static esp_err_t transformed_bounds_from_source(
+    const shear_source_t *source,
+    float m00,
+    float m01,
+    float m10,
+    float m11,
+    shear_bounds_t *out_bounds
+)
+{
+    if (!source || !out_bounds) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    float left = source->left;
+    float top = source->top;
+    float right = source->left + (float)source->width;
+    float bottom = source->top + (float)source->height;
+
+    return transformed_bounds_from_rect(
+        left,
+        top,
+        right,
+        bottom,
+        m00,
+        m01,
+        m10,
+        m11,
+        out_bounds
+    );
+}
+
+static grape_shear_image_t shear_source_as_image(const shear_source_t *source)
+{
+    return (grape_shear_image_t) {
+        .pixels = source->pixels,
+        .stride = source->stride,
+        .left = source->left,
+        .top = source->top,
+        .width = source->width,
+        .height = source->height,
+    };
 }
 
 static void shear_x(
@@ -284,6 +405,192 @@ static void shear_y(
             source += input->stride;
         }
     }
+}
+
+
+static esp_err_t shear_y_ppa_layout(
+    const shear_source_t *input,
+    float coefficient,
+    shear_bounds_t *rotated_input_bounds,
+    shear_bounds_t *rotated_sheared_bounds
+)
+{
+    if (!input || !rotated_input_bounds || !rotated_sheared_bounds) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t ret = transformed_bounds_from_source(
+        input,
+        0.0f,
+        1.0f,
+        -1.0f,
+        0.0f,
+        rotated_input_bounds
+    );
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    shear_source_t rotated_source = {
+        .pixels = NULL,
+        .stride = rotated_input_bounds->width,
+        .left = (float)rotated_input_bounds->left,
+        .top = (float)rotated_input_bounds->top,
+        .width = rotated_input_bounds->width,
+        .height = rotated_input_bounds->height,
+    };
+
+    return transformed_bounds_from_source(
+        &rotated_source,
+        1.0f,
+        -coefficient,
+        0.0f,
+        1.0f,
+        rotated_sheared_bounds
+    );
+}
+
+static esp_err_t shear_y_ppa_buffer_requirements(
+    const shear_source_t *input,
+    float coefficient,
+    size_t *buffer_a_required,
+    size_t *buffer_b_required
+)
+{
+    if (!input || !buffer_a_required || !buffer_b_required) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    shear_bounds_t rotated_input_bounds;
+    shear_bounds_t rotated_sheared_bounds;
+    esp_err_t ret = shear_y_ppa_layout(
+        input,
+        coefficient,
+        &rotated_input_bounds,
+        &rotated_sheared_bounds
+    );
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    size_t rotated_input_size;
+    ret = bounds_size(&rotated_input_bounds, &rotated_input_size);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    size_t rotated_sheared_size;
+    ret = bounds_size(&rotated_sheared_bounds, &rotated_sheared_size);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (rotated_sheared_size > *buffer_a_required) {
+        *buffer_a_required = rotated_sheared_size;
+    }
+    if (rotated_input_size > *buffer_b_required) {
+        *buffer_b_required = rotated_input_size;
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t shear_y_via_ppa_rotate(
+    grape_context_t *context,
+    const shear_source_t *input,
+    float coefficient,
+    grape_shear_image_t *out_image
+)
+{
+    if (!context || !input || !input->pixels || !out_image) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!context->ppa_srm) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    shear_bounds_t rotated_input_bounds;
+    shear_bounds_t rotated_sheared_bounds;
+    esp_err_t ret = shear_y_ppa_layout(
+        input,
+        coefficient,
+        &rotated_input_bounds,
+        &rotated_sheared_bounds
+    );
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    size_t rotated_input_size;
+    ret = bounds_size(&rotated_input_bounds, &rotated_input_size);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    size_t rotated_sheared_size;
+    ret = bounds_size(&rotated_sheared_bounds, &rotated_sheared_size);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (!context->shear_buffer_a || context->shear_buffer_a_size < rotated_sheared_size ||
+        !context->shear_buffer_b || context->shear_buffer_b_size < rotated_input_size) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    grape_shear_image_t input_image = shear_source_as_image(input);
+    grape_shear_image_t rotated_input_image;
+    ret = grape_ppa_rotate_a8(
+        context,
+        &input_image,
+        true,
+        context->shear_buffer_b,
+        context->shear_buffer_b_size,
+        &rotated_input_image
+    );
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_Y
+    int64_t shear_y_start_us = grape_profile_timestamp();
+#endif
+    shear_x(
+        &(const shear_source_t) {
+            .pixels = rotated_input_image.pixels,
+            .stride = rotated_input_image.stride,
+            .left = rotated_input_image.left,
+            .top = rotated_input_image.top,
+            .width = rotated_input_image.width,
+            .height = rotated_input_image.height,
+        },
+        -coefficient,
+        &rotated_sheared_bounds,
+        context->shear_buffer_a
+    );
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_Y
+    grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_Y,
+                         grape_profile_timestamp() - shear_y_start_us);
+#endif
+
+    grape_shear_image_t rotated_sheared_image = {
+        .pixels = context->shear_buffer_a,
+        .stride = rotated_sheared_bounds.width,
+        .left = (float)rotated_sheared_bounds.left,
+        .top = (float)rotated_sheared_bounds.top,
+        .width = rotated_sheared_bounds.width,
+        .height = rotated_sheared_bounds.height,
+    };
+
+    return grape_ppa_rotate_a8(
+        context,
+        &rotated_sheared_image,
+        false,
+        context->shear_buffer_b,
+        context->shear_buffer_b_size,
+        out_image
+    );
 }
 
 static esp_err_t rotate_quarter_turn_a8_impl(
@@ -506,6 +813,28 @@ esp_err_t grape_shear_rotate_a8(
 
     size_t buffer_a_required =
         stage1_size > stage3_size ? stage1_size : stage3_size;
+    size_t buffer_b_required = stage2_size;
+
+    if (context->shear_y_backend == GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE) {
+        shear_source_t stage1_template = {
+            .pixels = NULL,
+            .stride = stage1.width,
+            .left = (float)stage1.left,
+            .top = (float)stage1.top,
+            .width = stage1.width,
+            .height = stage1.height,
+        };
+
+        ret = shear_y_ppa_buffer_requirements(
+            &stage1_template,
+            shear_y_coefficient,
+            &buffer_a_required,
+            &buffer_b_required
+        );
+        if (ret != ESP_OK) {
+            return ret;
+        }
+    }
 
     ret = ensure_buffer(
         &context->shear_buffer_a,
@@ -519,7 +848,7 @@ esp_err_t grape_shear_rotate_a8(
     ret = ensure_buffer(
         &context->shear_buffer_b,
         &context->shear_buffer_b_size,
-        stage2_size
+        buffer_b_required
     );
     if (ret != ESP_OK) {
         return ret;
@@ -562,27 +891,55 @@ esp_err_t grape_shear_rotate_a8(
         .height = stage1.height,
     };
 
+    grape_shear_image_t stage2_image;
+    bool used_ppa_rotate_y = false;
+
+    if (context->shear_y_backend == GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE) {
+        ret = shear_y_via_ppa_rotate(
+            context,
+            &source,
+            shear_y_coefficient,
+            &stage2_image
+        );
+        if (ret == ESP_OK) {
+            used_ppa_rotate_y = true;
+        } else if (ret != ESP_ERR_NOT_SUPPORTED) {
+            return ret;
+        }
+    }
+
+    if (!used_ppa_rotate_y) {
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_Y
-    int64_t shear_y_start_us = grape_profile_timestamp();
+        int64_t shear_y_start_us = grape_profile_timestamp();
 #endif
-    shear_y(
-        &source,
-        shear_y_coefficient,
-        &stage2,
-        context->shear_buffer_b
-    );
+        shear_y(
+            &source,
+            shear_y_coefficient,
+            &stage2,
+            context->shear_buffer_b
+        );
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_Y
-    grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_Y,
-                         grape_profile_timestamp() - shear_y_start_us);
+        grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_Y,
+                             grape_profile_timestamp() - shear_y_start_us);
 #endif
 
+        stage2_image = (grape_shear_image_t) {
+            .pixels = context->shear_buffer_b,
+            .stride = stage2.width,
+            .left = (float)stage2.left,
+            .top = (float)stage2.top,
+            .width = stage2.width,
+            .height = stage2.height,
+        };
+    }
+
     source = (shear_source_t) {
-        .pixels = context->shear_buffer_b,
-        .stride = stage2.width,
-        .left = (float)stage2.left,
-        .top = (float)stage2.top,
-        .width = stage2.width,
-        .height = stage2.height,
+        .pixels = stage2_image.pixels,
+        .stride = stage2_image.stride,
+        .left = stage2_image.left,
+        .top = stage2_image.top,
+        .width = stage2_image.width,
+        .height = stage2_image.height,
     };
 
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_X2

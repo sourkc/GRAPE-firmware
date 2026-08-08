@@ -1,5 +1,6 @@
 #include <math.h>
 
+#include "esp_log.h"
 #include "grape_internal.h"
 
 static ppa_blend_color_mode_t blend_color_mode(grape_pixel_format_t format)
@@ -23,6 +24,20 @@ static ppa_fill_color_mode_t fill_color_mode(grape_pixel_format_t format)
             return PPA_FILL_COLOR_MODE_RGB888;
         default:
             return (ppa_fill_color_mode_t)-1;
+    }
+}
+
+static ppa_srm_color_mode_t srm_color_mode(grape_pixel_format_t format)
+{
+    switch (format) {
+        case GRAPE_PIXEL_FORMAT_A8:
+            return PPA_SRM_COLOR_MODE_GRAY8;
+        case GRAPE_PIXEL_FORMAT_RGB565:
+            return PPA_SRM_COLOR_MODE_RGB565;
+        case GRAPE_PIXEL_FORMAT_RGB888:
+            return PPA_SRM_COLOR_MODE_RGB888;
+        default:
+            return (ppa_srm_color_mode_t)-1;
     }
 }
 
@@ -237,6 +252,201 @@ static esp_err_t blend_a8_image(
         *handled = true;
     }
     return ret;
+}
+
+
+static esp_err_t rotated_image_bounds(
+    const grape_shear_image_t *input_image,
+    bool clockwise,
+    grape_rect_t *out_bounds
+)
+{
+    if (!input_image || !out_bounds || input_image->width == 0 || input_image->height == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    float left = input_image->left;
+    float top = input_image->top;
+    float right = input_image->left + (float)input_image->width;
+    float bottom = input_image->top + (float)input_image->height;
+
+    float m00 = clockwise ? 0.0f : 0.0f;
+    float m01 = clockwise ? 1.0f : -1.0f;
+    float m10 = clockwise ? -1.0f : 1.0f;
+    float m11 = clockwise ? 0.0f : 0.0f;
+
+    float xs[4] = {
+        m00 * left + m01 * top,
+        m00 * right + m01 * top,
+        m00 * left + m01 * bottom,
+        m00 * right + m01 * bottom,
+    };
+
+    float ys[4] = {
+        m10 * left + m11 * top,
+        m10 * right + m11 * top,
+        m10 * left + m11 * bottom,
+        m10 * right + m11 * bottom,
+    };
+
+    float min_x = xs[0];
+    float max_x = xs[0];
+    float min_y = ys[0];
+    float max_y = ys[0];
+
+    for (size_t i = 1; i < 4; ++i) {
+        if (xs[i] < min_x) {
+            min_x = xs[i];
+        }
+        if (xs[i] > max_x) {
+            max_x = xs[i];
+        }
+        if (ys[i] < min_y) {
+            min_y = ys[i];
+        }
+        if (ys[i] > max_y) {
+            max_y = ys[i];
+        }
+    }
+
+    int32_t bound_left = (int32_t)floorf(min_x + 0.0001f);
+    int32_t bound_top = (int32_t)floorf(min_y + 0.0001f);
+    int32_t bound_right = (int32_t)ceilf(max_x - 0.0001f);
+    int32_t bound_bottom = (int32_t)ceilf(max_y - 0.0001f);
+
+    if (bound_right <= bound_left || bound_bottom <= bound_top) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    *out_bounds = (grape_rect_t) {
+        .x = bound_left,
+        .y = bound_top,
+        .width = bound_right - bound_left,
+        .height = bound_bottom - bound_top,
+    };
+
+    return ESP_OK;
+}
+
+esp_err_t grape_ppa_rotate_a8(
+    grape_context_t *context,
+    const grape_shear_image_t *input_image,
+    bool clockwise,
+    uint8_t *output_buffer,
+    size_t output_buffer_size,
+    grape_shear_image_t *out_image
+)
+{
+    if (!context || !input_image || !input_image->pixels || !output_buffer || !out_image) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!context->ppa_srm || input_image->width == 0 || input_image->height == 0) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    ppa_srm_color_mode_t color_mode = srm_color_mode(GRAPE_PIXEL_FORMAT_A8);
+    if ((int)color_mode < 0) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    if (input_image->stride == 0 || input_image->stride < input_image->width) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    grape_rect_t output_bounds;
+    esp_err_t ret = rotated_image_bounds(input_image, clockwise, &output_bounds);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    size_t required_size = (size_t)output_bounds.width * (size_t)output_bounds.height;
+    if (required_size > output_buffer_size) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    size_t ppa_output_size =
+    output_buffer_size &
+    ~(CONFIG_CACHE_L2_CACHE_LINE_SIZE - 1U);
+
+    if (ppa_output_size < required_size) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    if (((uintptr_t)output_buffer %
+     CONFIG_CACHE_L2_CACHE_LINE_SIZE) != 0) {
+        return ESP_ERR_INVALID_ARG;
+     }
+
+    ppa_srm_oper_config_t config = {
+        .in = {
+            .buffer = input_image->pixels,
+            .pic_w = (uint32_t)input_image->stride,
+            .pic_h = input_image->height,
+            .block_w = input_image->width,
+            .block_h = input_image->height,
+            .block_offset_x = 0,
+            .block_offset_y = 0,
+            .srm_cm = color_mode,
+        },
+        .out = {
+            .buffer = output_buffer,
+            .buffer_size = ppa_output_size,
+            .pic_w = (uint32_t)output_bounds.width,
+            .pic_h = (uint32_t)output_bounds.height,
+            .block_offset_x = 0,
+            .block_offset_y = 0,
+            .srm_cm = color_mode,
+        },
+        .rotation_angle = clockwise ?
+            PPA_SRM_ROTATION_ANGLE_270 :
+            PPA_SRM_ROTATION_ANGLE_90,
+        .scale_x = 1.0f,
+        .scale_y = 1.0f,
+        .mirror_x = false,
+        .mirror_y = false,
+        .rgb_swap = false,
+        .byte_swap = false,
+        .alpha_update_mode = PPA_ALPHA_NO_CHANGE,
+        .alpha_fix_val = 0,
+        .alpha_scale_ratio = 1.0f,
+        .mode = PPA_TRANS_MODE_BLOCKING,
+        .user_data = NULL,
+    };
+
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_QUARTER_TURN
+    int64_t profile_start_us = grape_profile_timestamp();
+#endif
+    ESP_LOGI(
+        "grape_ppa",
+        "SRM out=%p size=%u in=%p %ux%u -> %ux%u",
+        config.out.buffer,
+        (unsigned)config.out.buffer_size,
+        config.in.buffer,
+        config.in.block_w,
+        config.in.block_h,
+        config.out.pic_w,
+        config.out.pic_h
+    );
+    ret = ppa_do_scale_rotate_mirror(context->ppa_srm, &config);
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_SHEAR_QUARTER_TURN
+    grape_profile_record(GRAPE_PROFILE_METRIC_SHEAR_QUARTER_TURN,
+                         grape_profile_timestamp() - profile_start_us);
+#endif
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    *out_image = (grape_shear_image_t) {
+        .pixels = output_buffer,
+        .stride = (size_t)output_bounds.width,
+        .left = (float)output_bounds.x,
+        .top = (float)output_bounds.y,
+        .width = (uint32_t)output_bounds.width,
+        .height = (uint32_t)output_bounds.height,
+    };
+
+    return ESP_OK;
 }
 
 esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_t *surface,
