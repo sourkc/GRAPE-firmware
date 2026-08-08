@@ -60,6 +60,48 @@ bool grape_rect_touches(grape_rect_t a, grape_rect_t b)
     return a.x <= bx1 && b.x <= ax1 && a.y <= by1 && b.y <= ay1;
 }
 
+void grape_rect_list_add(grape_rect_t *rects, size_t *count, size_t capacity,
+                         grape_rect_t bounds, grape_rect_t rect)
+{
+    if (!rects || !count || capacity == 0) {
+        return;
+    }
+
+    rect = grape_rect_intersection(rect, bounds);
+    if (grape_rect_empty(rect)) {
+        return;
+    }
+
+    bool merged;
+    do {
+        merged = false;
+        for (size_t i = 0; i < *count; ++i) {
+            if (!grape_rect_touches(rects[i], rect)) {
+                continue;
+            }
+
+            rect = grape_rect_union(rects[i], rect);
+            rects[i] = rects[*count - 1];
+            (*count)--;
+            merged = true;
+            break;
+        }
+    } while (merged);
+
+    if (*count < capacity) {
+        rects[(*count)++] = rect;
+        return;
+    }
+
+    grape_rect_t combined = rect;
+    for (size_t i = 0; i < *count; ++i) {
+        combined = grape_rect_union(combined, rects[i]);
+    }
+
+    rects[0] = grape_rect_intersection(combined, bounds);
+    *count = 1;
+}
+
 esp_err_t grape_damage_add(grape_context_t *context, grape_rect_t rect)
 {
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
@@ -73,45 +115,14 @@ esp_err_t grape_damage_add(grape_context_t *context, grape_rect_t rect)
         .height = (int32_t)context->display_info.height,
     };
 
-    rect = grape_rect_intersection(rect, screen);
-    if (grape_rect_empty(rect)) {
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
-        grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_ADD, grape_profile_timestamp() - profile_start_us);
-#endif
-        return ESP_OK;
-    }
+    grape_rect_list_add(
+        context->damage,
+        &context->damage_count,
+        CONFIG_GRAPE_MAX_DAMAGE_RECTS,
+        screen,
+        rect
+    );
 
-    bool merged;
-    do {
-        merged = false;
-        for (size_t i = 0; i < context->damage_count; ++i) {
-            if (!grape_rect_touches(context->damage[i], rect)) {
-                continue;
-            }
-
-            rect = grape_rect_union(context->damage[i], rect);
-            context->damage[i] = context->damage[context->damage_count - 1];
-            context->damage_count--;
-            merged = true;
-            break;
-        }
-    } while (merged);
-
-    if (context->damage_count < CONFIG_GRAPE_MAX_DAMAGE_RECTS) {
-        context->damage[context->damage_count++] = rect;
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
-        grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_ADD, grape_profile_timestamp() - profile_start_us);
-#endif
-        return ESP_OK;
-    }
-
-    grape_rect_t combined = rect;
-    for (size_t i = 0; i < context->damage_count; ++i) {
-        combined = grape_rect_union(combined, context->damage[i]);
-    }
-
-    context->damage[0] = grape_rect_intersection(combined, screen);
-    context->damage_count = 1;
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
     grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_ADD, grape_profile_timestamp() - profile_start_us);
 #endif

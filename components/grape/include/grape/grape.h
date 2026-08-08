@@ -2,6 +2,7 @@
 
 #include "grape/grape_surface.h"
 #include "grape/grape_display.h"
+#include "grape/grape_debug.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -22,3 +22,21 @@ Rev 3.x silicon:
 ```text
 idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;config/esp32p4_rev3.defaults" build
 ```
+
+## Debug layers
+
+Debug overlays are rendered after normal surfaces and before the display blit. They do not create normal scene damage, so debug rendering cannot feed back into the damage system it is inspecting.
+
+The first built-in layer visualizes the final logical damage rectangles for the current frame with a translucent red fill and stronger border:
+
+```c
+ESP_ERROR_CHECK(
+    grape_debug_set_layer_enabled(
+        grape,
+        GRAPE_DEBUG_LAYER_DAMAGE_RECTS,
+        true
+    )
+);
+```
+
+Disable it with the same call and `false`. The previous overlay area is queued as render-only damage so it is repainted once and disappears cleanly. Debug layers are intended for correctness/debugging rather than performance measurements.

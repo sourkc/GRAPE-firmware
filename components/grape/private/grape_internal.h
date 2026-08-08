@@ -53,6 +53,16 @@ typedef struct {
     uint32_t height;
 } grape_shear_image_t;
 
+typedef struct {
+    uint32_t enabled_mask;
+    grape_rect_t render_damage[CONFIG_GRAPE_MAX_DAMAGE_RECTS];
+    size_t render_damage_count;
+    grape_rect_t damage_rects_current[CONFIG_GRAPE_MAX_DAMAGE_RECTS];
+    size_t damage_rects_current_count;
+    grape_rect_t damage_rects_previous[CONFIG_GRAPE_MAX_DAMAGE_RECTS];
+    size_t damage_rects_previous_count;
+} grape_debug_state_t;
+
 struct grape_context {
     grape_display_t *display;
     grape_display_info_t display_info;
@@ -72,6 +82,7 @@ struct grape_context {
     size_t shear_buffer_b_size;
     grape_rotation_backend_t rotation_backend;
     grape_shear_y_backend_t shear_y_backend;
+    grape_debug_state_t debug;
 };
 
 size_t grape_bytes_per_pixel(grape_pixel_format_t format);
@@ -79,6 +90,8 @@ bool grape_rect_empty(grape_rect_t rect);
 grape_rect_t grape_rect_intersection(grape_rect_t a, grape_rect_t b);
 grape_rect_t grape_rect_union(grape_rect_t a, grape_rect_t b);
 bool grape_rect_touches(grape_rect_t a, grape_rect_t b);
+void grape_rect_list_add(grape_rect_t *rects, size_t *count, size_t capacity,
+                         grape_rect_t bounds, grape_rect_t rect);
 esp_err_t grape_damage_add(grape_context_t *context, grape_rect_t rect);
 void grape_damage_all(grape_context_t *context);
 grape_rect_t grape_surface_calculate_bounds(const grape_surface_t *surface);
@@ -112,3 +125,8 @@ esp_err_t grape_shear_rotate_a8(grape_context_t *context, const grape_surface_t 
                                 grape_shear_image_t *out_image);
 
 esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect);
+
+esp_err_t grape_debug_prepare_frame(grape_context_t *context);
+void grape_debug_render(grape_context_t *context, grape_rect_t rect);
+void grape_debug_finish_frame(grape_context_t *context);
+void grape_debug_reset_frame(grape_context_t *context);

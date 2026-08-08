@@ -166,10 +166,50 @@ esp_err_t grape_present(grape_context_t *context)
     int64_t profile_start_us = grape_profile_timestamp();
 #endif
 
-    size_t count = context->damage_count;
-    for (size_t i = 0; i < count; ++i) {
-        esp_err_t ret = grape_compositor_render(context, context->damage[i]);
+    esp_err_t ret = grape_debug_prepare_frame(context);
+    if (ret != ESP_OK) {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
+        grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
+#endif
+#if GRAPE_PROFILE_ENABLE
+        grape_profile_report_if_due();
+#endif
+        return ret;
+    }
+
+    grape_rect_t screen = {
+        .x = 0,
+        .y = 0,
+        .width = (int32_t)context->display_info.width,
+        .height = (int32_t)context->display_info.height,
+    };
+    grape_rect_t render_damage[CONFIG_GRAPE_MAX_DAMAGE_RECTS];
+    size_t render_damage_count = 0;
+
+    for (size_t i = 0; i < context->damage_count; ++i) {
+        grape_rect_list_add(
+            render_damage,
+            &render_damage_count,
+            CONFIG_GRAPE_MAX_DAMAGE_RECTS,
+            screen,
+            context->damage[i]
+        );
+    }
+
+    for (size_t i = 0; i < context->debug.render_damage_count; ++i) {
+        grape_rect_list_add(
+            render_damage,
+            &render_damage_count,
+            CONFIG_GRAPE_MAX_DAMAGE_RECTS,
+            screen,
+            context->debug.render_damage[i]
+        );
+    }
+
+    for (size_t i = 0; i < render_damage_count; ++i) {
+        ret = grape_compositor_render(context, render_damage[i]);
         if (ret != ESP_OK) {
+            grape_debug_reset_frame(context);
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
             grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
 #endif
@@ -181,6 +221,7 @@ esp_err_t grape_present(grape_context_t *context)
     }
 
     context->damage_count = 0;
+    grape_debug_finish_frame(context);
 
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
     grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);

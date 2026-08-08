@@ -581,6 +581,8 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
 #endif
     }
 
+    grape_debug_render(context, rect);
+
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DISPLAY_BLIT
     int64_t display_blit_start_us = grape_profile_timestamp();
 #endif
