@@ -791,7 +791,7 @@ esp_err_t grape_shear_rotate_a8(
             stage1_size > stage3_size ? stage1_size : stage3_size;
         size_t buffer_b_required = stage2_size;
 
-        if (context->shear_y_backend == GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE) {
+        if (grape_feature_is_active(context, GRAPE_FEATURE_PPA_A8_ROTATE)) {
             shear_source_t stage1_template = {
                 .pixels = NULL,
                 .stride = stage1.width,
@@ -861,7 +861,7 @@ esp_err_t grape_shear_rotate_a8(
     grape_shear_image_t stage2_image;
     bool used_ppa_rotate_y = false;
 
-    if (context->shear_y_backend == GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE) {
+    if (grape_feature_is_active(context, GRAPE_FEATURE_PPA_A8_ROTATE)) {
         ret = shear_y_via_ppa_rotate(
             context,
             &source,

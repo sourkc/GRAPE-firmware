@@ -11,7 +11,7 @@
 - [x] Per-texture occupancy masks for transparent/irregular textures
 - [ ] Merge the different debug options into one unified system
 - [ ] Build a proper benchmark
-- [ ] Centralize hardware features and their lookup
+- [x] Centralize hardware features and their lookup
 
 ## Chip revision overlays
 
@@ -52,6 +52,12 @@ profiling. Set `GRAPE_TELEMETRY_LEVEL` in
 `components/grape_common/include/grape/grape_telemetry_config.h` to `0`, `1`, or
 `2`. See `TELEMETRY.md` for timer registration, scope/block instrumentation, and
 benchmark integration.
+
+## Features
+
+Optional hardware/implementation capabilities use the unified Feature API. It
+separates capability availability from runtime policy and exposes stable feature
+IDs suitable for future GFXLINK discovery/control. See `FEATURES.md`.
 
 ## Planned stuff
 - JPEG images (hardware)

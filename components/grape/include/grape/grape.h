@@ -3,6 +3,7 @@
 #include "grape/grape_surface.h"
 #include "grape/grape_display.h"
 #include "grape/grape_debug.h"
+#include "grape/grape_feature.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,11 +14,6 @@ typedef enum {
     GRAPE_ROTATION_BACKEND_AFFINE,
     GRAPE_ROTATION_BACKEND_THREE_SHEAR,
 } grape_rotation_backend_t;
-
-typedef enum {
-    GRAPE_SHEAR_Y_BACKEND_DIRECT = 0,
-    GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE,
-} grape_shear_y_backend_t;
 
 typedef struct {
     const char *display_driver;
@@ -38,8 +34,6 @@ esp_err_t grape_invalidate_all(grape_context_t *context);
 esp_err_t grape_set_background(grape_context_t *context, grape_color_t color);
 esp_err_t grape_set_rotation_backend(grape_context_t *context, grape_rotation_backend_t backend);
 grape_rotation_backend_t grape_get_rotation_backend(const grape_context_t *context);
-esp_err_t grape_set_shear_y_backend(grape_context_t *context, grape_shear_y_backend_t backend);
-grape_shear_y_backend_t grape_get_shear_y_backend(const grape_context_t *context);
 const grape_display_info_t *grape_get_display_info(const grape_context_t *context);
 
 #ifdef __cplusplus

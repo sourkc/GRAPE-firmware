@@ -35,7 +35,7 @@ typedef struct {
     float scale;
     uint8_t square_opacity;
     grape_rotation_backend_t rotation_backend;
-    grape_shear_y_backend_t shear_y_backend;
+    grape_feature_mode_t ppa_a8_rotate_mode;
 } shape_case_config_t;
 
 typedef struct {
@@ -51,7 +51,7 @@ typedef struct {
     float square_base_y;
     grape_context_t *grape;
     grape_rotation_backend_t previous_rotation_backend;
-    grape_shear_y_backend_t previous_shear_y_backend;
+    grape_feature_mode_t previous_ppa_a8_rotate_mode;
 } shape_case_state_t;
 
 static void fill_square(grape_texture_t *texture)
@@ -124,9 +124,10 @@ static void destroy_shape_state(shape_case_state_t *state)
             state->grape,
             state->previous_rotation_backend
         );
-        grape_set_shear_y_backend(
+        grape_feature_set_mode(
             state->grape,
-            state->previous_shear_y_backend
+            GRAPE_FEATURE_PPA_A8_ROTATE,
+            state->previous_ppa_a8_rotate_mode
         );
     }
 
@@ -152,17 +153,25 @@ static esp_err_t shape_setup(
     state->grape = runtime->grape;
     state->previous_rotation_backend =
         grape_get_rotation_backend(runtime->grape);
-    state->previous_shear_y_backend =
-        grape_get_shear_y_backend(runtime->grape);
+    esp_err_t ret = grape_feature_get_mode(
+        runtime->grape,
+        GRAPE_FEATURE_PPA_A8_ROTATE,
+        &state->previous_ppa_a8_rotate_mode
+    );
+    if (ret != ESP_OK) {
+        destroy_shape_state(state);
+        return ret;
+    }
 
-    esp_err_t ret = grape_set_rotation_backend(
+    ret = grape_set_rotation_backend(
         runtime->grape,
         config->rotation_backend
     );
     if (ret == ESP_OK) {
-        ret = grape_set_shear_y_backend(
+        ret = grape_feature_set_mode(
             runtime->grape,
-            config->shear_y_backend
+            GRAPE_FEATURE_PPA_A8_ROTATE,
+            config->ppa_a8_rotate_mode
         );
     }
     if (ret != ESP_OK) {
@@ -457,6 +466,7 @@ static void shape_teardown(
             .rotation_deg = rotation_value, \
             .scale = scale_value, \
             .square_opacity = opacity_value, \
+            .ppa_a8_rotate_mode = GRAPE_FEATURE_MODE_DISABLED, \
         }, \
         .setup = shape_setup, \
         .step = shape_step, \
@@ -475,6 +485,7 @@ static void shape_teardown(
             .rotation_deg = rotation_value, \
             .scale = scale_value, \
             .square_opacity = opacity_value, \
+            .ppa_a8_rotate_mode = GRAPE_FEATURE_MODE_DISABLED, \
         }, \
         .setup = shape_setup, \
         .step = shape_step, \
@@ -497,7 +508,7 @@ static void shape_teardown(
             .scale = 1.0f, \
             .square_opacity = 255, \
             .rotation_backend = backend_value, \
-            .shear_y_backend = GRAPE_SHEAR_Y_BACKEND_DIRECT, \
+            .ppa_a8_rotate_mode = GRAPE_FEATURE_MODE_DISABLED, \
         }, \
         .setup = shape_setup, \
         .step = shape_step, \
@@ -505,7 +516,7 @@ static void shape_teardown(
         .params = { { .name = "angle_deg", .value = rotation_value } }, \
     }
 
-#define SHAPE_ROTATION_CASE_Y(group_value, name_value, rotation_value, backend_value, shear_y_backend_value) \
+#define SHAPE_ROTATION_CASE_Y(group_value, name_value, rotation_value, backend_value, ppa_rotate_mode_value) \
     { \
         .group = group_value, \
         .name = name_value, \
@@ -517,14 +528,14 @@ static void shape_teardown(
             .scale = 1.0f, \
             .square_opacity = 255, \
             .rotation_backend = backend_value, \
-            .shear_y_backend = shear_y_backend_value, \
+            .ppa_a8_rotate_mode = ppa_rotate_mode_value, \
         }, \
         .setup = shape_setup, \
         .step = shape_step, \
         .teardown = shape_teardown, \
         .params = { \
             { .name = "angle_deg", .value = rotation_value }, \
-            { .name = "shear_y_backend", .value = (double)(shear_y_backend_value) }, \
+            { .name = "ppa_a8_rotate_mode", .value = (double)(ppa_rotate_mode_value) }, \
         }, \
     }
 
@@ -603,25 +614,25 @@ static const grape_benchmark_case_t s_cases[] = {
     SHAPE_ROTATION_CASE("rotation_shear", "square_rotation_80", 80.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR),
     SHAPE_ROTATION_CASE("rotation_shear", "square_rotation_85", 85.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR),
     SHAPE_ROTATION_CASE("rotation_shear", "square_rotation_90", 90.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_00", 0.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_05", 5.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_10", 10.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_15", 15.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_20", 20.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_25", 25.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_30", 30.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_35", 35.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_40", 40.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_45", 45.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_50", 50.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_55", 55.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_60", 60.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_65", 65.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_70", 70.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_75", 75.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_80", 80.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_85", 85.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
-    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_90", 90.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_SHEAR_Y_BACKEND_PPA_ROTATE),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_00", 0.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_05", 5.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_10", 10.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_15", 15.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_20", 20.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_25", 25.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_30", 30.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_35", 35.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_40", 40.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_45", 45.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_50", 50.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_55", 55.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_60", 60.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_65", 65.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_70", 70.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_75", 75.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_80", 80.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_85", 85.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
+    SHAPE_ROTATION_CASE_Y("rotation_shear_ppa_y", "square_rotation_90", 90.0f, GRAPE_ROTATION_BACKEND_THREE_SHEAR, GRAPE_FEATURE_MODE_ENABLED),
 #endif
 
 #if GRAPE_BENCHMARK_SUITE_ROTATION_SCALE

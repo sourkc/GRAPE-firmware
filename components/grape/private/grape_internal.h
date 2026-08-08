@@ -7,6 +7,21 @@
 #include "grape/grape.h"
 #include "grape/grape_telemetry.h"
 
+typedef enum {
+#define GRAPE_FEATURE_ENTRY(symbol, id, name, default_mode, flags) \
+    GRAPE_FEATURE_SLOT_##symbol,
+#include "grape/grape_feature_registry.def"
+#undef GRAPE_FEATURE_ENTRY
+    GRAPE_FEATURE_SLOT_COUNT,
+} grape_feature_slot_t;
+
+typedef struct {
+    grape_feature_mode_t mode;
+    grape_feature_unavailable_reason_t unavailable_reason;
+    bool available;
+    bool active;
+} grape_feature_state_t;
+
 struct grape_texture {
     grape_context_t *context;
     struct grape_texture *next;
@@ -122,7 +137,7 @@ struct grape_context {
     size_t shear_buffer_a_size;
     size_t shear_buffer_b_size;
     grape_rotation_backend_t rotation_backend;
-    grape_shear_y_backend_t shear_y_backend;
+    grape_feature_state_t features[GRAPE_FEATURE_SLOT_COUNT];
     grape_debug_state_t debug;
     bool display_backbuffer_needs_full_redraw;
 };
@@ -154,7 +169,13 @@ void grape_surface_insert_sorted(grape_context_t *context, grape_surface_t *surf
 void grape_surface_remove(grape_context_t *context, grape_surface_t *surface);
 esp_err_t grape_texture_rebuild_occupancy(grape_texture_t *texture);
 
-esp_err_t grape_ppa_init(grape_context_t *context);
+void grape_feature_init(grape_context_t *context);
+esp_err_t grape_feature_set_availability(grape_context_t *context,
+                                         grape_feature_id_t id,
+                                         bool available,
+                                         grape_feature_unavailable_reason_t reason);
+
+void grape_ppa_init(grape_context_t *context);
 void grape_ppa_deinit(grape_context_t *context);
 esp_err_t grape_ppa_fill(grape_context_t *context, grape_rect_t rect, grape_color_t color);
 esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_t *surface,

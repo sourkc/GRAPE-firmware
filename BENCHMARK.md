@@ -57,7 +57,9 @@ The rotation suite deliberately forces the two CPU rotation backends instead of
 using the normal automatic/PPA path. The CSV groups are `rotation_affine` and
 `rotation_shear`, with the angle stored in the `angle_deg` parameter. This makes
 frame time and CPU raster time directly plottable against rotation angle for both
-methods.
+methods. The `rotation_shear_ppa_y` group explicitly enables
+`GRAPE_FEATURE_PPA_A8_ROTATE`; unsupported hardware reports that setup as not
+supported rather than silently benchmarking the direct Y-shear fallback.
 
 The three-shear backend is currently experimental. It handles A8 textures at
 1:1 scale for normalized rotations from -90 to +90 degrees. Unsupported surfaces

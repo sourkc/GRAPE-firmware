@@ -1,3 +1,4 @@
+#include <inttypes.h>
 #include <math.h>
 
 #include "esp_log.h"
@@ -69,32 +70,73 @@ static esp_err_t register_client(ppa_operation_t operation, ppa_client_handle_t 
     return ppa_register_client(&config, out_client);
 }
 
-esp_err_t grape_ppa_init(grape_context_t *context)
+static void init_ppa_client_feature(
+    grape_context_t *context,
+    ppa_operation_t operation,
+    ppa_client_handle_t *out_client,
+    grape_feature_id_t feature
+)
+{
+    esp_err_t ret = register_client(operation, out_client);
+    if (ret == ESP_OK) {
+        grape_feature_set_availability(
+            context,
+            feature,
+            true,
+            GRAPE_FEATURE_UNAVAILABLE_NONE
+        );
+        return;
+    }
+
+    *out_client = NULL;
+    grape_feature_set_availability(
+        context,
+        feature,
+        false,
+        GRAPE_FEATURE_UNAVAILABLE_INIT_FAILED
+    );
+    ESP_LOGW(
+        "grape_ppa",
+        "Feature 0x%08" PRIx32 " unavailable: %s",
+        (uint32_t)feature,
+        esp_err_to_name(ret)
+    );
+}
+
+void grape_ppa_init(grape_context_t *context)
 {
     if (!context) {
-        return ESP_ERR_INVALID_ARG;
+        return;
     }
 
-    esp_err_t ret = register_client(PPA_OPERATION_FILL, &context->ppa_fill);
-    if (ret != ESP_OK) {
-        goto fail;
-    }
+    init_ppa_client_feature(
+        context,
+        PPA_OPERATION_FILL,
+        &context->ppa_fill,
+        GRAPE_FEATURE_PPA_FILL
+    );
+    init_ppa_client_feature(
+        context,
+        PPA_OPERATION_BLEND,
+        &context->ppa_blend,
+        GRAPE_FEATURE_PPA_A8_BLEND
+    );
 
-    ret = register_client(PPA_OPERATION_BLEND, &context->ppa_blend);
-    if (ret != ESP_OK) {
-        goto fail;
-    }
-
-    ret = register_client(PPA_OPERATION_SRM, &context->ppa_srm);
-    if (ret != ESP_OK) {
-        goto fail;
-    }
-
-    return ESP_OK;
-
-fail:
-    grape_ppa_deinit(context);
-    return ret;
+#if CONFIG_ESP32P4_SELECTS_REV_LESS_V3
+    grape_feature_set_availability(
+        context,
+        GRAPE_FEATURE_PPA_A8_ROTATE,
+        false,
+        GRAPE_FEATURE_UNAVAILABLE_UNSUPPORTED_HARDWARE
+    );
+#else
+    init_ppa_client_feature(
+        context,
+        PPA_OPERATION_SRM,
+        &context->ppa_srm,
+        GRAPE_FEATURE_PPA_A8_ROTATE
+    );
+#endif
 }
 
 void grape_ppa_deinit(grape_context_t *context)
@@ -122,7 +164,8 @@ esp_err_t grape_ppa_fill(grape_context_t *context, grape_rect_t rect, grape_colo
     if (!context || grape_rect_empty(rect)) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (!context->ppa_fill) {
+    if (!grape_feature_is_active(context, GRAPE_FEATURE_PPA_FILL) ||
+        !context->ppa_fill) {
         return ESP_ERR_NOT_SUPPORTED;
     }
     if (!render_target_ppa_compatible(context)) {
@@ -191,7 +234,8 @@ static esp_err_t blend_a8_image(
 
     *handled = false;
 
-    if (!context->ppa_blend) {
+    if (!grape_feature_is_active(context, GRAPE_FEATURE_PPA_A8_BLEND) ||
+        !context->ppa_blend) {
         return ESP_OK;
     }
     if (!render_target_ppa_compatible(context)) {
@@ -360,7 +404,8 @@ esp_err_t grape_ppa_rotate_a8(
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (!context->ppa_srm || input_image->width == 0 || input_image->height == 0) {
+    if (!grape_feature_is_active(context, GRAPE_FEATURE_PPA_A8_ROTATE) ||
+        !context->ppa_srm || input_image->width == 0 || input_image->height == 0) {
         return ESP_ERR_NOT_SUPPORTED;
     }
 
@@ -472,7 +517,8 @@ esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_
 
     *handled = false;
 
-    if (!context->ppa_blend || !surface->texture ||
+    if (!grape_feature_is_active(context, GRAPE_FEATURE_PPA_A8_BLEND) ||
+        !context->ppa_blend || !surface->texture ||
         surface->texture->format != GRAPE_PIXEL_FORMAT_A8 ||
         !is_identity_linear_transform(surface)) {
         return ESP_OK;
