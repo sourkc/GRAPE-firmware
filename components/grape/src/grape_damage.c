@@ -227,6 +227,125 @@ static bool mark_float_aabb(uint8_t *bitmap,
     return true;
 }
 
+static bool mark_full_surface_quad(uint8_t *bitmap,
+                                   const grape_damage_state_t *damage,
+                                   const grape_context_t *context,
+                                   const grape_surface_t *surface,
+                                   float m00,
+                                   float m01,
+                                   float m10,
+                                   float m11,
+                                   float offset_x,
+                                   float offset_y)
+{
+    const float width = (float)surface->texture->width;
+    const float height = (float)surface->texture->height;
+    const float edge_x_x = m00 * width;
+    const float edge_x_y = m10 * width;
+    const float edge_y_x = m01 * height;
+    const float edge_y_y = m11 * height;
+
+    float min_x = offset_x;
+    float max_x = offset_x;
+    float min_y = offset_y;
+    float max_y = offset_y;
+
+    if (edge_x_x < 0.0f) min_x += edge_x_x; else max_x += edge_x_x;
+    if (edge_y_x < 0.0f) min_x += edge_y_x; else max_x += edge_y_x;
+    if (edge_x_y < 0.0f) min_y += edge_x_y; else max_y += edge_x_y;
+    if (edge_y_y < 0.0f) min_y += edge_y_y; else max_y += edge_y_y;
+
+    const float screen_width = (float)context->display_info.width;
+    const float screen_height = (float)context->display_info.height;
+    if (max_x <= 0.0f || max_y <= 0.0f ||
+        min_x >= screen_width || min_y >= screen_height ||
+        max_x <= min_x || max_y <= min_y) {
+        return false;
+    }
+
+    if (min_x < 0.0f) min_x = 0.0f;
+    if (min_y < 0.0f) min_y = 0.0f;
+    if (max_x > screen_width) max_x = screen_width;
+    if (max_y > screen_height) max_y = screen_height;
+
+    int32_t pixel_x0 = (int32_t)floorf(min_x);
+    int32_t pixel_y0 = (int32_t)floorf(min_y);
+    int32_t pixel_x1 = (int32_t)ceilf(max_x);
+    int32_t pixel_y1 = (int32_t)ceilf(max_y);
+    if (pixel_x1 <= pixel_x0 || pixel_y1 <= pixel_y0) {
+        return false;
+    }
+
+    const int32_t tile_size = CONFIG_GRAPE_DAMAGE_TILE_SIZE;
+    uint32_t tile_x0 = (uint32_t)(pixel_x0 / tile_size);
+    uint32_t tile_y0 = (uint32_t)(pixel_y0 / tile_size);
+    uint32_t tile_x1 = (uint32_t)((pixel_x1 - 1) / tile_size);
+    uint32_t tile_y1 = (uint32_t)((pixel_y1 - 1) / tile_size);
+
+    if (tile_x0 >= damage->tile_columns) tile_x0 = damage->tile_columns - 1U;
+    if (tile_y0 >= damage->tile_rows) tile_y0 = damage->tile_rows - 1U;
+    if (tile_x1 >= damage->tile_columns) tile_x1 = damage->tile_columns - 1U;
+    if (tile_y1 >= damage->tile_rows) tile_y1 = damage->tile_rows - 1U;
+
+    const float center_x = offset_x + 0.5f * (edge_x_x + edge_y_x);
+    const float center_y = offset_y + 0.5f * (edge_x_y + edge_y_y);
+    const float surface_half_x =
+        0.5f * fabsf(surface->transform.scale_x) * width;
+    const float surface_half_y =
+        0.5f * fabsf(surface->transform.scale_y) * height;
+    const float abs_cos = fabsf(surface->cos_rotation);
+    const float abs_sin = fabsf(surface->sin_rotation);
+    bool marked = false;
+    for (uint32_t tile_y = tile_y0; tile_y <= tile_y1; ++tile_y) {
+        const float tile_top = (float)(tile_y * (uint32_t)tile_size);
+        float tile_bottom = tile_top + (float)tile_size;
+        if (tile_bottom > screen_height) {
+            tile_bottom = screen_height;
+        }
+
+        const float tile_center_y = 0.5f * (tile_top + tile_bottom);
+        const float tile_half_y = 0.5f * (tile_bottom - tile_top);
+
+        for (uint32_t tile_x = tile_x0; tile_x <= tile_x1; ++tile_x) {
+            const float tile_left = (float)(tile_x * (uint32_t)tile_size);
+            float tile_right = tile_left + (float)tile_size;
+            if (tile_right > screen_width) {
+                tile_right = screen_width;
+            }
+
+            const float tile_center_x = 0.5f * (tile_left + tile_right);
+            const float tile_half_x = 0.5f * (tile_right - tile_left);
+            const float delta_x = tile_center_x - center_x;
+            const float delta_y = tile_center_y - center_y;
+
+            const float along_surface_x =
+                delta_x * surface->cos_rotation +
+                delta_y * surface->sin_rotation;
+            const float tile_radius_surface_x =
+                tile_half_x * abs_cos + tile_half_y * abs_sin;
+            if (fabsf(along_surface_x) >
+                surface_half_x + tile_radius_surface_x) {
+                continue;
+            }
+
+            const float along_surface_y =
+                -delta_x * surface->sin_rotation +
+                delta_y * surface->cos_rotation;
+            const float tile_radius_surface_y =
+                tile_half_x * abs_sin + tile_half_y * abs_cos;
+            if (fabsf(along_surface_y) >
+                surface_half_y + tile_radius_surface_y) {
+                continue;
+            }
+
+            tile_set(bitmap, tile_index(damage, tile_x, tile_y));
+            marked = true;
+        }
+    }
+
+    return marked;
+}
+
 esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
 {
     if (!surface || !surface->context || !surface->texture ||
@@ -262,6 +381,36 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
     const float offset_y = surface->transform.y
                          - m10 * surface->transform.origin_x
                          - m11 * surface->transform.origin_y;
+
+    if (texture->occupancy_all_full) {
+        bool marked = mark_full_surface_quad(
+            surface->context->damage.tiles,
+            &surface->context->damage,
+            surface->context,
+            surface,
+            m00,
+            m01,
+            m10,
+            m11,
+            offset_x,
+            offset_y
+        );
+
+        if (marked) {
+            surface->context->damage.has_damage = true;
+        }
+
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
+        surface->context->damage.mark_us_current +=
+            (uint64_t)(esp_timer_get_time() - mark_start_us);
+#endif
+
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DAMAGE_ADD
+        grape_profile_record(GRAPE_PROFILE_METRIC_DAMAGE_ADD,
+                             grape_profile_timestamp() - profile_start_us);
+#endif
+        return ESP_OK;
+    }
 
     const float full_step_x_x = m00 * (float)cell_size;
     const float full_step_x_y = m10 * (float)cell_size;
