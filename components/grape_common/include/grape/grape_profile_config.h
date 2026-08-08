@@ -28,6 +28,5 @@
 #define GRAPE_PROFILE_SHEAR_CLEAR                1
 #define GRAPE_PROFILE_SHEAR_QUARTER_TURN         1
 #define GRAPE_PROFILE_SHEAR_COMPOSITE            1
-#define GRAPE_PROFILE_DISPLAY_BLIT              1
 #define GRAPE_PROFILE_LCD_DRAW_SUBMIT           1
 #define GRAPE_PROFILE_LCD_DRAW_WAIT             1

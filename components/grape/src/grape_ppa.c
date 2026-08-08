@@ -41,6 +41,23 @@ static ppa_srm_color_mode_t srm_color_mode(grape_pixel_format_t format)
     }
 }
 
+static bool render_target_ppa_compatible(const grape_context_t *context)
+{
+    if (!context || !context->render_target.pixels ||
+        !context->render_target.ppa_compatible) {
+        return false;
+    }
+
+    size_t bpp = grape_bytes_per_pixel(context->render_target.format);
+    if (bpp == 0 || context->render_target.width > SIZE_MAX / bpp) {
+        return false;
+    }
+
+    return context->render_target.stride ==
+               (size_t)context->render_target.width * bpp &&
+           context->render_target.buffer_size <= UINT32_MAX;
+}
+
 static esp_err_t register_client(ppa_operation_t operation, ppa_client_handle_t *out_client)
 {
     ppa_client_config_t config = {
@@ -108,6 +125,9 @@ esp_err_t grape_ppa_fill(grape_context_t *context, grape_rect_t rect, grape_colo
     if (!context->ppa_fill) {
         return ESP_ERR_NOT_SUPPORTED;
     }
+    if (!render_target_ppa_compatible(context)) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
 
     ppa_fill_color_mode_t color_mode = fill_color_mode(context->display_info.format);
     if ((int)color_mode < 0) {
@@ -116,12 +136,12 @@ esp_err_t grape_ppa_fill(grape_context_t *context, grape_rect_t rect, grape_colo
 
     ppa_fill_oper_config_t config = {
         .out = {
-            .buffer = context->scratch,
-            .buffer_size = context->scratch_size,
-            .pic_w = (uint32_t)rect.width,
-            .pic_h = (uint32_t)rect.height,
-            .block_offset_x = 0,
-            .block_offset_y = 0,
+            .buffer = context->render_target.pixels,
+            .buffer_size = (uint32_t)context->render_target.buffer_size,
+            .pic_w = context->render_target.width,
+            .pic_h = context->render_target.height,
+            .block_offset_x = (uint32_t)rect.x,
+            .block_offset_y = (uint32_t)rect.y,
             .fill_cm = color_mode,
         },
         .fill_block_w = (uint32_t)rect.width,
@@ -174,6 +194,9 @@ static esp_err_t blend_a8_image(
     if (!context->ppa_blend) {
         return ESP_OK;
     }
+    if (!render_target_ppa_compatible(context)) {
+        return ESP_OK;
+    }
 
     ppa_blend_color_mode_t display_mode = blend_color_mode(context->display_info.format);
     if ((int)display_mode < 0) {
@@ -192,16 +215,16 @@ static esp_err_t blend_a8_image(
         return ESP_OK;
     }
 
-    uint32_t bg_x = (uint32_t)(clipped.x - damage_rect.x);
-    uint32_t bg_y = (uint32_t)(clipped.y - damage_rect.y);
+    uint32_t bg_x = (uint32_t)clipped.x;
+    uint32_t bg_y = (uint32_t)clipped.y;
     uint32_t fg_x = (uint32_t)(clipped.x - image_rect.x);
     uint32_t fg_y = (uint32_t)(clipped.y - image_rect.y);
 
     ppa_blend_oper_config_t config = {
         .in_bg = {
-            .buffer = context->scratch,
-            .pic_w = (uint32_t)damage_rect.width,
-            .pic_h = (uint32_t)damage_rect.height,
+            .buffer = context->render_target.pixels,
+            .pic_w = context->render_target.width,
+            .pic_h = context->render_target.height,
             .block_w = (uint32_t)clipped.width,
             .block_h = (uint32_t)clipped.height,
             .block_offset_x = bg_x,
@@ -219,10 +242,10 @@ static esp_err_t blend_a8_image(
             .blend_cm = PPA_BLEND_COLOR_MODE_A8,
         },
         .out = {
-            .buffer = context->scratch,
-            .buffer_size = context->scratch_size,
-            .pic_w = (uint32_t)damage_rect.width,
-            .pic_h = (uint32_t)damage_rect.height,
+            .buffer = context->render_target.pixels,
+            .buffer_size = (uint32_t)context->render_target.buffer_size,
+            .pic_w = context->render_target.width,
+            .pic_h = context->render_target.height,
             .block_offset_x = bg_x,
             .block_offset_y = bg_y,
             .blend_cm = display_mode,

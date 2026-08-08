@@ -33,7 +33,6 @@ static const char *metric_csv_name(grape_profile_metric_t metric)
         [GRAPE_PROFILE_METRIC_SHEAR_CLEAR] = "shear_clear",
         [GRAPE_PROFILE_METRIC_SHEAR_QUARTER_TURN] = "shear_quarter_turn",
         [GRAPE_PROFILE_METRIC_SHEAR_COMPOSITE] = "shear_composite",
-        [GRAPE_PROFILE_METRIC_DISPLAY_BLIT] = "display_blit",
         [GRAPE_PROFILE_METRIC_LCD_DRAW_SUBMIT] = "lcd_draw_submit",
         [GRAPE_PROFILE_METRIC_LCD_DRAW_WAIT] = "lcd_draw_wait",
     };

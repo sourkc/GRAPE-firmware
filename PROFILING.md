@@ -15,7 +15,7 @@ Current timings:
 - `GRAPE_PROFILE_DAMAGE_PLAN` - extracting tile runs and building the adaptive render-rectangle plan.
 - `GRAPE_PROFILE_SURFACE_TRANSFORM` - complete surface transform update, including recache and damage tracking.
 - `GRAPE_PROFILE_SURFACE_RECACHE` - sin/cos cache and transformed-bounds calculation.
-- `GRAPE_PROFILE_COMPOSITOR` - one dirty rectangle from clear through display blit.
+- `GRAPE_PROFILE_COMPOSITOR` - one dirty rectangle rendered directly into the active framebuffer target.
 - `GRAPE_PROFILE_PPA_FILL` - PPA background-fill dispatch including the blocking PPA operation.
 - `GRAPE_PROFILE_CPU_FILL` - software background-fill fallback.
 - `GRAPE_PROFILE_PPA_BLEND_DISPATCH` - the full PPA blend fast-path check/configuration/dispatch attempt for one surface.
@@ -27,8 +27,7 @@ Current timings:
 - `GRAPE_PROFILE_SHEAR_X2` - complete second horizontal shear pass, including its output-buffer clear.
 - `GRAPE_PROFILE_SHEAR_CLEAR` - time spent specifically clearing shear output buffers. This is nested inside X1/Y/X2.
 - `GRAPE_PROFILE_SHEAR_QUARTER_TURN` - the special exact ±90° path.
-- `GRAPE_PROFILE_SHEAR_COMPOSITE` - compositing the completed A8 shear image into GRAPE's display scratch buffer.
-- `GRAPE_PROFILE_DISPLAY_BLIT` - copy one rendered dirty rectangle from GRAPE scratch into the display backbuffer.
+- `GRAPE_PROFILE_SHEAR_COMPOSITE` - compositing the completed A8 shear image into GRAPE's active framebuffer target.
 - `GRAPE_PROFILE_LCD_DRAW_SUBMIT` - submit the completed backbuffer as the next DPI framebuffer.
 - `GRAPE_PROFILE_LCD_DRAW_WAIT` - wait for the refresh boundary that makes the submitted framebuffer active.
 

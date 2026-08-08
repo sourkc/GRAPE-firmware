@@ -29,7 +29,7 @@ idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;config/esp32p4_rev3.defaults" b
 
 ## Debug layers
 
-Debug overlays are rendered after normal surfaces and before the display blit. They do not create normal scene damage, so debug rendering cannot feed back into the damage system it is inspecting.
+Debug overlays are rendered after normal surfaces directly into the active render target. They do not create normal scene damage; their physical draw/cleanup coverage is tracked separately so debug rendering cannot feed back into logical scene damage.
 
 The first built-in layer visualizes the final logical damage rectangles for the current frame with a translucent red fill and stronger border:
 

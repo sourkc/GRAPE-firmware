@@ -9,6 +9,16 @@ typedef struct {
     uint8_t a;
 } rgba8_t;
 
+static inline uint8_t *render_target_pixel(grape_context_t *context,
+                                           int32_t x,
+                                           int32_t y,
+                                           size_t bpp)
+{
+    return (uint8_t *)context->render_target.pixels +
+           (size_t)y * context->render_target.stride +
+           (size_t)x * bpp;
+}
+
 static inline uint8_t mul8(uint8_t a, uint8_t b)
 {
     return (uint8_t)(((uint16_t)a * b + 127U) / 255U);
@@ -128,16 +138,14 @@ static void raster_surface_a8(grape_context_t *context, const grape_surface_t *s
     const grape_texture_t *texture = surface->texture;
     const float texture_width = (float)texture->width;
     const float texture_height = (float)texture->height;
-    const int32_t scratch_x = clipped.x - damage_rect.x;
+    (void)damage_rect;
 
     for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
         float local_x;
         float local_y;
         affine_row_start(surface, clipped.x, y, &local_x, &local_y);
 
-        int32_t scratch_y = y - damage_rect.y;
-        uint8_t *dst = context->scratch +
-            (((size_t)scratch_y * damage_rect.width + scratch_x) * bpp);
+        uint8_t *dst = render_target_pixel(context, clipped.x, y, bpp);
 
         for (int32_t x = 0; x < clipped.width; ++x) {
             if (local_x >= 0.0f && local_y >= 0.0f &&
@@ -172,7 +180,7 @@ static void raster_surface_rgb565(grape_context_t *context, const grape_surface_
     const grape_texture_t *texture = surface->texture;
     const float texture_width = (float)texture->width;
     const float texture_height = (float)texture->height;
-    const int32_t scratch_x = clipped.x - damage_rect.x;
+    (void)damage_rect;
     const uint8_t surface_alpha = mul8(surface->opacity, surface->tint.a);
 
     if (surface_alpha == 0) {
@@ -184,9 +192,7 @@ static void raster_surface_rgb565(grape_context_t *context, const grape_surface_
         float local_y;
         affine_row_start(surface, clipped.x, y, &local_x, &local_y);
 
-        int32_t scratch_y = y - damage_rect.y;
-        uint8_t *dst = context->scratch +
-            (((size_t)scratch_y * damage_rect.width + scratch_x) * bpp);
+        uint8_t *dst = render_target_pixel(context, clipped.x, y, bpp);
 
         for (int32_t x = 0; x < clipped.width; ++x) {
             if (local_x >= 0.0f && local_y >= 0.0f &&
@@ -224,7 +230,7 @@ static void raster_surface_rgb888(grape_context_t *context, const grape_surface_
     const grape_texture_t *texture = surface->texture;
     const float texture_width = (float)texture->width;
     const float texture_height = (float)texture->height;
-    const int32_t scratch_x = clipped.x - damage_rect.x;
+    (void)damage_rect;
     const uint8_t surface_alpha = mul8(surface->opacity, surface->tint.a);
 
     if (surface_alpha == 0) {
@@ -236,9 +242,7 @@ static void raster_surface_rgb888(grape_context_t *context, const grape_surface_
         float local_y;
         affine_row_start(surface, clipped.x, y, &local_x, &local_y);
 
-        int32_t scratch_y = y - damage_rect.y;
-        uint8_t *dst = context->scratch +
-            (((size_t)scratch_y * damage_rect.width + scratch_x) * bpp);
+        uint8_t *dst = render_target_pixel(context, clipped.x, y, bpp);
 
         for (int32_t x = 0; x < clipped.width; ++x) {
             if (local_x >= 0.0f && local_y >= 0.0f &&
@@ -347,8 +351,6 @@ static esp_err_t raster_surface_three_shear_a8(
         return ESP_OK;
     }
 
-    int32_t scratch_x = clipped.x - damage_rect.x;
-
     for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
         float local_y =
             ((float)y + 0.5f) -
@@ -393,11 +395,12 @@ static esp_err_t raster_surface_three_shear_a8(
             (size_t)source_y * image.stride +
             (size_t)source_x;
 
-        int32_t scratch_y = y - damage_rect.y;
-        uint8_t *destination =
-            context->scratch +
-            (((size_t)scratch_y * damage_rect.width +
-              (size_t)(scratch_x + destination_x)) * bpp);
+        uint8_t *destination = render_target_pixel(
+            context,
+            clipped.x + (int32_t)destination_x,
+            y,
+            bpp
+        );
 
         for (size_t i = 0; i < pixel_count; ++i) {
             uint8_t alpha = source[i];
@@ -432,16 +435,16 @@ static esp_err_t raster_surface_three_shear_a8(
 
 static void fill_background_cpu(grape_context_t *context, grape_rect_t rect, size_t bpp, rgba8_t background)
 {
-    for (int32_t y = 0; y < rect.height; ++y) {
+    for (int32_t y = rect.y; y < rect.y + rect.height; ++y) {
+        uint8_t *dst = render_target_pixel(context, rect.x, y, bpp);
         for (int32_t x = 0; x < rect.width; ++x) {
-            size_t offset = ((size_t)y * rect.width + x) * bpp;
-            uint8_t *dst = context->scratch + offset;
 
             if (context->display_info.format == GRAPE_PIXEL_FORMAT_RGB565) {
                 write_rgb565(dst, background);
             } else {
                 write_rgb888(dst, background);
             }
+            dst += bpp;
         }
     }
 }
@@ -460,17 +463,17 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
     }
 
     size_t bpp = grape_bytes_per_pixel(context->display_info.format);
-
-    size_t required =
-        (size_t)rect.width *
-        (size_t)rect.height *
-        bpp;
-
-    if (required > context->scratch_size) {
+    if (!context->render_target.pixels ||
+        context->render_target.format != context->display_info.format ||
+        context->render_target.width != context->display_info.width ||
+        context->render_target.height != context->display_info.height ||
+        rect.x < 0 || rect.y < 0 ||
+        (uint32_t)(rect.x + rect.width) > context->render_target.width ||
+        (uint32_t)(rect.y + rect.height) > context->render_target.height) {
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
         grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
 #endif
-        return ESP_ERR_INVALID_SIZE;
+        return ESP_ERR_INVALID_STATE;
     }
 
     rgba8_t background = {
@@ -583,22 +586,9 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
 
     grape_debug_render(context, rect);
 
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DISPLAY_BLIT
-    int64_t display_blit_start_us = grape_profile_timestamp();
-#endif
-    ret = grape_display_blit(
-        context->display,
-        rect,
-        context->scratch
-    );
-#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_DISPLAY_BLIT
-    grape_profile_record(GRAPE_PROFILE_METRIC_DISPLAY_BLIT,
-                         grape_profile_timestamp() - display_blit_start_us);
-#endif
-
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_COMPOSITOR
     grape_profile_record(GRAPE_PROFILE_METRIC_COMPOSITOR, grape_profile_timestamp() - compositor_start_us);
 #endif
 
-    return ret;
+    return ESP_OK;
 }

@@ -75,6 +75,8 @@ typedef struct {
 
 typedef struct {
     uint8_t *tiles;
+    uint8_t *current_visible_tiles;
+    uint8_t *previous_visible_tiles;
     uint8_t *render_tiles;
     size_t bitmap_size;
     uint32_t tile_columns;
@@ -92,9 +94,11 @@ typedef struct {
     grape_debug_damage_stats_t latest_stats;
 } grape_damage_state_t;
 
+#define GRAPE_DEBUG_RENDER_DAMAGE_CAPACITY (CONFIG_GRAPE_MAX_DAMAGE_RECTS * 2U)
+
 typedef struct {
     uint32_t enabled_mask;
-    grape_rect_t render_damage[CONFIG_GRAPE_MAX_DAMAGE_RECTS];
+    grape_rect_t render_damage[GRAPE_DEBUG_RENDER_DAMAGE_CAPACITY];
     size_t render_damage_count;
     grape_rect_t damage_rects_current[CONFIG_GRAPE_MAX_DAMAGE_RECTS];
     size_t damage_rects_current_count;
@@ -109,8 +113,7 @@ struct grape_context {
     grape_surface_t *surfaces;
     grape_color_t background;
     grape_damage_state_t damage;
-    uint8_t *scratch;
-    size_t scratch_size;
+    grape_display_render_target_t render_target;
     ppa_client_handle_t ppa_srm;
     ppa_client_handle_t ppa_blend;
     ppa_client_handle_t ppa_fill;
@@ -121,9 +124,7 @@ struct grape_context {
     grape_rotation_backend_t rotation_backend;
     grape_shear_y_backend_t shear_y_backend;
     grape_debug_state_t debug;
-    grape_rect_t previous_render_rects[CONFIG_GRAPE_MAX_DAMAGE_RECTS];
-    size_t previous_render_rect_count;
-    bool display_backbuffer_needs_full_sync;
+    bool display_backbuffer_needs_full_redraw;
 };
 
 size_t grape_bytes_per_pixel(grape_pixel_format_t format);
@@ -138,12 +139,15 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface);
 void grape_damage_all(grape_context_t *context);
 void grape_damage_clear(grape_context_t *context);
 esp_err_t grape_damage_build_logical_rects(grape_context_t *context);
+esp_err_t grape_damage_prepare_visible(grape_context_t *context,
+                                       const grape_rect_t *extra_rects,
+                                       size_t extra_count);
 esp_err_t grape_damage_build_render_rects(grape_context_t *context,
-                                          const grape_rect_t *extra_rects,
-                                          size_t extra_count,
+                                          bool force_full_redraw,
                                           grape_rect_t *out_rects,
                                           size_t out_capacity,
                                           size_t *out_count);
+void grape_damage_commit_visible(grape_context_t *context);
 grape_rect_t grape_surface_calculate_bounds(const grape_surface_t *surface);
 void grape_surface_recache(grape_surface_t *surface);
 void grape_surface_insert_sorted(grape_context_t *context, grape_surface_t *surface);

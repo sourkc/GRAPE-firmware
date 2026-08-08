@@ -6,8 +6,10 @@ typedef struct grape_display_driver {
     const char *name;
     esp_err_t (*open)(grape_display_t *display);
     void (*close)(grape_display_t *display);
-    esp_err_t (*begin_frame)(grape_display_t *display, const grape_rect_t *sync_rects, size_t sync_rect_count);
-    esp_err_t (*blit)(grape_display_t *display, grape_rect_t rect, const void *pixels);
+    esp_err_t (*begin_frame)(grape_display_t *display,
+                             const grape_rect_t *render_rects,
+                             size_t render_rect_count,
+                             grape_display_render_target_t *out_target);
     esp_err_t (*present)(grape_display_t *display);
     esp_err_t (*get_frame_stats)(const grape_display_t *display,
                                  grape_display_frame_stats_t *out_stats);

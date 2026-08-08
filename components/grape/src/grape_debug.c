@@ -51,7 +51,7 @@ static void add_render_damage(grape_context_t *context, grape_rect_t rect)
         return;
     }
 
-    if (debug->render_damage_count < CONFIG_GRAPE_MAX_DAMAGE_RECTS) {
+    if (debug->render_damage_count < GRAPE_DEBUG_RENDER_DAMAGE_CAPACITY) {
         debug->render_damage[debug->render_damage_count++] = rect;
         return;
     }
@@ -115,13 +115,12 @@ static void draw_filled_rect(grape_context_t *context,
     }
 
     size_t bpp = grape_bytes_per_pixel(context->display_info.format);
-    int32_t start_x = clipped.x - render_rect.x;
-    int32_t start_y = clipped.y - render_rect.y;
 
     for (int32_t y = 0; y < clipped.height; ++y) {
-        uint8_t *destination = context->scratch +
-            (((size_t)(start_y + y) * (size_t)render_rect.width +
-              (size_t)start_x) * bpp);
+        uint8_t *destination =
+            (uint8_t *)context->render_target.pixels +
+            (size_t)(clipped.y + y) * context->render_target.stride +
+            (size_t)clipped.x * bpp;
 
         for (int32_t x = 0; x < clipped.width; ++x) {
             if (context->display_info.format == GRAPE_PIXEL_FORMAT_RGB565) {
@@ -200,6 +199,10 @@ static void damage_rects_prepare(grape_context_t *context)
 
     for (size_t i = 0; i < debug->damage_rects_previous_count; ++i) {
         add_render_damage(context, debug->damage_rects_previous[i]);
+    }
+
+    for (size_t i = 0; i < debug->damage_rects_current_count; ++i) {
+        add_render_damage(context, debug->damage_rects_current[i]);
     }
 }
 

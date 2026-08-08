@@ -136,6 +136,27 @@ static bool mark_rect(uint8_t *bitmap,
     return true;
 }
 
+static void bitmap_fill_all(const grape_damage_state_t *damage, uint8_t *bitmap)
+{
+    memset(bitmap, 0xFF, damage->bitmap_size);
+
+    size_t tile_count = (size_t)damage->tile_columns * damage->tile_rows;
+    unsigned used_bits = (unsigned)(tile_count & 7U);
+    if (used_bits != 0U) {
+        bitmap[damage->bitmap_size - 1U] &=
+            (uint8_t)((1U << used_bits) - 1U);
+    }
+}
+
+static void bitmap_or(uint8_t *destination,
+                      const uint8_t *source,
+                      size_t size)
+{
+    for (size_t i = 0; i < size; ++i) {
+        destination[i] |= source[i];
+    }
+}
+
 static inline bool occupancy_get(const grape_texture_t *texture,
                                  uint32_t x,
                                  uint32_t y)
@@ -722,6 +743,8 @@ esp_err_t grape_damage_init(grape_context_t *context)
     damage->split_axis_capacity = columns > rows ? columns : rows;
 
     damage->tiles = calloc(1, damage->bitmap_size);
+    damage->current_visible_tiles = calloc(1, damage->bitmap_size);
+    damage->previous_visible_tiles = calloc(1, damage->bitmap_size);
     damage->render_tiles = calloc(1, damage->bitmap_size);
     damage->split_regions = calloc(
         damage->split_region_capacity,
@@ -735,6 +758,8 @@ esp_err_t grape_damage_init(grape_context_t *context)
     );
 
     if (!damage->tiles ||
+        !damage->current_visible_tiles ||
+        !damage->previous_visible_tiles ||
         !damage->render_tiles ||
         !damage->split_regions ||
         !damage->column_bounds ||
@@ -755,6 +780,8 @@ void grape_damage_deinit(grape_context_t *context)
 
     grape_damage_state_t *damage = &context->damage;
     free(damage->tiles);
+    free(damage->current_visible_tiles);
+    free(damage->previous_visible_tiles);
     free(damage->render_tiles);
     free(damage->split_regions);
     free(damage->column_bounds);
@@ -803,15 +830,8 @@ void grape_damage_all(grape_context_t *context)
         return;
     }
 
-    memset(context->damage.tiles, 0xFF, context->damage.bitmap_size);
+    bitmap_fill_all(&context->damage, context->damage.tiles);
     context->damage.has_damage = true;
-
-    size_t tile_count = (size_t)context->damage.tile_columns * context->damage.tile_rows;
-    unsigned used_bits = (unsigned)(tile_count & 7U);
-    if (used_bits != 0U) {
-        context->damage.tiles[context->damage.bitmap_size - 1U] &=
-            (uint8_t)((1U << used_bits) - 1U);
-    }
 }
 
 void grape_damage_clear(grape_context_t *context)
@@ -821,6 +841,8 @@ void grape_damage_clear(grape_context_t *context)
     }
 
     memset(context->damage.tiles, 0, context->damage.bitmap_size);
+    memset(context->damage.current_visible_tiles, 0, context->damage.bitmap_size);
+    memset(context->damage.render_tiles, 0, context->damage.bitmap_size);
     context->damage.has_damage = false;
     context->damage.final_rect_count = 0;
     context->damage.mark_us_current = 0;
@@ -832,85 +854,107 @@ esp_err_t grape_damage_build_logical_rects(grape_context_t *context)
         return ESP_ERR_INVALID_ARG;
     }
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-    int64_t plan_start_us = esp_timer_get_time();
-    uint64_t mark_us = context->damage.mark_us_current;
-#endif
-
-    esp_err_t ret = ESP_OK;
     if (!context->damage.has_damage) {
         context->damage.final_rect_count = 0;
-        context->damage.latest_stats = (grape_debug_damage_stats_t){
-            .total_tiles = context->damage.tile_columns * context->damage.tile_rows,
-            .fullscreen_pixels = (uint64_t)context->display_info.width *
-                                 (uint64_t)context->display_info.height,
-        };
-    } else {
-        ret = build_rects(
-            context,
-            context->damage.tiles,
-            context->damage.final_rects,
-            CONFIG_GRAPE_MAX_DAMAGE_RECTS,
-            &context->damage.final_rect_count,
-            &context->damage.latest_stats
-        );
+        return ESP_OK;
     }
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-    context->damage.latest_stats.mark_us = mark_us;
-    context->damage.latest_stats.plan_us =
-        (uint64_t)(esp_timer_get_time() - plan_start_us);
-#else
-    context->damage.latest_stats.mark_us = 0;
-    context->damage.latest_stats.plan_us = 0;
-#endif
-    return ret;
+    return build_rects(
+        context,
+        context->damage.tiles,
+        context->damage.final_rects,
+        CONFIG_GRAPE_MAX_DAMAGE_RECTS,
+        &context->damage.final_rect_count,
+        NULL
+    );
 }
 
-esp_err_t grape_damage_build_render_rects(grape_context_t *context,
-                                          const grape_rect_t *extra_rects,
-                                          size_t extra_count,
-                                          grape_rect_t *out_rects,
-                                          size_t out_capacity,
-                                          size_t *out_count)
+esp_err_t grape_damage_prepare_visible(grape_context_t *context,
+                                       const grape_rect_t *extra_rects,
+                                       size_t extra_count)
 {
-    if (!context || !out_rects || out_capacity == 0 || !out_count ||
+    if (!context || !context->damage.tiles || !context->damage.current_visible_tiles ||
         (extra_count > 0 && !extra_rects)) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (extra_count == 0) {
-        if (context->damage.final_rect_count > out_capacity) {
-            return ESP_ERR_INVALID_SIZE;
-        }
-
-        memcpy(out_rects,
-               context->damage.final_rects,
-               context->damage.final_rect_count * sizeof(out_rects[0]));
-        *out_count = context->damage.final_rect_count;
-        return ESP_OK;
-    }
-
-    memcpy(context->damage.render_tiles,
-           context->damage.tiles,
-           context->damage.bitmap_size);
+    grape_damage_state_t *damage = &context->damage;
+    memcpy(damage->current_visible_tiles, damage->tiles, damage->bitmap_size);
 
     grape_rect_t screen = screen_bounds(context);
     for (size_t i = 0; i < extra_count; ++i) {
         mark_rect(
-            context->damage.render_tiles,
-            &context->damage,
+            damage->current_visible_tiles,
+            damage,
             screen,
             extra_rects[i]
         );
     }
 
-    return build_rects(
+    return ESP_OK;
+}
+
+esp_err_t grape_damage_build_render_rects(grape_context_t *context,
+                                          bool force_full_redraw,
+                                          grape_rect_t *out_rects,
+                                          size_t out_capacity,
+                                          size_t *out_count)
+{
+    if (!context || !out_rects || out_capacity == 0 || !out_count ||
+        !context->damage.current_visible_tiles ||
+        !context->damage.previous_visible_tiles ||
+        !context->damage.render_tiles) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
+    int64_t plan_start_us = esp_timer_get_time();
+    uint64_t mark_us = context->damage.mark_us_current;
+#endif
+
+    grape_damage_state_t *damage = &context->damage;
+    memcpy(damage->render_tiles, damage->current_visible_tiles, damage->bitmap_size);
+    bitmap_or(
+        damage->render_tiles,
+        damage->previous_visible_tiles,
+        damage->bitmap_size
+    );
+
+    if (force_full_redraw) {
+        bitmap_fill_all(damage, damage->render_tiles);
+    }
+
+    esp_err_t ret = build_rects(
         context,
-        context->damage.render_tiles,
+        damage->render_tiles,
         out_rects,
         out_capacity,
         out_count,
-        NULL
+        &damage->latest_stats
+    );
+
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
+    damage->latest_stats.mark_us = mark_us;
+    damage->latest_stats.plan_us =
+        (uint64_t)(esp_timer_get_time() - plan_start_us);
+#else
+    damage->latest_stats.mark_us = 0;
+    damage->latest_stats.plan_us = 0;
+#endif
+
+    return ret;
+}
+
+void grape_damage_commit_visible(grape_context_t *context)
+{
+    if (!context || !context->damage.current_visible_tiles ||
+        !context->damage.previous_visible_tiles) {
+        return;
+    }
+
+    memcpy(
+        context->damage.previous_visible_tiles,
+        context->damage.current_visible_tiles,
+        context->damage.bitmap_size
     );
 }

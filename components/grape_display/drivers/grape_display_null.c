@@ -1,5 +1,13 @@
+#include <stdlib.h>
+
 #include "sdkconfig.h"
 #include "grape_display_internal.h"
+
+typedef struct {
+    uint8_t *frame_buffer;
+    size_t frame_buffer_size;
+    size_t bytes_per_pixel;
+} null_state_t;
 
 static esp_err_t null_open(grape_display_t *display)
 {
@@ -11,27 +19,65 @@ static esp_err_t null_open(grape_display_t *display)
 #else
     display->info.format = GRAPE_PIXEL_FORMAT_RGB565;
 #endif
+
+    size_t bytes_per_pixel = display->info.format == GRAPE_PIXEL_FORMAT_RGB888 ? 3U : 2U;
+    if (display->info.width > SIZE_MAX / display->info.height ||
+        (size_t)display->info.width * display->info.height > SIZE_MAX / bytes_per_pixel) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    null_state_t *state = calloc(1, sizeof(*state));
+    if (!state) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    state->bytes_per_pixel = bytes_per_pixel;
+    state->frame_buffer_size =
+        (size_t)display->info.width * display->info.height * bytes_per_pixel;
+    state->frame_buffer = calloc(1, state->frame_buffer_size);
+    if (!state->frame_buffer) {
+        free(state);
+        return ESP_ERR_NO_MEM;
+    }
+
+    display->driver_data = state;
     return ESP_OK;
 }
 
 static void null_close(grape_display_t *display)
 {
-    (void)display;
+    null_state_t *state = display->driver_data;
+    if (!state) {
+        return;
+    }
+
+    free(state->frame_buffer);
+    free(state);
+    display->driver_data = NULL;
 }
 
-static esp_err_t null_begin_frame(grape_display_t *display, const grape_rect_t *sync_rects, size_t sync_rect_count)
+static esp_err_t null_begin_frame(grape_display_t *display,
+                                  const grape_rect_t *render_rects,
+                                  size_t render_rect_count,
+                                  grape_display_render_target_t *out_target)
 {
-    (void)display;
-    (void)sync_rects;
-    (void)sync_rect_count;
-    return ESP_OK;
-}
+    (void)render_rects;
+    (void)render_rect_count;
 
-static esp_err_t null_blit(grape_display_t *display, grape_rect_t rect, const void *pixels)
-{
-    (void)display;
-    (void)rect;
-    (void)pixels;
+    null_state_t *state = display->driver_data;
+    if (!state || !state->frame_buffer || !out_target) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    *out_target = (grape_display_render_target_t){
+        .pixels = state->frame_buffer,
+        .buffer_size = state->frame_buffer_size,
+        .stride = (size_t)display->info.width * state->bytes_per_pixel,
+        .width = display->info.width,
+        .height = display->info.height,
+        .format = display->info.format,
+        .ppa_compatible = false,
+    };
     return ESP_OK;
 }
 
@@ -53,7 +99,6 @@ const grape_display_driver_t grape_display_driver_null = {
     .open = null_open,
     .close = null_close,
     .begin_frame = null_begin_frame,
-    .blit = null_blit,
     .present = null_present,
     .set_brightness = null_set_brightness,
 };

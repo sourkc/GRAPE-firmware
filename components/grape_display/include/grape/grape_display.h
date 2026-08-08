@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -20,8 +21,17 @@ typedef struct {
 } grape_display_info_t;
 
 typedef struct {
+    void *pixels;
+    size_t buffer_size;
+    size_t stride;
+    uint32_t width;
+    uint32_t height;
+    grape_pixel_format_t format;
+    bool ppa_compatible;
+} grape_display_render_target_t;
+
+typedef struct {
     uint64_t refresh_wait_us;
-    uint64_t blit_copy_us;
 } grape_display_frame_stats_t;
 
 esp_err_t grape_display_open(const char *driver_name, grape_display_t **out_display);
@@ -29,9 +39,9 @@ esp_err_t grape_display_open_default(grape_display_t **out_display);
 void grape_display_close(grape_display_t *display);
 const grape_display_info_t *grape_display_get_info(const grape_display_t *display);
 esp_err_t grape_display_begin_frame(grape_display_t *display,
-                                    const grape_rect_t *sync_rects,
-                                    size_t sync_rect_count);
-esp_err_t grape_display_blit(grape_display_t *display, grape_rect_t rect, const void *pixels);
+                                    const grape_rect_t *render_rects,
+                                    size_t render_rect_count,
+                                    grape_display_render_target_t *out_target);
 esp_err_t grape_display_present(grape_display_t *display);
 esp_err_t grape_display_get_frame_stats(const grape_display_t *display,
                                         grape_display_frame_stats_t *out_stats);

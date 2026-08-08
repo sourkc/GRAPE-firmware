@@ -98,33 +98,64 @@ const grape_display_info_t *grape_display_get_info(const grape_display_t *displa
 
 
 esp_err_t grape_display_begin_frame(grape_display_t *display,
-                                    const grape_rect_t *sync_rects,
-                                    size_t sync_rect_count)
+                                    const grape_rect_t *render_rects,
+                                    size_t render_rect_count,
+                                    grape_display_render_target_t *out_target)
 {
-    if (!display || (sync_rect_count > 0 && !sync_rects)) {
+    if (!display || !out_target || (render_rect_count > 0 && !render_rects)) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    *out_target = (grape_display_render_target_t){0};
 
     if (!display->driver || !display->driver->begin_frame) {
-        return ESP_OK;
+        return ESP_ERR_NOT_SUPPORTED;
     }
 
-    return display->driver->begin_frame(display, sync_rects, sync_rect_count);
-}
-
-esp_err_t grape_display_blit(grape_display_t *display, grape_rect_t rect, const void *pixels)
-{
-    if (!display || !display->driver || !display->driver->blit || !pixels || rect.width <= 0 || rect.height <= 0) {
-        return ESP_ERR_INVALID_ARG;
+    for (size_t i = 0; i < render_rect_count; ++i) {
+        grape_rect_t rect = render_rects[i];
+        if (rect.width <= 0 || rect.height <= 0 ||
+            rect.x < 0 || rect.y < 0 ||
+            (uint32_t)(rect.x + rect.width) > display->info.width ||
+            (uint32_t)(rect.y + rect.height) > display->info.height) {
+            return ESP_ERR_INVALID_ARG;
+        }
     }
 
-    if (rect.x < 0 || rect.y < 0 ||
-        (uint32_t)(rect.x + rect.width) > display->info.width ||
-        (uint32_t)(rect.y + rect.height) > display->info.height) {
-        return ESP_ERR_INVALID_ARG;
+    esp_err_t ret = display->driver->begin_frame(
+        display,
+        render_rects,
+        render_rect_count,
+        out_target
+    );
+    if (ret != ESP_OK) {
+        return ret;
     }
 
-    return display->driver->blit(display, rect, pixels);
+    size_t bpp;
+    switch (out_target->format) {
+        case GRAPE_PIXEL_FORMAT_RGB565:
+            bpp = 2U;
+            break;
+        case GRAPE_PIXEL_FORMAT_RGB888:
+            bpp = 3U;
+            break;
+        default:
+            return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    if (!out_target->pixels ||
+        out_target->width != display->info.width ||
+        out_target->height != display->info.height ||
+        out_target->format != display->info.format ||
+        out_target->width > SIZE_MAX / bpp ||
+        out_target->stride < (size_t)out_target->width * bpp ||
+        out_target->height > SIZE_MAX / out_target->stride ||
+        out_target->buffer_size < out_target->stride * out_target->height) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return ESP_OK;
 }
 
 

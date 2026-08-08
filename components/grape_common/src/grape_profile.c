@@ -21,7 +21,6 @@ static const char *const s_metric_names[GRAPE_PROFILE_METRIC_COUNT] = {
     [GRAPE_PROFILE_METRIC_SHEAR_CLEAR] = "shear buffer clear",
     [GRAPE_PROFILE_METRIC_SHEAR_QUARTER_TURN] = "shear quarter turn",
     [GRAPE_PROFILE_METRIC_SHEAR_COMPOSITE] = "shear composite",
-    [GRAPE_PROFILE_METRIC_DISPLAY_BLIT] = "display blit",
     [GRAPE_PROFILE_METRIC_LCD_DRAW_SUBMIT] = "LCD draw submit",
     [GRAPE_PROFILE_METRIC_LCD_DRAW_WAIT] = "LCD transfer wait",
 };

@@ -1,24 +1,12 @@
 #include <inttypes.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "grape_internal.h"
 #include "grape/grape_debug_config.h"
 
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-#include "esp_timer.h"
-#endif
-
-#define GRAPE_PPA_BUFFER_ALIGNMENT 128U
-
 static const char *TAG = "grape";
-
-static size_t align_up(size_t value, size_t alignment)
-{
-    return (value + alignment - 1U) & ~(alignment - 1U);
-}
 
 size_t grape_bytes_per_pixel(grape_pixel_format_t format)
 {
@@ -88,46 +76,8 @@ esp_err_t grape_init(const grape_config_t *config, grape_context_t **out_context
         return ESP_ERR_INVALID_SIZE;
     }
 
-    size_t logical_size = pixels * bpp;
-    if (logical_size > SIZE_MAX - (GRAPE_PPA_BUFFER_ALIGNMENT - 1U)) {
-        grape_display_close(context->display);
-        free(context);
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    context->scratch_size = align_up(logical_size, GRAPE_PPA_BUFFER_ALIGNMENT);
-    bool ppa_buffer_compatible = true;
-
-    context->scratch = heap_caps_malloc(
-        context->scratch_size,
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_CACHE_ALIGNED | MALLOC_CAP_8BIT
-    );
-
-    if (!context->scratch) {
-        ppa_buffer_compatible = false;
-        context->scratch_size = logical_size;
-        context->scratch = heap_caps_malloc(
-            context->scratch_size,
-            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
-        );
-    }
-
-    if (!context->scratch) {
-        context->scratch = heap_caps_malloc(
-            context->scratch_size,
-            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
-        );
-    }
-
-    if (!context->scratch) {
-        grape_display_close(context->display);
-        free(context);
-        return ESP_ERR_NO_MEM;
-    }
-
     ret = grape_damage_init(context);
     if (ret != ESP_OK) {
-        heap_caps_free(context->scratch);
         grape_display_close(context->display);
         free(context);
         return ret;
@@ -140,15 +90,11 @@ esp_err_t grape_init(const grape_config_t *config, grape_context_t **out_context
              CONFIG_GRAPE_DAMAGE_TILE_SIZE,
              CONFIG_GRAPE_MAX_DAMAGE_RECTS);
 
-    if (ppa_buffer_compatible) {
-        ret = grape_ppa_init(context);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "PPA unavailable (%s); using software compositor", esp_err_to_name(ret));
-        } else {
-            ESP_LOGI(TAG, "PPA acceleration enabled");
-        }
+    ret = grape_ppa_init(context);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "PPA unavailable (%s); using software compositor", esp_err_to_name(ret));
     } else {
-        ESP_LOGW(TAG, "Could not allocate a PPA-compatible scratch buffer; using software compositor");
+        ESP_LOGI(TAG, "PPA acceleration enabled");
     }
 
     grape_damage_all(context);
@@ -174,7 +120,6 @@ void grape_deinit(grape_context_t *context)
     grape_damage_deinit(context);
     heap_caps_free(context->shear_buffer_a);
     heap_caps_free(context->shear_buffer_b);
-    heap_caps_free(context->scratch);
     grape_display_close(context->display);
     free(context);
 }
@@ -189,10 +134,29 @@ esp_err_t grape_present(grape_context_t *context)
     int64_t profile_start_us = grape_profile_timestamp();
 #endif
 
-    esp_err_t ret = grape_damage_build_logical_rects(context);
+    esp_err_t ret = ESP_OK;
+
+    if (grape_debug_is_layer_enabled(context, GRAPE_DEBUG_LAYER_DAMAGE_RECTS)) {
+        ret = grape_damage_build_logical_rects(context);
+        if (ret != ESP_OK) {
+#if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
+            grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
+                                 grape_profile_timestamp() - profile_start_us);
+#endif
+#if GRAPE_PROFILE_ENABLE
+            grape_profile_report_if_due();
+#endif
+            return ret;
+        }
+    } else {
+        context->damage.final_rect_count = 0;
+    }
+
+    ret = grape_debug_prepare_frame(context);
     if (ret != ESP_OK) {
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-        grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
+        grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
+                             grape_profile_timestamp() - profile_start_us);
 #endif
 #if GRAPE_PROFILE_ENABLE
         grape_profile_report_if_due();
@@ -200,10 +164,16 @@ esp_err_t grape_present(grape_context_t *context)
         return ret;
     }
 
-    ret = grape_debug_prepare_frame(context);
+    ret = grape_damage_prepare_visible(
+        context,
+        context->debug.render_damage,
+        context->debug.render_damage_count
+    );
     if (ret != ESP_OK) {
+        grape_debug_reset_frame(context);
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-        grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
+        grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
+                             grape_profile_timestamp() - profile_start_us);
 #endif
 #if GRAPE_PROFILE_ENABLE
         grape_profile_report_if_due();
@@ -216,8 +186,7 @@ esp_err_t grape_present(grape_context_t *context)
 
     ret = grape_damage_build_render_rects(
         context,
-        context->debug.render_damage,
-        context->debug.render_damage_count,
+        context->display_backbuffer_needs_full_redraw,
         render_damage,
         CONFIG_GRAPE_MAX_DAMAGE_RECTS,
         &render_damage_count
@@ -225,7 +194,8 @@ esp_err_t grape_present(grape_context_t *context)
     if (ret != ESP_OK) {
         grape_debug_reset_frame(context);
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-        grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
+        grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
+                             grape_profile_timestamp() - profile_start_us);
 #endif
 #if GRAPE_PROFILE_ENABLE
         grape_profile_report_if_due();
@@ -234,38 +204,19 @@ esp_err_t grape_present(grape_context_t *context)
     }
 
     if (render_damage_count > 0) {
-        grape_rect_t full_screen = {
-            .x = 0,
-            .y = 0,
-            .width = (int32_t)context->display_info.width,
-            .height = (int32_t)context->display_info.height,
-        };
-
-        const grape_rect_t *sync_rects = context->previous_render_rects;
-        size_t sync_rect_count = context->previous_render_rect_count;
-
-        if (context->display_backbuffer_needs_full_sync) {
-            sync_rects = &full_screen;
-            sync_rect_count = 1;
-        }
-
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-        int64_t fb_sync_start_us = esp_timer_get_time();
-#endif
+        grape_display_render_target_t target = {0};
         ret = grape_display_begin_frame(
             context->display,
-            sync_rects,
-            sync_rect_count
+            render_damage,
+            render_damage_count,
+            &target
         );
-#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
-        context->damage.latest_stats.fb_sync_us =
-            (uint64_t)(esp_timer_get_time() - fb_sync_start_us);
-#endif
         if (ret != ESP_OK) {
-            context->display_backbuffer_needs_full_sync = true;
+            context->display_backbuffer_needs_full_redraw = true;
             grape_debug_reset_frame(context);
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-            grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
+            grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
+                                 grape_profile_timestamp() - profile_start_us);
 #endif
 #if GRAPE_PROFILE_ENABLE
             grape_profile_report_if_due();
@@ -273,13 +224,17 @@ esp_err_t grape_present(grape_context_t *context)
             return ret;
         }
 
+        context->render_target = target;
+
         for (size_t i = 0; i < render_damage_count; ++i) {
             ret = grape_compositor_render(context, render_damage[i]);
             if (ret != ESP_OK) {
-                context->display_backbuffer_needs_full_sync = true;
+                context->render_target = (grape_display_render_target_t){0};
+                context->display_backbuffer_needs_full_redraw = true;
                 grape_debug_reset_frame(context);
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-                grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
+                grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
+                                     grape_profile_timestamp() - profile_start_us);
 #endif
 #if GRAPE_PROFILE_ENABLE
                 grape_profile_report_if_due();
@@ -289,18 +244,21 @@ esp_err_t grape_present(grape_context_t *context)
         }
 
         ret = grape_display_present(context->display);
+        context->render_target = (grape_display_render_target_t){0};
+
 #if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
         grape_display_frame_stats_t display_stats = {0};
         if (grape_display_get_frame_stats(context->display, &display_stats) == ESP_OK) {
-            context->damage.latest_stats.fb_blit_us = display_stats.blit_copy_us;
             context->damage.latest_stats.refresh_wait_us = display_stats.refresh_wait_us;
         }
 #endif
+
         if (ret != ESP_OK) {
-            context->display_backbuffer_needs_full_sync = true;
+            context->display_backbuffer_needs_full_redraw = true;
             grape_debug_reset_frame(context);
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-            grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
+            grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
+                                 grape_profile_timestamp() - profile_start_us);
 #endif
 #if GRAPE_PROFILE_ENABLE
             grape_profile_report_if_due();
@@ -308,20 +266,16 @@ esp_err_t grape_present(grape_context_t *context)
             return ret;
         }
 
-        memcpy(
-            context->previous_render_rects,
-            render_damage,
-            render_damage_count * sizeof(render_damage[0])
-        );
-        context->previous_render_rect_count = render_damage_count;
-        context->display_backbuffer_needs_full_sync = false;
+        grape_damage_commit_visible(context);
+        context->display_backbuffer_needs_full_redraw = false;
     }
 
     grape_damage_clear(context);
     grape_debug_finish_frame(context);
 
 #if GRAPE_PROFILE_ENABLE && GRAPE_PROFILE_PRESENT
-    grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT, grape_profile_timestamp() - profile_start_us);
+    grape_profile_record(GRAPE_PROFILE_METRIC_PRESENT,
+                         grape_profile_timestamp() - profile_start_us);
 #endif
 #if GRAPE_PROFILE_ENABLE
     grape_profile_report_if_due();
