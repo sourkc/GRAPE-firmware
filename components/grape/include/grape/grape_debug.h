@@ -24,6 +24,7 @@ typedef struct {
     uint64_t mark_us;
     uint64_t plan_us;
     uint64_t fb_sync_us;
+    uint64_t fb_blit_us;
     uint64_t refresh_wait_us;
     bool full_screen;
 } grape_debug_damage_stats_t;

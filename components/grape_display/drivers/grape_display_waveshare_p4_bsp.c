@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -7,6 +8,7 @@
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_io.h"
+#include "driver/ppa.h"
 #include "esp_log.h"
 #include "bsp/display.h"
 #include "grape_display_internal.h"
@@ -27,12 +29,15 @@ typedef struct {
     SemaphoreHandle_t refresh_done;
     uint8_t *front_buffer;
     uint8_t *back_buffer;
+    ppa_client_handle_t ppa_copy;
+    bool ppa_copy_enabled;
     size_t frame_buffer_size;
     size_t bytes_per_pixel;
     volatile bool swap_armed;
     uint32_t dirty_y_min;
     uint32_t dirty_y_max;
     uint64_t refresh_wait_us;
+    uint64_t blit_copy_us;
 } waveshare_state_t;
 
 static bool IRAM_ATTR waveshare_color_trans_done(
@@ -68,6 +73,158 @@ static bool IRAM_ATTR waveshare_refresh_done(
     return task_woken == pdTRUE;
 }
 
+static ppa_srm_color_mode_t waveshare_srm_color_mode(grape_pixel_format_t format)
+{
+    switch (format) {
+        case GRAPE_PIXEL_FORMAT_RGB565:
+            return PPA_SRM_COLOR_MODE_RGB565;
+        case GRAPE_PIXEL_FORMAT_RGB888:
+            return PPA_SRM_COLOR_MODE_RGB888;
+        default:
+            return (ppa_srm_color_mode_t)-1;
+    }
+}
+
+static esp_err_t waveshare_copy_rect_ppa(
+    waveshare_state_t *state,
+    const grape_display_t *display,
+    const void *source_buffer,
+    uint32_t source_pic_width,
+    uint32_t source_pic_height,
+    uint32_t source_x,
+    uint32_t source_y,
+    void *destination_buffer,
+    uint32_t destination_x,
+    uint32_t destination_y,
+    uint32_t width,
+    uint32_t height)
+{
+    if (!state || !display || !source_buffer || !destination_buffer ||
+        !state->ppa_copy_enabled || !state->ppa_copy || width == 0 || height == 0) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    ppa_srm_color_mode_t color_mode = waveshare_srm_color_mode(display->info.format);
+    if ((int)color_mode < 0) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    ppa_srm_oper_config_t config = {
+        .in = {
+            .buffer = source_buffer,
+            .pic_w = source_pic_width,
+            .pic_h = source_pic_height,
+            .block_w = width,
+            .block_h = height,
+            .block_offset_x = source_x,
+            .block_offset_y = source_y,
+            .srm_cm = color_mode,
+        },
+        .out = {
+            .buffer = destination_buffer,
+            .buffer_size = (uint32_t)state->frame_buffer_size,
+            .pic_w = display->info.width,
+            .pic_h = display->info.height,
+            .block_offset_x = destination_x,
+            .block_offset_y = destination_y,
+            .srm_cm = color_mode,
+        },
+        .rotation_angle = PPA_SRM_ROTATION_ANGLE_0,
+        .scale_x = 1.0f,
+        .scale_y = 1.0f,
+        .mirror_x = false,
+        .mirror_y = false,
+        .rgb_swap = false,
+        .byte_swap = false,
+        .alpha_update_mode = PPA_ALPHA_NO_CHANGE,
+        .mode = PPA_TRANS_MODE_BLOCKING,
+    };
+
+    esp_err_t ret = ppa_do_scale_rotate_mirror(state->ppa_copy, &config);
+    if (ret != ESP_OK) {
+        state->ppa_copy_enabled = false;
+        ESP_LOGW(TAG, "PPA framebuffer copy disabled after error: %s", esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+static void waveshare_copy_rect_cpu(
+    waveshare_state_t *state,
+    const grape_display_t *display,
+    const void *source_buffer,
+    uint32_t source_pic_width,
+    uint32_t source_x,
+    uint32_t source_y,
+    void *destination_buffer,
+    uint32_t destination_x,
+    uint32_t destination_y,
+    uint32_t width,
+    uint32_t height)
+{
+    size_t row_bytes = (size_t)width * state->bytes_per_pixel;
+    size_t source_stride = (size_t)source_pic_width * state->bytes_per_pixel;
+    size_t destination_stride = (size_t)display->info.width * state->bytes_per_pixel;
+    size_t source_offset =
+        ((size_t)source_y * source_pic_width + source_x) * state->bytes_per_pixel;
+    size_t destination_offset =
+        ((size_t)destination_y * display->info.width + destination_x) * state->bytes_per_pixel;
+
+    const uint8_t *source = (const uint8_t *)source_buffer + source_offset;
+    uint8_t *destination = (uint8_t *)destination_buffer + destination_offset;
+
+    for (uint32_t y = 0; y < height; ++y) {
+        memcpy(destination, source, row_bytes);
+        source += source_stride;
+        destination += destination_stride;
+    }
+}
+
+static void waveshare_copy_rect(
+    waveshare_state_t *state,
+    const grape_display_t *display,
+    const void *source_buffer,
+    uint32_t source_pic_width,
+    uint32_t source_pic_height,
+    uint32_t source_x,
+    uint32_t source_y,
+    void *destination_buffer,
+    uint32_t destination_x,
+    uint32_t destination_y,
+    uint32_t width,
+    uint32_t height)
+{
+    esp_err_t ret = waveshare_copy_rect_ppa(
+        state,
+        display,
+        source_buffer,
+        source_pic_width,
+        source_pic_height,
+        source_x,
+        source_y,
+        destination_buffer,
+        destination_x,
+        destination_y,
+        width,
+        height
+    );
+
+    if (ret != ESP_OK) {
+        waveshare_copy_rect_cpu(
+            state,
+            display,
+            source_buffer,
+            source_pic_width,
+            source_x,
+            source_y,
+            destination_buffer,
+            destination_x,
+            destination_y,
+            width,
+            height
+        );
+    }
+}
+
 static void waveshare_cleanup(waveshare_state_t *state)
 {
     if (!state) {
@@ -76,6 +233,11 @@ static void waveshare_cleanup(waveshare_state_t *state)
 
     if (state->refresh_done) {
         vSemaphoreDelete(state->refresh_done);
+    }
+
+    if (state->ppa_copy) {
+        ppa_unregister_client(state->ppa_copy);
+        state->ppa_copy = NULL;
     }
 
     if (state->handles.panel) {
@@ -154,6 +316,35 @@ static esp_err_t waveshare_open(grape_display_t *display)
 
     state->front_buffer = (uint8_t *)fb0;
     state->back_buffer = (uint8_t *)fb1;
+
+    size_t cache_line_size = CONFIG_CACHE_L2_CACHE_LINE_SIZE;
+    bool ppa_output_aligned =
+        cache_line_size != 0 &&
+        ((uintptr_t)state->front_buffer % cache_line_size) == 0 &&
+        ((uintptr_t)state->back_buffer % cache_line_size) == 0 &&
+        (state->frame_buffer_size % cache_line_size) == 0;
+
+    if (ppa_output_aligned) {
+        ppa_client_config_t ppa_copy_config = {
+            .oper_type = PPA_OPERATION_SRM,
+            .max_pending_trans_num = 1,
+            .data_burst_length = PPA_DATA_BURST_LENGTH_128,
+        };
+
+        ret = ppa_register_client(&ppa_copy_config, &state->ppa_copy);
+        if (ret == ESP_OK) {
+            state->ppa_copy_enabled = true;
+            ESP_LOGI(TAG, "PPA framebuffer copy enabled");
+        } else {
+            state->ppa_copy = NULL;
+            state->ppa_copy_enabled = false;
+            ESP_LOGW(TAG, "PPA framebuffer copy unavailable (%s); using CPU fallback",
+                     esp_err_to_name(ret));
+        }
+    } else {
+        ESP_LOGW(TAG,
+                 "DPI framebuffer does not satisfy PPA output alignment; using CPU copy fallback");
+    }
 
     memset(state->front_buffer, 0, state->frame_buffer_size);
     memset(state->back_buffer, 0, state->frame_buffer_size);
@@ -257,6 +448,7 @@ static esp_err_t waveshare_begin_frame(
 
     state->dirty_y_min = display->info.height;
     state->dirty_y_max = 0;
+    state->blit_copy_us = 0;
 
     for (size_t i = 0; i < sync_rect_count; ++i) {
         grape_rect_t rect = sync_rects[i];
@@ -267,19 +459,20 @@ static esp_err_t waveshare_begin_frame(
             return ESP_ERR_INVALID_ARG;
         }
 
-        size_t row_bytes = (size_t)rect.width * state->bytes_per_pixel;
-        size_t row_stride = (size_t)display->info.width * state->bytes_per_pixel;
-        size_t first_offset =
-            ((size_t)rect.y * display->info.width + (size_t)rect.x) * state->bytes_per_pixel;
-
-        const uint8_t *src = state->front_buffer + first_offset;
-        uint8_t *dst = state->back_buffer + first_offset;
-
-        for (int32_t y = 0; y < rect.height; ++y) {
-            memcpy(dst, src, row_bytes);
-            src += row_stride;
-            dst += row_stride;
-        }
+        waveshare_copy_rect(
+            state,
+            display,
+            state->front_buffer,
+            display->info.width,
+            display->info.height,
+            (uint32_t)rect.x,
+            (uint32_t)rect.y,
+            state->back_buffer,
+            (uint32_t)rect.x,
+            (uint32_t)rect.y,
+            (uint32_t)rect.width,
+            (uint32_t)rect.height
+        );
 
         waveshare_track_dirty_rows(state, rect);
     }
@@ -298,19 +491,28 @@ static esp_err_t waveshare_blit(
         return ESP_ERR_INVALID_STATE;
     }
 
-    size_t source_stride = (size_t)rect.width * state->bytes_per_pixel;
-    size_t destination_stride = (size_t)display->info.width * state->bytes_per_pixel;
-    size_t first_offset =
-        ((size_t)rect.y * display->info.width + (size_t)rect.x) * state->bytes_per_pixel;
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
+    int64_t blit_copy_start_us = esp_timer_get_time();
+#endif
 
-    const uint8_t *src = (const uint8_t *)pixels;
-    uint8_t *dst = state->back_buffer + first_offset;
+    waveshare_copy_rect(
+        state,
+        display,
+        pixels,
+        (uint32_t)rect.width,
+        (uint32_t)rect.height,
+        0,
+        0,
+        state->back_buffer,
+        (uint32_t)rect.x,
+        (uint32_t)rect.y,
+        (uint32_t)rect.width,
+        (uint32_t)rect.height
+    );
 
-    for (int32_t y = 0; y < rect.height; ++y) {
-        memcpy(dst, src, source_stride);
-        src += source_stride;
-        dst += destination_stride;
-    }
+#if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
+    state->blit_copy_us += (uint64_t)(esp_timer_get_time() - blit_copy_start_us);
+#endif
 
     waveshare_track_dirty_rows(state, rect);
     return ESP_OK;
@@ -400,6 +602,7 @@ static esp_err_t waveshare_get_frame_stats(const grape_display_t *display,
 
     *out_stats = (grape_display_frame_stats_t){
         .refresh_wait_us = state->refresh_wait_us,
+        .blit_copy_us = state->blit_copy_us,
     };
     return ESP_OK;
 }

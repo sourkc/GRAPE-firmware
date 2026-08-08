@@ -21,6 +21,7 @@ typedef struct {
 
 typedef struct {
     uint64_t refresh_wait_us;
+    uint64_t blit_copy_us;
 } grape_display_frame_stats_t;
 
 esp_err_t grape_display_open(const char *driver_name, grape_display_t **out_display);

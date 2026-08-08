@@ -11,6 +11,7 @@
 - [x] Per-texture occupancy masks for transparent/irregular textures
 - [ ] Merge the different debug options into one unified system
 - [ ] Build a proper benchmark
+- [ ] Centralize hardware features and their lookup
 
 ## Chip revision overlays
 

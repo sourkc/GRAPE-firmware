@@ -292,6 +292,7 @@ esp_err_t grape_present(grape_context_t *context)
 #if GRAPE_DAMAGE_DIAGNOSTICS_ENABLE
         grape_display_frame_stats_t display_stats = {0};
         if (grape_display_get_frame_stats(context->display, &display_stats) == ESP_OK) {
+            context->damage.latest_stats.fb_blit_us = display_stats.blit_copy_us;
             context->damage.latest_stats.refresh_wait_us = display_stats.refresh_wait_us;
         }
 #endif
