@@ -167,7 +167,7 @@ void app_main(void)
         grape_debug_set_layer_enabled(
             grape,
             GRAPE_DEBUG_LAYER_DAMAGE_RECTS,
-            true
+            false
         )
     );
 

@@ -7,11 +7,12 @@
  * its timestamping/recording code from the build.
  */
 
-#define GRAPE_PROFILE_ENABLE                    1
+#define GRAPE_PROFILE_ENABLE                    0
 #define GRAPE_PROFILE_REPORT_INTERVAL_MS        1000
 
 #define GRAPE_PROFILE_PRESENT                   1
 #define GRAPE_PROFILE_DAMAGE_ADD                1
+#define GRAPE_PROFILE_DAMAGE_PLAN               1
 #define GRAPE_PROFILE_SURFACE_TRANSFORM         1
 #define GRAPE_PROFILE_SURFACE_RECACHE           1
 #define GRAPE_PROFILE_COMPOSITOR                1

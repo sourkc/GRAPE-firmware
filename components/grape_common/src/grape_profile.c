@@ -5,6 +5,7 @@
 static const char *const s_metric_names[GRAPE_PROFILE_METRIC_COUNT] = {
     [GRAPE_PROFILE_METRIC_PRESENT] = "present",
     [GRAPE_PROFILE_METRIC_DAMAGE_ADD] = "damage add",
+    [GRAPE_PROFILE_METRIC_DAMAGE_PLAN] = "damage plan",
     [GRAPE_PROFILE_METRIC_SURFACE_TRANSFORM] = "surface transform",
     [GRAPE_PROFILE_METRIC_SURFACE_RECACHE] = "surface recache",
     [GRAPE_PROFILE_METRIC_COMPOSITOR] = "compositor rect",

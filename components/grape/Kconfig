@@ -1,9 +1,24 @@
 menu "GRAPE"
 
     config GRAPE_MAX_DAMAGE_RECTS
-        int "Maximum damage rectangles"
+        int "Maximum render damage rectangles"
         range 1 128
         default 16
+
+    config GRAPE_DAMAGE_TILE_SIZE
+        int "Damage tile size (pixels)"
+        range 4 64
+        default 16
+
+    config GRAPE_DAMAGE_RECT_OVERHEAD_PIXELS
+        int "Estimated fixed cost per render rectangle (pixel equivalents)"
+        range 0 65536
+        default 1024
+
+    config GRAPE_DAMAGE_MAX_WORK_RECTS
+        int "Maximum intermediate damage rectangles"
+        range 16 1024
+        default 256
 
     choice GRAPE_TEXTURE_DEFAULT_MEMORY
         prompt "Default texture memory"

@@ -17,6 +17,7 @@ static const char *metric_csv_name(grape_profile_metric_t metric)
     static const char *const names[GRAPE_PROFILE_METRIC_COUNT] = {
         [GRAPE_PROFILE_METRIC_PRESENT] = "present",
         [GRAPE_PROFILE_METRIC_DAMAGE_ADD] = "damage_add",
+        [GRAPE_PROFILE_METRIC_DAMAGE_PLAN] = "damage_plan",
         [GRAPE_PROFILE_METRIC_SURFACE_TRANSFORM] = "surface_transform",
         [GRAPE_PROFILE_METRIC_SURFACE_RECACHE] = "surface_recache",
         [GRAPE_PROFILE_METRIC_COMPOSITOR] = "compositor",

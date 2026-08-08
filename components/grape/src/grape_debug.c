@@ -45,13 +45,24 @@ static bool layer_enabled(const grape_context_t *context, grape_debug_layer_t la
 
 static void add_render_damage(grape_context_t *context, grape_rect_t rect)
 {
-    grape_rect_list_add(
-        context->debug.render_damage,
-        &context->debug.render_damage_count,
-        CONFIG_GRAPE_MAX_DAMAGE_RECTS,
-        screen_bounds(context),
-        rect
-    );
+    grape_debug_state_t *debug = &context->debug;
+    rect = grape_rect_intersection(rect, screen_bounds(context));
+    if (grape_rect_empty(rect)) {
+        return;
+    }
+
+    if (debug->render_damage_count < CONFIG_GRAPE_MAX_DAMAGE_RECTS) {
+        debug->render_damage[debug->render_damage_count++] = rect;
+        return;
+    }
+
+    grape_rect_t combined = rect;
+    for (size_t i = 0; i < debug->render_damage_count; ++i) {
+        combined = grape_rect_union(combined, debug->render_damage[i]);
+    }
+
+    debug->render_damage[0] = grape_rect_intersection(combined, screen_bounds(context));
+    debug->render_damage_count = 1;
 }
 
 static uint8_t blend_channel(uint8_t destination, uint8_t source, uint8_t alpha)
@@ -178,11 +189,11 @@ static void damage_rects_prepare(grape_context_t *context)
 {
     grape_debug_state_t *debug = &context->debug;
 
-    debug->damage_rects_current_count = context->damage_count;
+    debug->damage_rects_current_count = context->damage.final_rect_count;
     if (debug->damage_rects_current_count > 0) {
         memcpy(
             debug->damage_rects_current,
-            context->damage,
+            context->damage.final_rects,
             debug->damage_rects_current_count * sizeof(debug->damage_rects_current[0])
         );
     }

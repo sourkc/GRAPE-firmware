@@ -11,7 +11,8 @@ The report interval is controlled by `GRAPE_PROFILE_REPORT_INTERVAL_MS`.
 Current timings:
 
 - `GRAPE_PROFILE_PRESENT` - entire `grape_present()` call.
-- `GRAPE_PROFILE_DAMAGE_ADD` - dirty-rectangle insertion/merging.
+- `GRAPE_PROFILE_DAMAGE_ADD` - marking logical dirty tiles.
+- `GRAPE_PROFILE_DAMAGE_PLAN` - extracting tile runs and building the adaptive render-rectangle plan.
 - `GRAPE_PROFILE_SURFACE_TRANSFORM` - complete surface transform update, including recache and damage tracking.
 - `GRAPE_PROFILE_SURFACE_RECACHE` - sin/cos cache and transformed-bounds calculation.
 - `GRAPE_PROFILE_COMPOSITOR` - one dirty rectangle from clear through display blit.

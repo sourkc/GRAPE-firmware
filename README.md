@@ -7,7 +7,8 @@
 - [ ] grape_texture_invalidate_rect(texture, x, y, w, h); (I forgot what this means)
 - [ ] Re-test PPA-rotated Y shear on ESP32-P4 rev 3.x (GRAY8 SRM is unavailable on the current pre-v3 chip)
   - TEST THIS ONCE CHIP V3.X ARRIVES!
--  [ ] 
+- [x] Tile-based adaptive damage grouping
+- [ ] Per-texture occupancy masks for transparent/irregular textures
 
 ## Chip revision overlays
 

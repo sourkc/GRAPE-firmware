@@ -54,6 +54,22 @@ typedef struct {
 } grape_shear_image_t;
 
 typedef struct {
+    uint8_t *tiles;
+    uint8_t *render_tiles;
+    size_t bitmap_size;
+    uint32_t tile_columns;
+    uint32_t tile_rows;
+    bool has_damage;
+    grape_rect_t final_rects[CONFIG_GRAPE_MAX_DAMAGE_RECTS];
+    size_t final_rect_count;
+    grape_rect_t *work_rects;
+    size_t work_rect_capacity;
+    size_t *active_runs;
+    size_t *next_active_runs;
+    size_t active_run_capacity;
+} grape_damage_state_t;
+
+typedef struct {
     uint32_t enabled_mask;
     grape_rect_t render_damage[CONFIG_GRAPE_MAX_DAMAGE_RECTS];
     size_t render_damage_count;
@@ -69,8 +85,7 @@ struct grape_context {
     grape_texture_t *textures;
     grape_surface_t *surfaces;
     grape_color_t background;
-    grape_rect_t damage[CONFIG_GRAPE_MAX_DAMAGE_RECTS];
-    size_t damage_count;
+    grape_damage_state_t damage;
     uint8_t *scratch;
     size_t scratch_size;
     ppa_client_handle_t ppa_srm;
@@ -90,10 +105,18 @@ bool grape_rect_empty(grape_rect_t rect);
 grape_rect_t grape_rect_intersection(grape_rect_t a, grape_rect_t b);
 grape_rect_t grape_rect_union(grape_rect_t a, grape_rect_t b);
 bool grape_rect_touches(grape_rect_t a, grape_rect_t b);
-void grape_rect_list_add(grape_rect_t *rects, size_t *count, size_t capacity,
-                         grape_rect_t bounds, grape_rect_t rect);
+esp_err_t grape_damage_init(grape_context_t *context);
+void grape_damage_deinit(grape_context_t *context);
 esp_err_t grape_damage_add(grape_context_t *context, grape_rect_t rect);
 void grape_damage_all(grape_context_t *context);
+void grape_damage_clear(grape_context_t *context);
+esp_err_t grape_damage_build_logical_rects(grape_context_t *context);
+esp_err_t grape_damage_build_render_rects(grape_context_t *context,
+                                          const grape_rect_t *extra_rects,
+                                          size_t extra_count,
+                                          grape_rect_t *out_rects,
+                                          size_t out_capacity,
+                                          size_t *out_count);
 grape_rect_t grape_surface_calculate_bounds(const grape_surface_t *surface);
 void grape_surface_recache(grape_surface_t *surface);
 void grape_surface_insert_sorted(grape_context_t *context, grape_surface_t *surface);
