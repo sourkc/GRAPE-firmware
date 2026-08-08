@@ -157,7 +157,12 @@ void app_main(void)
     ESP_ERROR_CHECK(grape_init(&config, &grape));
 
 #if GRAPE_APP_RUN_BENCHMARK
-    ESP_ERROR_CHECK(grape_storage_sd_mount());
+    esp_err_t sd_ret = grape_storage_sd_mount();
+
+    if (sd_ret != ESP_OK) {
+        ESP_LOGW(TAG, "SD card unavailable, benchmark will run without file output: %s",
+                 esp_err_to_name(sd_ret));
+    }
 
     grape_benchmark_config_t benchmark_config = GRAPE_BENCHMARK_CONFIG_DEFAULT();
 
@@ -165,7 +170,9 @@ void app_main(void)
         grape_benchmark_run(grape, &benchmark_config)
     );
 
-    ESP_ERROR_CHECK(grape_storage_sd_unmount());
+    if (grape_storage_sd_is_mounted()) {
+        grape_storage_sd_unmount();
+    }
 
     grape_deinit(grape);
     return;
