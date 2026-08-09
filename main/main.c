@@ -173,31 +173,31 @@ static esp_err_t run_vector_demo(grape_context_t *grape)
         }                        \
     } while (0)
 
-    /* Cubic heart contour. */
-    PATH_CHECK(grape_path_move_to(path, 150.0f, 285.0f));
-    PATH_CHECK(grape_path_cubic_to(
+    /* Cubic heart contour using relative path helpers. */
+    PATH_CHECK(grape_path_move_to_relative(path, 150.0f, 285.0f));
+    PATH_CHECK(grape_path_cubic_to_relative(
         path,
-        118.0f, 252.0f,
-        18.0f, 174.0f,
-        18.0f, 92.0f
+        -32.0f, -33.0f,
+        -132.0f, -111.0f,
+        -132.0f, -193.0f
     ));
-    PATH_CHECK(grape_path_cubic_to(
+    PATH_CHECK(grape_path_cubic_to_relative(
         path,
-        18.0f, 24.0f,
-        96.0f, 5.0f,
-        150.0f, 70.0f
+        0.0f, -68.0f,
+        78.0f, -87.0f,
+        132.0f, -22.0f
     ));
-    PATH_CHECK(grape_path_cubic_to(
+    PATH_CHECK(grape_path_cubic_to_relative(
         path,
-        204.0f, 5.0f,
-        282.0f, 24.0f,
-        282.0f, 92.0f
+        54.0f, -65.0f,
+        132.0f, -46.0f,
+        132.0f, 22.0f
     ));
-    PATH_CHECK(grape_path_cubic_to(
+    PATH_CHECK(grape_path_cubic_to_relative(
         path,
-        282.0f, 174.0f,
-        182.0f, 252.0f,
-        150.0f, 285.0f
+        0.0f, 82.0f,
+        -100.0f, 160.0f,
+        -132.0f, 193.0f
     ));
     PATH_CHECK(grape_path_close(path));
 

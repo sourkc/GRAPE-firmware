@@ -301,6 +301,27 @@ static void path_include_cubic_bounds(grape_path_t *path,
     );
 }
 
+static const grape_path_command_t *path_last_command(const grape_path_t *path)
+{
+    if (!path || path->command_count == 0) {
+        return NULL;
+    }
+
+    return &path->commands[path->command_count - 1U];
+}
+
+static void path_relative_origin(const grape_path_t *path, float *out_x, float *out_y)
+{
+    if (path->command_count == 0) {
+        *out_x = 0.0f;
+        *out_y = 0.0f;
+        return;
+    }
+
+    *out_x = path->current_x;
+    *out_y = path->current_y;
+}
+
 esp_err_t grape_path_create(grape_path_t **out_path)
 {
     if (!out_path) {
@@ -371,6 +392,18 @@ esp_err_t grape_path_move_to(grape_path_t *path, float x, float y)
     return ESP_OK;
 }
 
+esp_err_t grape_path_move_to_relative(grape_path_t *path, float dx, float dy)
+{
+    if (!path || !point_is_finite(dx, dy)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    float origin_x = 0.0f;
+    float origin_y = 0.0f;
+    path_relative_origin(path, &origin_x, &origin_y);
+    return grape_path_move_to(path, origin_x + dx, origin_y + dy);
+}
+
 esp_err_t grape_path_line_to(grape_path_t *path, float x, float y)
 {
     if (!path || !point_is_finite(x, y)) {
@@ -394,6 +427,66 @@ esp_err_t grape_path_line_to(grape_path_t *path, float x, float y)
     path->segment_count++;
     path_include_point(path, x, y);
     return ESP_OK;
+}
+
+esp_err_t grape_path_line_to_relative(grape_path_t *path, float dx, float dy)
+{
+    if (!path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return grape_path_line_to(path, path->current_x + dx, path->current_y + dy);
+}
+
+esp_err_t grape_path_horizontal_to(grape_path_t *path, float x)
+{
+    if (!path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return grape_path_line_to(path, x, path->current_y);
+}
+
+esp_err_t grape_path_horizontal_to_relative(grape_path_t *path, float dx)
+{
+    if (!path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return grape_path_line_to(path, path->current_x + dx, path->current_y);
+}
+
+esp_err_t grape_path_vertical_to(grape_path_t *path, float y)
+{
+    if (!path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return grape_path_line_to(path, path->current_x, y);
+}
+
+esp_err_t grape_path_vertical_to_relative(grape_path_t *path, float dy)
+{
+    if (!path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return grape_path_line_to(path, path->current_x, path->current_y + dy);
 }
 
 esp_err_t grape_path_quad_to(grape_path_t *path,
@@ -437,6 +530,66 @@ esp_err_t grape_path_quad_to(grape_path_t *path,
     path->current_y = y;
     path->segment_count++;
     return ESP_OK;
+}
+
+esp_err_t grape_path_quad_to_relative(grape_path_t *path,
+                                      float control_dx,
+                                      float control_dy,
+                                      float dx,
+                                      float dy)
+{
+    if (!path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    float origin_x = path->current_x;
+    float origin_y = path->current_y;
+    return grape_path_quad_to(
+        path,
+        origin_x + control_dx,
+        origin_y + control_dy,
+        origin_x + dx,
+        origin_y + dy
+    );
+}
+
+esp_err_t grape_path_smooth_quad_to(grape_path_t *path, float x, float y)
+{
+    if (!path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    float control_x = path->current_x;
+    float control_y = path->current_y;
+    const grape_path_command_t *previous = path_last_command(path);
+    if (previous && previous->type == GRAPE_PATH_COMMAND_QUAD_TO) {
+        control_x = 2.0f * path->current_x - previous->control_x;
+        control_y = 2.0f * path->current_y - previous->control_y;
+    }
+
+    return grape_path_quad_to(path, control_x, control_y, x, y);
+}
+
+esp_err_t grape_path_smooth_quad_to_relative(grape_path_t *path, float dx, float dy)
+{
+    if (!path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return grape_path_smooth_quad_to(
+        path,
+        path->current_x + dx,
+        path->current_y + dy
+    );
 }
 
 esp_err_t grape_path_cubic_to(grape_path_t *path,
@@ -483,6 +636,87 @@ esp_err_t grape_path_cubic_to(grape_path_t *path,
     path->current_y = y;
     path->segment_count++;
     return ESP_OK;
+}
+
+esp_err_t grape_path_cubic_to_relative(grape_path_t *path,
+                                       float control1_dx,
+                                       float control1_dy,
+                                       float control2_dx,
+                                       float control2_dy,
+                                       float dx,
+                                       float dy)
+{
+    if (!path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    float origin_x = path->current_x;
+    float origin_y = path->current_y;
+    return grape_path_cubic_to(
+        path,
+        origin_x + control1_dx,
+        origin_y + control1_dy,
+        origin_x + control2_dx,
+        origin_y + control2_dy,
+        origin_x + dx,
+        origin_y + dy
+    );
+}
+
+esp_err_t grape_path_smooth_cubic_to(grape_path_t *path,
+                                     float control2_x,
+                                     float control2_y,
+                                     float x,
+                                     float y)
+{
+    if (!path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    float control1_x = path->current_x;
+    float control1_y = path->current_y;
+    const grape_path_command_t *previous = path_last_command(path);
+    if (previous && previous->type == GRAPE_PATH_COMMAND_CUBIC_TO) {
+        control1_x = 2.0f * path->current_x - previous->control2_x;
+        control1_y = 2.0f * path->current_y - previous->control2_y;
+    }
+
+    return grape_path_cubic_to(
+        path,
+        control1_x, control1_y,
+        control2_x, control2_y,
+        x, y
+    );
+}
+
+esp_err_t grape_path_smooth_cubic_to_relative(grape_path_t *path,
+                                              float control2_dx,
+                                              float control2_dy,
+                                              float dx,
+                                              float dy)
+{
+    if (!path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    float origin_x = path->current_x;
+    float origin_y = path->current_y;
+    return grape_path_smooth_cubic_to(
+        path,
+        origin_x + control2_dx,
+        origin_y + control2_dy,
+        origin_x + dx,
+        origin_y + dy
+    );
 }
 
 esp_err_t grape_path_close(grape_path_t *path)

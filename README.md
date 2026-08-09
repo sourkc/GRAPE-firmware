@@ -68,13 +68,18 @@ benchmarks. See `BENCHMARK.md` for running/reporting details and
 
 ## Vector paths
 
-GRAPE vector paths currently support filled contours built from `move_to`,
-`line_to`, `quad_to`, `cubic_to`, and `close`. Quadratic and cubic Bezier curves
-are flattened adaptively at rasterization time, then the existing non-zero
-winding A8 rasterizer handles fill and antialiasing. The resulting mask is an
-ordinary A8 texture and uses the normal GRAPE surface/compositor pipeline.
+GRAPE vector paths support filled contours built from `move_to`, `line_to`,
+`quad_to`, `cubic_to`, and `close`. Relative-coordinate helpers are available
+for each drawing command, along with horizontal/vertical line helpers and
+SVG-style smooth quadratic/cubic helpers. These convenience calls normalize
+immediately into the core line, quadratic, and cubic commands.
 
-Strokes, SVG parsing, and font loading are not implemented yet.
+Quadratic and cubic Bezier curves are flattened adaptively at rasterization
+time, then the existing non-zero winding A8 rasterizer handles fill and
+antialiasing. The resulting mask is an ordinary A8 texture and uses the normal
+GRAPE surface/compositor pipeline.
+
+Elliptical arcs, strokes, SVG parsing, and font loading are not implemented yet.
 
 ## Planned stuff
 - JPEG images (hardware)
