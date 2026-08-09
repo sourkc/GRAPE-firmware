@@ -173,20 +173,32 @@ static esp_err_t run_vector_demo(grape_context_t *grape)
         }                        \
     } while (0)
 
-    /* Outer rounded contour, clockwise. */
-    PATH_CHECK(grape_path_move_to(path, 150.0f, 0.0f));
-    PATH_CHECK(grape_path_quad_to(path, 300.0f, 0.0f, 300.0f, 150.0f));
-    PATH_CHECK(grape_path_quad_to(path, 300.0f, 300.0f, 150.0f, 300.0f));
-    PATH_CHECK(grape_path_quad_to(path, 0.0f, 300.0f, 0.0f, 150.0f));
-    PATH_CHECK(grape_path_quad_to(path, 0.0f, 0.0f, 150.0f, 0.0f));
-    PATH_CHECK(grape_path_close(path));
-
-    /* Inner rounded contour, opposite winding, producing a curved hole. */
-    PATH_CHECK(grape_path_move_to(path, 150.0f, 75.0f));
-    PATH_CHECK(grape_path_quad_to(path, 75.0f, 75.0f, 75.0f, 150.0f));
-    PATH_CHECK(grape_path_quad_to(path, 75.0f, 225.0f, 150.0f, 225.0f));
-    PATH_CHECK(grape_path_quad_to(path, 225.0f, 225.0f, 225.0f, 150.0f));
-    PATH_CHECK(grape_path_quad_to(path, 225.0f, 75.0f, 150.0f, 75.0f));
+    /* Cubic heart contour. */
+    PATH_CHECK(grape_path_move_to(path, 150.0f, 285.0f));
+    PATH_CHECK(grape_path_cubic_to(
+        path,
+        118.0f, 252.0f,
+        18.0f, 174.0f,
+        18.0f, 92.0f
+    ));
+    PATH_CHECK(grape_path_cubic_to(
+        path,
+        18.0f, 24.0f,
+        96.0f, 5.0f,
+        150.0f, 70.0f
+    ));
+    PATH_CHECK(grape_path_cubic_to(
+        path,
+        204.0f, 5.0f,
+        282.0f, 24.0f,
+        282.0f, 92.0f
+    ));
+    PATH_CHECK(grape_path_cubic_to(
+        path,
+        282.0f, 174.0f,
+        182.0f, 252.0f,
+        150.0f, 285.0f
+    ));
     PATH_CHECK(grape_path_close(path));
 
     grape_path_rasterize_config_t raster_config =

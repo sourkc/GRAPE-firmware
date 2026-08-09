@@ -1,3 +1,4 @@
+#include <float.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -10,6 +11,7 @@ typedef enum {
     GRAPE_PATH_COMMAND_MOVE_TO = 0,
     GRAPE_PATH_COMMAND_LINE_TO,
     GRAPE_PATH_COMMAND_QUAD_TO,
+    GRAPE_PATH_COMMAND_CUBIC_TO,
     GRAPE_PATH_COMMAND_CLOSE,
 } grape_path_command_type_t;
 
@@ -17,6 +19,8 @@ typedef struct {
     grape_path_command_type_t type;
     float control_x;
     float control_y;
+    float control2_x;
+    float control2_y;
     float x;
     float y;
 } grape_path_command_t;
@@ -40,7 +44,8 @@ typedef struct {
 } grape_path_edge_buffer_t;
 
 #define GRAPE_PATH_QUAD_MAX_DEPTH 16U
-#define GRAPE_PATH_QUAD_FLATNESS_SUBPIXELS 0.5f
+#define GRAPE_PATH_CUBIC_MAX_DEPTH 16U
+#define GRAPE_PATH_CURVE_FLATNESS_SUBPIXELS 0.5f
 
 struct grape_path {
     grape_path_command_t *commands;
@@ -165,6 +170,135 @@ static void path_include_quad_bounds(grape_path_t *path,
             );
         }
     }
+}
+
+static float cubic_value(float p0, float p1, float p2, float p3, float t)
+{
+    float one_minus_t = 1.0f - t;
+    float one_minus_t2 = one_minus_t * one_minus_t;
+    float t2 = t * t;
+    return one_minus_t2 * one_minus_t * p0 +
+           3.0f * one_minus_t2 * t * p1 +
+           3.0f * one_minus_t * t2 * p2 +
+           t2 * t * p3;
+}
+
+static void path_include_cubic_extremum(grape_path_t *path,
+                                        float x0,
+                                        float y0,
+                                        float control1_x,
+                                        float control1_y,
+                                        float control2_x,
+                                        float control2_y,
+                                        float x1,
+                                        float y1,
+                                        double t)
+{
+    if (t <= 0.0 || t >= 1.0 || !isfinite(t)) {
+        return;
+    }
+
+    float tf = (float)t;
+    path_include_point(
+        path,
+        cubic_value(x0, control1_x, control2_x, x1, tf),
+        cubic_value(y0, control1_y, control2_y, y1, tf)
+    );
+}
+
+static void path_include_cubic_axis_extrema(grape_path_t *path,
+                                             float x0,
+                                             float y0,
+                                             float control1_x,
+                                             float control1_y,
+                                             float control2_x,
+                                             float control2_y,
+                                             float x1,
+                                             float y1,
+                                             float p0,
+                                             float p1,
+                                             float p2,
+                                             float p3)
+{
+    double a = -(double)p0 + 3.0 * p1 - 3.0 * p2 + p3;
+    double b = 2.0 * ((double)p0 - 2.0 * p1 + p2);
+    double c = (double)p1 - p0;
+    double scale = fmax(fmax(fabs(a), fabs(b)), fabs(c));
+
+    if (scale == 0.0) {
+        return;
+    }
+
+    double epsilon = DBL_EPSILON * scale * 16.0;
+    if (fabs(a) <= epsilon) {
+        if (fabs(b) > epsilon) {
+            path_include_cubic_extremum(
+                path,
+                x0, y0,
+                control1_x, control1_y,
+                control2_x, control2_y,
+                x1, y1,
+                -c / b
+            );
+        }
+        return;
+    }
+
+    double discriminant = b * b - 4.0 * a * c;
+    if (discriminant < 0.0) {
+        return;
+    }
+
+    double root = sqrt(discriminant);
+    double denominator = 2.0 * a;
+    path_include_cubic_extremum(
+        path,
+        x0, y0,
+        control1_x, control1_y,
+        control2_x, control2_y,
+        x1, y1,
+        (-b + root) / denominator
+    );
+    if (root != 0.0) {
+        path_include_cubic_extremum(
+            path,
+            x0, y0,
+            control1_x, control1_y,
+            control2_x, control2_y,
+            x1, y1,
+            (-b - root) / denominator
+        );
+    }
+}
+
+static void path_include_cubic_bounds(grape_path_t *path,
+                                       float x0,
+                                       float y0,
+                                       float control1_x,
+                                       float control1_y,
+                                       float control2_x,
+                                       float control2_y,
+                                       float x1,
+                                       float y1)
+{
+    path_include_point(path, x1, y1);
+
+    path_include_cubic_axis_extrema(
+        path,
+        x0, y0,
+        control1_x, control1_y,
+        control2_x, control2_y,
+        x1, y1,
+        x0, control1_x, control2_x, x1
+    );
+    path_include_cubic_axis_extrema(
+        path,
+        x0, y0,
+        control1_x, control1_y,
+        control2_x, control2_y,
+        x1, y1,
+        y0, control1_y, control2_y, y1
+    );
 }
 
 esp_err_t grape_path_create(grape_path_t **out_path)
@@ -298,6 +432,52 @@ esp_err_t grape_path_quad_to(grape_path_t *path,
         control_y,
         x,
         y
+    );
+    path->current_x = x;
+    path->current_y = y;
+    path->segment_count++;
+    return ESP_OK;
+}
+
+esp_err_t grape_path_cubic_to(grape_path_t *path,
+                              float control1_x,
+                              float control1_y,
+                              float control2_x,
+                              float control2_y,
+                              float x,
+                              float y)
+{
+    if (!path ||
+        !point_is_finite(control1_x, control1_y) ||
+        !point_is_finite(control2_x, control2_y) ||
+        !point_is_finite(x, y)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    float start_x = path->current_x;
+    float start_y = path->current_y;
+    esp_err_t ret = path_append(path, (grape_path_command_t){
+        .type = GRAPE_PATH_COMMAND_CUBIC_TO,
+        .control_x = control1_x,
+        .control_y = control1_y,
+        .control2_x = control2_x,
+        .control2_y = control2_y,
+        .x = x,
+        .y = y,
+    });
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    path_include_cubic_bounds(
+        path,
+        start_x, start_y,
+        control1_x, control1_y,
+        control2_x, control2_y,
+        x, y
     );
     path->current_x = x;
     path->current_y = y;
@@ -459,13 +639,94 @@ static esp_err_t flatten_quadratic(grape_path_edge_buffer_t *buffer,
     );
 }
 
+static bool cubic_is_flat_enough(float x0,
+                                 float y0,
+                                 float control1_x,
+                                 float control1_y,
+                                 float control2_x,
+                                 float control2_y,
+                                 float x1,
+                                 float y1,
+                                 float tolerance)
+{
+    double second1_x = (double)x0 - 2.0 * control1_x + control2_x;
+    double second1_y = (double)y0 - 2.0 * control1_y + control2_y;
+    double second2_x = (double)control1_x - 2.0 * control2_x + x1;
+    double second2_y = (double)control1_y - 2.0 * control2_y + y1;
+    double tolerance_scaled = 4.0 * (double)tolerance;
+    double tolerance_squared = tolerance_scaled * tolerance_scaled;
+
+    return second1_x * second1_x + second1_y * second1_y <= tolerance_squared &&
+           second2_x * second2_x + second2_y * second2_y <= tolerance_squared;
+}
+
+static esp_err_t flatten_cubic(grape_path_edge_buffer_t *buffer,
+                               float x0,
+                               float y0,
+                               float control1_x,
+                               float control1_y,
+                               float control2_x,
+                               float control2_y,
+                               float x1,
+                               float y1,
+                               float tolerance,
+                               uint32_t depth)
+{
+    if (depth >= GRAPE_PATH_CUBIC_MAX_DEPTH ||
+        cubic_is_flat_enough(
+            x0, y0,
+            control1_x, control1_y,
+            control2_x, control2_y,
+            x1, y1,
+            tolerance
+        )) {
+        return edge_buffer_append(buffer, x0, y0, x1, y1);
+    }
+
+    float x01 = x0 * 0.5f + control1_x * 0.5f;
+    float y01 = y0 * 0.5f + control1_y * 0.5f;
+    float x12 = control1_x * 0.5f + control2_x * 0.5f;
+    float y12 = control1_y * 0.5f + control2_y * 0.5f;
+    float x23 = control2_x * 0.5f + x1 * 0.5f;
+    float y23 = control2_y * 0.5f + y1 * 0.5f;
+    float x012 = x01 * 0.5f + x12 * 0.5f;
+    float y012 = y01 * 0.5f + y12 * 0.5f;
+    float x123 = x12 * 0.5f + x23 * 0.5f;
+    float y123 = y12 * 0.5f + y23 * 0.5f;
+    float x0123 = x012 * 0.5f + x123 * 0.5f;
+    float y0123 = y012 * 0.5f + y123 * 0.5f;
+
+    esp_err_t ret = flatten_cubic(
+        buffer,
+        x0, y0,
+        x01, y01,
+        x012, y012,
+        x0123, y0123,
+        tolerance,
+        depth + 1U
+    );
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    return flatten_cubic(
+        buffer,
+        x0123, y0123,
+        x123, y123,
+        x23, y23,
+        x1, y1,
+        tolerance,
+        depth + 1U
+    );
+}
+
 static esp_err_t path_build_edges(const grape_path_t *path,
-                                  float quadratic_tolerance,
+                                  float curve_tolerance,
                                   grape_path_edge_t **out_edges,
                                   size_t *out_edge_count)
 {
     if (!path || !out_edges || !out_edge_count || path->command_count == 0 ||
-        !isfinite(quadratic_tolerance) || quadratic_tolerance <= 0.0f) {
+        !isfinite(curve_tolerance) || curve_tolerance <= 0.0f) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -525,7 +786,27 @@ static esp_err_t path_build_edges(const grape_path_t *path,
                 current_x, current_y,
                 command->control_x, command->control_y,
                 command->x, command->y,
-                quadratic_tolerance,
+                curve_tolerance,
+                0U
+            );
+            if (ret != ESP_OK) goto fail;
+            current_x = command->x;
+            current_y = command->y;
+            contour_has_segment = true;
+            break;
+
+        case GRAPE_PATH_COMMAND_CUBIC_TO:
+            if (!contour_active) {
+                ret = ESP_ERR_INVALID_STATE;
+                goto fail;
+            }
+            ret = flatten_cubic(
+                &buffer,
+                current_x, current_y,
+                command->control_x, command->control_y,
+                command->control2_x, command->control2_y,
+                command->x, command->y,
+                curve_tolerance,
                 0U
             );
             if (ret != ESP_OK) goto fail;
@@ -663,10 +944,10 @@ esp_err_t grape_path_rasterize_a8(grape_context_t *context,
 
     grape_path_edge_t *edges = NULL;
     size_t edge_count = 0;
-    float quadratic_tolerance = GRAPE_PATH_QUAD_FLATNESS_SUBPIXELS /
-                                (config->pixels_per_unit *
-                                 (float)config->samples_per_axis);
-    ret = path_build_edges(path, quadratic_tolerance, &edges, &edge_count);
+    float curve_tolerance = GRAPE_PATH_CURVE_FLATNESS_SUBPIXELS /
+                            (config->pixels_per_unit *
+                             (float)config->samples_per_axis);
+    ret = path_build_edges(path, curve_tolerance, &edges, &edge_count);
     if (ret != ESP_OK) {
         return ret;
     }

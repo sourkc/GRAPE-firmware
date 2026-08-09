@@ -47,6 +47,13 @@ esp_err_t grape_path_quad_to(grape_path_t *path,
                              float control_y,
                              float x,
                              float y);
+esp_err_t grape_path_cubic_to(grape_path_t *path,
+                              float control1_x,
+                              float control1_y,
+                              float control2_x,
+                              float control2_y,
+                              float x,
+                              float y);
 esp_err_t grape_path_close(grape_path_t *path);
 esp_err_t grape_path_get_bounds(const grape_path_t *path, grape_path_bounds_t *out_bounds);
 esp_err_t grape_path_rasterize_a8(grape_context_t *context,
