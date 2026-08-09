@@ -173,32 +173,15 @@ static esp_err_t run_vector_demo(grape_context_t *grape)
         }                        \
     } while (0)
 
-    /* Cubic heart contour using relative path helpers. */
-    PATH_CHECK(grape_path_move_to_relative(path, 150.0f, 285.0f));
-    PATH_CHECK(grape_path_cubic_to_relative(
-        path,
-        -32.0f, -33.0f,
-        -132.0f, -111.0f,
-        -132.0f, -193.0f
-    ));
-    PATH_CHECK(grape_path_cubic_to_relative(
-        path,
-        0.0f, -68.0f,
-        78.0f, -87.0f,
-        132.0f, -22.0f
-    ));
-    PATH_CHECK(grape_path_cubic_to_relative(
-        path,
-        54.0f, -65.0f,
-        132.0f, -46.0f,
-        132.0f, 22.0f
-    ));
-    PATH_CHECK(grape_path_cubic_to_relative(
-        path,
-        0.0f, 82.0f,
-        -100.0f, 160.0f,
-        -132.0f, 193.0f
-    ));
+    /* Circular ring built from SVG-style elliptical arc commands. */
+    PATH_CHECK(grape_path_move_to(path, 150.0f, 18.0f));
+    PATH_CHECK(grape_path_arc_to(path, 132.0f, 132.0f, 0.0f, false, true, 150.0f, 282.0f));
+    PATH_CHECK(grape_path_arc_to(path, 132.0f, 132.0f, 0.0f, false, true, 150.0f, 18.0f));
+    PATH_CHECK(grape_path_close(path));
+
+    PATH_CHECK(grape_path_move_to(path, 150.0f, 78.0f));
+    PATH_CHECK(grape_path_arc_to(path, 72.0f, 72.0f, 0.0f, false, false, 150.0f, 222.0f));
+    PATH_CHECK(grape_path_arc_to(path, 72.0f, 72.0f, 0.0f, false, false, 150.0f, 78.0f));
     PATH_CHECK(grape_path_close(path));
 
     grape_path_rasterize_config_t raster_config =

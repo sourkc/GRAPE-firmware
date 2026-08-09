@@ -84,6 +84,22 @@ esp_err_t grape_path_smooth_cubic_to_relative(grape_path_t *path,
                                               float control2_dy,
                                               float dx,
                                               float dy);
+esp_err_t grape_path_arc_to(grape_path_t *path,
+                             float radius_x,
+                             float radius_y,
+                             float x_axis_rotation_degrees,
+                             bool large_arc,
+                             bool sweep,
+                             float x,
+                             float y);
+esp_err_t grape_path_arc_to_relative(grape_path_t *path,
+                                      float radius_x,
+                                      float radius_y,
+                                      float x_axis_rotation_degrees,
+                                      bool large_arc,
+                                      bool sweep,
+                                      float dx,
+                                      float dy);
 esp_err_t grape_path_close(grape_path_t *path);
 esp_err_t grape_path_get_bounds(const grape_path_t *path, grape_path_bounds_t *out_bounds);
 esp_err_t grape_path_rasterize_a8(grape_context_t *context,

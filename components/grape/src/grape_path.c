@@ -322,6 +322,89 @@ static void path_relative_origin(const grape_path_t *path, float *out_x, float *
     *out_y = path->current_y;
 }
 
+static double vector_angle(double ux, double uy, double vx, double vy)
+{
+    double cross = ux * vy - uy * vx;
+    double dot = ux * vx + uy * vy;
+    return atan2(cross, dot);
+}
+
+static void arc_point_to_ellipse(double center_x,
+                                 double center_y,
+                                 double radius_x,
+                                 double radius_y,
+                                 double cos_phi,
+                                 double sin_phi,
+                                 double unit_x,
+                                 double unit_y,
+                                 float *out_x,
+                                 float *out_y)
+{
+    double x = center_x + cos_phi * radius_x * unit_x - sin_phi * radius_y * unit_y;
+    double y = center_y + sin_phi * radius_x * unit_x + cos_phi * radius_y * unit_y;
+    *out_x = (float)x;
+    *out_y = (float)y;
+}
+
+static esp_err_t append_arc_segment_as_cubic(grape_path_t *path,
+                                             double center_x,
+                                             double center_y,
+                                             double radius_x,
+                                             double radius_y,
+                                             double cos_phi,
+                                             double sin_phi,
+                                             double start_angle,
+                                             double delta_angle,
+                                             bool force_endpoint,
+                                             float end_x,
+                                             float end_y)
+{
+    double alpha = (4.0 / 3.0) * tan(delta_angle * 0.25);
+    double theta1 = start_angle;
+    double theta2 = start_angle + delta_angle;
+    double cos_theta1 = cos(theta1);
+    double sin_theta1 = sin(theta1);
+    double cos_theta2 = cos(theta2);
+    double sin_theta2 = sin(theta2);
+
+    float control1_x;
+    float control1_y;
+    float control2_x;
+    float control2_y;
+    float point_x;
+    float point_y;
+
+    arc_point_to_ellipse(
+        center_x, center_y, radius_x, radius_y, cos_phi, sin_phi,
+        cos_theta1 - alpha * sin_theta1,
+        sin_theta1 + alpha * cos_theta1,
+        &control1_x, &control1_y
+    );
+    arc_point_to_ellipse(
+        center_x, center_y, radius_x, radius_y, cos_phi, sin_phi,
+        cos_theta2 + alpha * sin_theta2,
+        sin_theta2 - alpha * cos_theta2,
+        &control2_x, &control2_y
+    );
+
+    if (force_endpoint) {
+        point_x = end_x;
+        point_y = end_y;
+    } else {
+        arc_point_to_ellipse(
+            center_x, center_y, radius_x, radius_y, cos_phi, sin_phi,
+            cos_theta2, sin_theta2, &point_x, &point_y
+        );
+    }
+
+    return grape_path_cubic_to(
+        path,
+        control1_x, control1_y,
+        control2_x, control2_y,
+        point_x, point_y
+    );
+}
+
 esp_err_t grape_path_create(grape_path_t **out_path)
 {
     if (!out_path) {
@@ -716,6 +799,150 @@ esp_err_t grape_path_smooth_cubic_to_relative(grape_path_t *path,
         origin_y + control2_dy,
         origin_x + dx,
         origin_y + dy
+    );
+}
+
+esp_err_t grape_path_arc_to(grape_path_t *path,
+                            float radius_x,
+                            float radius_y,
+                            float x_axis_rotation_degrees,
+                            bool large_arc,
+                            bool sweep,
+                            float x,
+                            float y)
+{
+    if (!path || !point_is_finite(radius_x, radius_y) ||
+        !isfinite(x_axis_rotation_degrees) || !point_is_finite(x, y)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    float start_x = path->current_x;
+    float start_y = path->current_y;
+    if (start_x == x && start_y == y) {
+        return ESP_OK;
+    }
+
+    double rx = fabs((double)radius_x);
+    double ry = fabs((double)radius_y);
+    if (rx == 0.0 || ry == 0.0) {
+        return grape_path_line_to(path, x, y);
+    }
+
+    double phi = (double)x_axis_rotation_degrees * (3.14159265358979323846 / 180.0);
+    double cos_phi = cos(phi);
+    double sin_phi = sin(phi);
+    double dx2 = ((double)start_x - x) * 0.5;
+    double dy2 = ((double)start_y - y) * 0.5;
+    double x1p = cos_phi * dx2 + sin_phi * dy2;
+    double y1p = -sin_phi * dx2 + cos_phi * dy2;
+
+    double rx2 = rx * rx;
+    double ry2 = ry * ry;
+    double x1p2 = x1p * x1p;
+    double y1p2 = y1p * y1p;
+    double radii_scale = x1p2 / rx2 + y1p2 / ry2;
+    if (radii_scale > 1.0) {
+        double scale = sqrt(radii_scale);
+        rx *= scale;
+        ry *= scale;
+        rx2 = rx * rx;
+        ry2 = ry * ry;
+    }
+
+    double numerator = rx2 * ry2 - rx2 * y1p2 - ry2 * x1p2;
+    double denominator = rx2 * y1p2 + ry2 * x1p2;
+    double factor = 0.0;
+    if (denominator != 0.0) {
+        double ratio = numerator / denominator;
+        if (ratio < 0.0) {
+            ratio = 0.0;
+        }
+        factor = sqrt(ratio);
+        if (large_arc == sweep) {
+            factor = -factor;
+        }
+    }
+
+    double cxp = factor * (rx * y1p / ry);
+    double cyp = factor * (-ry * x1p / rx);
+    double midpoint_x = ((double)start_x + x) * 0.5;
+    double midpoint_y = ((double)start_y + y) * 0.5;
+    double center_x = cos_phi * cxp - sin_phi * cyp + midpoint_x;
+    double center_y = sin_phi * cxp + cos_phi * cyp + midpoint_y;
+
+    double ux = (x1p - cxp) / rx;
+    double uy = (y1p - cyp) / ry;
+    double vx = (-x1p - cxp) / rx;
+    double vy = (-y1p - cyp) / ry;
+    double theta1 = atan2(uy, ux);
+    double delta_theta = vector_angle(ux, uy, vx, vy);
+
+    if (!sweep && delta_theta > 0.0) {
+        delta_theta -= 2.0 * 3.14159265358979323846;
+    } else if (sweep && delta_theta < 0.0) {
+        delta_theta += 2.0 * 3.14159265358979323846;
+    }
+
+    if (delta_theta == 0.0) {
+        return grape_path_line_to(path, x, y);
+    }
+
+    uint32_t segment_count = (uint32_t)ceil(fabs(delta_theta) / (3.14159265358979323846 * 0.5));
+    if (segment_count == 0U) {
+        segment_count = 1U;
+    }
+
+    esp_err_t ret = path_reserve(path, path->command_count + segment_count);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    double segment_delta = delta_theta / (double)segment_count;
+    for (uint32_t i = 0; i < segment_count; ++i) {
+        double segment_start = theta1 + segment_delta * (double)i;
+        bool force_endpoint = (i + 1U) == segment_count;
+        ret = append_arc_segment_as_cubic(
+            path,
+            center_x, center_y,
+            rx, ry,
+            cos_phi, sin_phi,
+            segment_start, segment_delta,
+            force_endpoint, x, y
+        );
+        if (ret != ESP_OK) {
+            return ret;
+        }
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t grape_path_arc_to_relative(grape_path_t *path,
+                                     float radius_x,
+                                     float radius_y,
+                                     float x_axis_rotation_degrees,
+                                     bool large_arc,
+                                     bool sweep,
+                                     float dx,
+                                     float dy)
+{
+    if (!path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return grape_path_arc_to(
+        path,
+        radius_x, radius_y,
+        x_axis_rotation_degrees,
+        large_arc, sweep,
+        path->current_x + dx,
+        path->current_y + dy
     );
 }
 
