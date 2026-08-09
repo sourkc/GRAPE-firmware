@@ -173,16 +173,14 @@ static esp_err_t run_vector_demo(grape_context_t *grape)
         }                        \
     } while (0)
 
-    /* Circular ring built from SVG-style elliptical arc commands. */
-    PATH_CHECK(grape_path_move_to(path, 150.0f, 18.0f));
-    PATH_CHECK(grape_path_arc_to(path, 132.0f, 132.0f, 0.0f, false, true, 150.0f, 282.0f));
-    PATH_CHECK(grape_path_arc_to(path, 132.0f, 132.0f, 0.0f, false, true, 150.0f, 18.0f));
-    PATH_CHECK(grape_path_close(path));
-
-    PATH_CHECK(grape_path_move_to(path, 150.0f, 78.0f));
-    PATH_CHECK(grape_path_arc_to(path, 72.0f, 72.0f, 0.0f, false, false, 150.0f, 222.0f));
-    PATH_CHECK(grape_path_arc_to(path, 72.0f, 72.0f, 0.0f, false, false, 150.0f, 78.0f));
-    PATH_CHECK(grape_path_close(path));
+    static const char *donut_path_data =
+        "M150 18 "
+        "A132 132 0 0 1 150 282 "
+        "A132 132 0 0 1 150 18 Z "
+        "M150 78 "
+        "A72 72 0 0 0 150 222 "
+        "A72 72 0 0 0 150 78 Z";
+    PATH_CHECK(grape_svg_parse_path_data(path, donut_path_data));
 
     grape_path_rasterize_config_t raster_config =
         GRAPE_PATH_RASTERIZE_CONFIG_DEFAULT();

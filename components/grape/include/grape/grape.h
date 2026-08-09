@@ -5,6 +5,7 @@
 #include "grape/grape_debug.h"
 #include "grape/grape_feature.h"
 #include "grape/grape_path.h"
+#include "grape/grape_svg.h"
 
 #ifdef __cplusplus
 extern "C" {
