@@ -1,85 +1,173 @@
 # GRAPE benchmark
 
-The benchmark is a separate `grape_benchmark` component so renderer code does not
-need benchmark-specific logic.
+GRAPE's benchmark is a deterministic performance suite, not an animation used as
+an informal FPS test. It is implemented as the `grape_benchmark` component and
+keeps benchmark-only access to renderer internals behind
+`grape_benchmark_hooks.h`.
+
+The frozen performance coverage map is documented in `BENCHMARK_COVERAGE.md`.
 
 ## Running it
 
-`main/app_config.h` selects the boot mode:
+Set the boot mode in `main/app_config.h`:
 
 ```c
 #define GRAPE_APP_RUN_BENCHMARK 1
 ```
 
-Set it to `0` to run the existing demo in `main.c`.
+The application mounts the onboard SD card when available, runs the selected
+suites, writes the reports, then unmounts the card. The benchmark still runs and
+logs results if storage is unavailable.
 
-The benchmark defaults live in:
+Defaults are in:
 
 ```text
 components/grape_benchmark/include/grape/grape_benchmark_config.h
 ```
 
-The important switches are:
+A caller can override any default through `grape_benchmark_config_t`, including
+`suite_mask`. For example:
 
-- `GRAPE_BENCHMARK_WARMUP_FRAMES`
-- `GRAPE_BENCHMARK_MEASURED_FRAMES`
-- `GRAPE_BENCHMARK_CASE_COOLDOWN_MS`
-- `GRAPE_BENCHMARK_WRITE_SUMMARY_CSV`
-- `GRAPE_BENCHMARK_WRITE_SAMPLES_CSV`
-- the individual `GRAPE_BENCHMARK_SUITE_*` switches
+```c
+grape_benchmark_config_t config = GRAPE_BENCHMARK_CONFIG_DEFAULT();
+config.suite_mask = GRAPE_BENCHMARK_SUITE_DAMAGE_PLAN |
+                    GRAPE_BENCHMARK_SUITE_PIXEL_BACKENDS;
+ESP_ERROR_CHECK(grape_benchmark_run(grape, &config));
+```
 
-The benchmark disables telemetry's automatic periodic report while it is
-running, resets the telemetry window immediately before each measured section,
-and takes a telemetry snapshot after the measured frames.
+Available suite-mask bits are:
 
-## Current cases
+- `GRAPE_BENCHMARK_SUITE_DAMAGE_MARK`
+- `GRAPE_BENCHMARK_SUITE_DAMAGE_PLAN`
+- `GRAPE_BENCHMARK_SUITE_COMPOSITOR`
+- `GRAPE_BENCHMARK_SUITE_PIXEL_BACKENDS`
+- `GRAPE_BENCHMARK_SUITE_THREE_SHEAR`
+- `GRAPE_BENCHMARK_SUITE_FRAGMENTATION`
+- `GRAPE_BENCHMARK_SUITE_PRESENTATION`
+- `GRAPE_BENCHMARK_SUITE_LIFECYCLE`
+- `GRAPE_BENCHMARK_SUITE_SCENES`
+- `GRAPE_BENCHMARK_SUITE_ALL`
 
-The initial shape suite covers:
+## Measurement model
 
-- empty `grape_present()` overhead
-- full-screen background redraw
-- isolated circle and square redraw
-- circle movement
-- square movement
-- both moving
-- two objects crossing/intersecting
-- stationary and moving overlap
-- opacity values
-- fixed scale values
-- affine rotation from 0 to 90 degrees in 5 degree increments
-- three-shear rotation from 0 to 90 degrees in 5 degree increments
-- 45-degree rotation combined with several scales
+Each case uses the same lifecycle:
 
-Movement is deterministic and based on frame number rather than wall-clock time,
-so different renderer versions perform the same sequence of transforms.
+```text
+setup
+  -> deterministic warmup iterations
+  -> reset telemetry
+  -> deterministic measured iterations
+       -> timed workload
+       -> optional normal grape_present()
+       -> untimed per-iteration reset
+  -> telemetry snapshot / case metrics
+  -> teardown
+```
 
-The rotation suite deliberately forces the two CPU rotation backends instead of
-using the normal automatic/PPA path. The CSV groups are `rotation_affine` and
-`rotation_shear`, with the angle stored in the `angle_deg` parameter. This makes
-frame time and CPU raster time directly plottable against rotation angle for both
-methods. The `rotation_shear_ppa_y` group explicitly enables
-`GRAPE_FEATURE_PPA_A8_ROTATE`; unsupported hardware reports that setup as not
-supported rather than silently benchmarking the direct Y-shear fallback.
+The runner owns timing and reporting. Cases do not invent their own stopwatch
+scheme. Telemetry automatic reporting is disabled for the duration of the suite
+so a periodic report cannot reset a measurement window mid-case.
 
-The three-shear backend is currently experimental. It handles A8 textures at
-1:1 scale for normalized rotations from -90 to +90 degrees. Unsupported surfaces
-fall back to the affine rasterizer. `GRAPE_ROTATION_BACKEND_AUTO` preserves the
-normal renderer behavior and does not select the experimental shear path yet.
+The benchmark also temporarily extends the ESP-IDF Task Watchdog timeout to
+`GRAPE_BENCHMARK_WDT_TIMEOUT_MS` (60 seconds by default) so sustained
+CPU-saturation microbenchmarks are not mistaken for a stuck renderer. The normal
+`CONFIG_ESP_TASK_WDT_TIMEOUT_S` timeout, idle-core mask, and panic policy are
+restored when the suite exits. This changes watchdog tolerance only; it does not
+insert scheduler delays into measured workloads.
 
-The first shear implementation uses point sampling in the three shear passes.
-Because the image is resampled three times, edge pixels can differ slightly from
-the single-pass affine reference. Exact +/-90 degree rotations use a dedicated
-quarter-turn copy inside the shear backend to avoid the edge loss caused by three
-successive nearest-neighbor resamples at that boundary. The affine backend
-remains available for visual and performance comparison while the shear path is
-evaluated.
+Animation/state generation uses a fixed seed, a fixed timestep, and iteration
+number. Faster renderer versions therefore execute the same sequence of scene
+states as slower versions.
+
+Cases are tagged as:
+
+- `MICRO`: isolates one subsystem and intentionally bypasses unrelated pipeline work.
+- `PIPELINE`: exercises a controlled combination of subsystems.
+- `SCENE`: runs normal update -> damage -> plan -> composite -> present behavior.
+- `LIFECYCLE`: measures allocation/resource/list operations rather than FPS work.
+
+## Benchmark families
+
+### Damage marking
+
+Sweeps A8 texture size, surface count, and occupancy pattern. It includes empty,
+fully opaque, sparse-cell, half-cell, and dense-minus-one-cell occupancy, plus
+shared-texture invalidation fan-out. The benchmark clears accumulated logical
+damage outside the timed region after every iteration.
+
+### Damage planner
+
+Feeds predetermined tile bitmaps directly to the planner. Cases include solid
+regions, horizontal/vertical stripes, checkerboard, deterministic noise at
+multiple densities, and distributed compact islands. Reports include dirty tile
+count, split count, split candidates, final rectangle count, final pixels,
+overdraw ratio, and fullscreen fallback.
+
+### Compositor traversal
+
+Sweeps surface count x render-rectangle count x intersection ratio using a tiny
+source surface so traversal/rejection/dispatch scaling is visible without a
+large raster workload dominating it.
+
+### Pixel backends
+
+Sweeps operation area for PPA fill, CPU fill, PPA A8 blend, CPU A8 affine,
+CPU RGB565 affine, and CPU RGB888 affine. Surface cases include opaque and
+partial-alpha paths. A8 includes paired internal-RAM/PSRAM source cases.
+
+Telemetry provides the backend-specific hardware/CPU timer totals while the
+runner also records complete direct-compositor invocation latency.
+
+### Three-shear rotation
+
+Sweeps texture sizes 32/64/128/256/512 and angles 0, 5, 15, 30, 45, 60, 75, 85,
+89, and 90 degrees. The normal cases use the PPA final A8 composite when
+available. Selected 128px angles also force the CPU final composite.
+
+The telemetry snapshot exposes preparation, X1, Y, X2, clear, quarter-turn,
+and composite timings. Scratch-buffer capacity is reported as a case metric.
+
+### Fragmentation
+
+Keeps rendered pixel area approximately constant while changing the number of
+render rectangles through 1, 2, 4, 8, and 16. The same static surface scene is
+underneath every case. This is intended to calibrate fixed per-rectangle cost and
+therefore the damage planner's rectangle-overhead heuristic.
+
+### Presentation
+
+Measures full-width dirty bands with 16/64/256/640/full-height Y spans and a
+same-rendered-area pair of tests whose two small rectangles are either close
+together or at opposite ends of the display. This directly exposes the current
+driver behavior of submitting the full display width from minimum dirty Y to
+maximum dirty Y.
+
+`display.submit` and `display.refresh_wait` remain separate telemetry timers.
+The runner stores per-iteration samples so refresh/VSync distributions can be
+analyzed instead of relying only on averages.
+
+### Lifecycle
+
+Measures surface create/destroy batches, texture create/destroy batches, A8
+occupancy rebuilds, and Z-order reordering at increasing object counts.
+
+### Canonical scenes
+
+Normal end-to-end scenes cover:
+
+- motion-heavy transforming opaque surfaces
+- deep semi-transparent overdraw
+- many small spatially fragmented moving surfaces
+- three-shear rotation-heavy scenes
+- a ten-square legacy/reference scene
+
+These are intentionally separate from the microbenchmarks. They answer whether
+GRAPE as a whole became faster after an optimization; they do not identify the
+cause by themselves.
 
 ## Reports
 
-The benchmark always logs one short result per case.
-
-If `GRAPE_BENCHMARK_OUTPUT_DIRECTORY` points at a mounted VFS filesystem, it
-also writes:
+When the output directory is mounted, the suite writes:
 
 ```text
 grape_benchmark_summary.csv
@@ -87,52 +175,28 @@ grape_benchmark_samples.csv
 grape_benchmark_metadata.txt
 ```
 
-The default output directory is `/sdcard`.
+The summary contains one row per case with:
 
-The benchmark intentionally does **not** mount an SD card itself. Storage
-mounting is board/application policy. This means the same benchmark can later
-write to a P4-local SD card, flash filesystem, USB storage, or another mounted
-filesystem without changing the benchmark component.
+- case kind/group/name and parameters
+- iteration count and iterations/second
+- mean, standard deviation, min, p50, p95, p99, max for workload, present, and total time
+- every registered GRAPE telemetry timer total/average/max/call count
+- benchmark-specific named metrics
 
-The current benchmark application mounts the onboard microSD slot on the
-Waveshare ESP32-P4-WIFI6-DEV-KIT through `grape_storage` before running the
-benchmark and unmounts it afterward. The board configuration uses 4-bit SDMMC
-on GPIO43/44/39/40/41/42 and SDMMC IO power from on-chip LDO channel 4. Card
-formatting on mount failure is disabled.
+The samples CSV contains per-iteration workload/present/total timing. Samples are
+buffered in RAM and written only after the measured section, so SD writes are not
+inside measured iterations.
 
-`grape_benchmark_summary.csv` contains one row per case, including FPS,
-frame/update/present min/average/max values, parameters, and all GRAPE telemetry
-totals/averages/max/call counts. The direct wall-clock columns use the
-`*_wall_*` names so they do not collide with telemetry timer column names.
+Metadata records the build label, IDF target/version, chip revision, CPU
+frequency, PSRAM, display information, fixed timestep, deterministic seed, suite
+mask, and iteration defaults.
 
-`grape_benchmark_samples.csv` contains per-frame update, present, and whole-frame
-timings. Samples are buffered in RAM during the measured section and only
-written afterward so SD writes do not contaminate the timing.
+## Benchmark rules
 
-`grape_benchmark_metadata.txt` records the IDF version, target, chip revision,
-core count, CPU frequency, PSRAM size, display information, and benchmark
-settings.
-
-## Adding future suites
-
-Benchmark cases use setup/step/teardown callbacks. The runner owns warm-up,
-timing, telemetry capture, report writing, and cleanup sequencing.
-
-The current cases are in:
-
-```text
-components/grape_benchmark/src/cases/grape_benchmark_shapes.c
-```
-
-Future features such as fonts, TTF rendering, JPEG decoding, texture streaming,
-surface-count sweeps, or GFXLINK throughput should be added as new case/suite
-files rather than special-cased in the runner.
-
-A case should:
-
-1. Allocate/configure its test resources in `setup`.
-2. Perform only the per-frame scene update in `step`.
-3. Release resources in `teardown`.
-
-The benchmark runner calls `grape_present()` itself so all cases get the same
-frame timing methodology.
+1. Vary one primary stress axis in microbenchmarks.
+2. Use fixed seeds and fixed timesteps; never wall-clock animation state.
+3. Keep warmup and file I/O outside measured regions.
+4. Skip unsupported hardware features explicitly; never silently benchmark a fallback under an accelerator label.
+5. Do not optimize renderer code in benchmark-framework commits.
+6. Preserve raw samples for quantile/outlier analysis.
+7. Use canonical scenes only after microbenchmarks establish where time is spent.

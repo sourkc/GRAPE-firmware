@@ -460,7 +460,7 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         .a = 255,
     };
 
-    esp_err_t ret;
+    esp_err_t ret = ESP_FAIL;
     GRAPE_TIME_BLOCK(PPA_FILL) {
         ret = grape_ppa_fill(context, rect, context->background);
     }

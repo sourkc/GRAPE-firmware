@@ -171,6 +171,7 @@ void app_main(void)
     }
 
     grape_benchmark_config_t benchmark_config = GRAPE_BENCHMARK_CONFIG_DEFAULT();
+    benchmark_config.suite_mask = GRAPE_APP_BENCHMARK_SUITE_MASK;
     ESP_ERROR_CHECK(grape_benchmark_run(grape, &benchmark_config));
 
     if (grape_storage_sd_is_mounted()) {

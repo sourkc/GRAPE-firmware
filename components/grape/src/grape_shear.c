@@ -719,12 +719,12 @@ esp_err_t grape_shear_rotate_a8(
         return rotate_quarter_turn_a8(context, surface, angle, out_image);
     }
 
-    float shear_x_coefficient;
-    float shear_y_coefficient;
-    shear_bounds_t stage1;
-    shear_bounds_t stage2;
-    shear_bounds_t stage3;
-    esp_err_t ret;
+    float shear_x_coefficient = 0.0f;
+    float shear_y_coefficient = 0.0f;
+    shear_bounds_t stage1 = {0};
+    shear_bounds_t stage2 = {0};
+    shear_bounds_t stage3 = {0};
+    esp_err_t ret = ESP_FAIL;
 
     GRAPE_TIME_BLOCK(SHEAR_PREP) {
         shear_x_coefficient = surface->shear_cache_valid
@@ -858,7 +858,7 @@ esp_err_t grape_shear_rotate_a8(
         .height = stage1.height,
     };
 
-    grape_shear_image_t stage2_image;
+    grape_shear_image_t stage2_image = {0};
     bool used_ppa_rotate_y = false;
 
     if (grape_feature_is_active(context, GRAPE_FEATURE_PPA_A8_ROTATE)) {

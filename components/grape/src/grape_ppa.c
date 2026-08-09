@@ -307,7 +307,7 @@ static esp_err_t blend_a8_image(
         .mode = PPA_TRANS_MODE_BLOCKING,
     };
 
-    esp_err_t ret;
+    esp_err_t ret = ESP_FAIL;
     GRAPE_TIME_BLOCK(PPA_BLEND_HW) {
         ret = ppa_do_blend(context->ppa_blend, &config);
     }

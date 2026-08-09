@@ -298,7 +298,7 @@ static esp_err_t waveshare_present(grape_display_t *display)
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t ret;
+    esp_err_t ret = ESP_FAIL;
     GRAPE_TIME_BLOCK(DISPLAY_SUBMIT) {
         ret = esp_lcd_panel_draw_bitmap(
             state->handles.panel,
@@ -315,7 +315,7 @@ static esp_err_t waveshare_present(grape_display_t *display)
         return ret;
     }
 
-    BaseType_t refresh_complete;
+    BaseType_t refresh_complete = pdFALSE;
     GRAPE_TIME_BLOCK(DISPLAY_REFRESH_WAIT) {
         refresh_complete = xSemaphoreTake(
             state->refresh_done,

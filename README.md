@@ -10,8 +10,9 @@
 - [x] Tile-based adaptive damage grouping
 - [x] Per-texture occupancy masks for transparent/irregular textures
 - [ ] Merge the different debug options into one unified system
-- [ ] Build a proper benchmark
+- [x] Build a deterministic benchmark suite
 - [x] Centralize hardware features and their lookup
+- [ ] Tackle watchdog and vtaskdelay bs so we never get this error ever again
 
 ## Chip revision overlays
 
@@ -58,6 +59,12 @@ benchmark integration.
 Optional hardware/implementation capabilities use the unified Feature API. It
 separates capability availability from runtime policy and exposes stable feature
 IDs suitable for future GFXLINK discovery/control. See `FEATURES.md`.
+
+## Benchmark
+
+GRAPE includes deterministic micro, pipeline, lifecycle, and end-to-end scene
+benchmarks. See `BENCHMARK.md` for running/reporting details and
+`BENCHMARK_COVERAGE.md` for the frozen performance coverage map.
 
 ## Planned stuff
 - JPEG images (hardware)

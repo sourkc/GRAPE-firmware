@@ -7,7 +7,7 @@
  *   2 - detailed renderer timings
  */
 #ifndef GRAPE_TELEMETRY_LEVEL
-#define GRAPE_TELEMETRY_LEVEL 0
+#define GRAPE_TELEMETRY_LEVEL 2
 #endif
 
 #if GRAPE_TELEMETRY_LEVEL < 0 || GRAPE_TELEMETRY_LEVEL > 2

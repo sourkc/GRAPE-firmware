@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "grape_internal.h"
+#include "grape/grape_benchmark_hooks.h"
 
 static grape_rect_t screen_bounds(const grape_context_t *context)
 {
@@ -1049,4 +1050,45 @@ void grape_damage_commit_visible(grape_context_t *context)
         context->damage.current_visible_tiles,
         context->damage.bitmap_size
     );
+}
+
+esp_err_t grape_benchmark_damage_plan_bitmap(
+    grape_context_t *context,
+    const uint8_t *bitmap,
+    size_t bitmap_size,
+    grape_benchmark_damage_plan_result_t *out_result
+)
+{
+    if (!context || !bitmap || !out_result ||
+        bitmap_size != context->damage.bitmap_size) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    grape_rect_t rects[CONFIG_GRAPE_MAX_DAMAGE_RECTS];
+    size_t rect_count = 0;
+    grape_debug_damage_stats_t stats = {0};
+
+    esp_err_t ret = build_rects(
+        context,
+        bitmap,
+        rects,
+        CONFIG_GRAPE_MAX_DAMAGE_RECTS,
+        &rect_count,
+        &stats
+    );
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    *out_result = (grape_benchmark_damage_plan_result_t) {
+        .dirty_tiles = stats.dirty_tiles,
+        .total_tiles = stats.total_tiles,
+        .planner_splits = stats.planner_splits,
+        .split_candidates = stats.split_candidates,
+        .final_rects = stats.final_rects,
+        .final_pixels = stats.final_pixels,
+        .fullscreen_pixels = stats.fullscreen_pixels,
+        .full_screen = stats.full_screen,
+    };
+    return ESP_OK;
 }

@@ -10,11 +10,27 @@
 extern "C" {
 #endif
 
+typedef enum {
+    GRAPE_BENCHMARK_SUITE_DAMAGE_MARK      = 1u << 0,
+    GRAPE_BENCHMARK_SUITE_DAMAGE_PLAN      = 1u << 1,
+    GRAPE_BENCHMARK_SUITE_COMPOSITOR       = 1u << 2,
+    GRAPE_BENCHMARK_SUITE_PIXEL_BACKENDS   = 1u << 3,
+    GRAPE_BENCHMARK_SUITE_THREE_SHEAR      = 1u << 4,
+    GRAPE_BENCHMARK_SUITE_FRAGMENTATION    = 1u << 5,
+    GRAPE_BENCHMARK_SUITE_PRESENTATION     = 1u << 6,
+    GRAPE_BENCHMARK_SUITE_LIFECYCLE        = 1u << 7,
+    GRAPE_BENCHMARK_SUITE_SCENES           = 1u << 8,
+    GRAPE_BENCHMARK_SUITE_ALL              = (1u << 9) - 1u,
+} grape_benchmark_suite_mask_t;
+
 typedef struct {
     const char *output_directory;
-    uint32_t warmup_frames;
-    uint32_t measured_frames;
+    uint32_t warmup_iterations;
+    uint32_t measured_iterations;
     uint32_t case_cooldown_ms;
+    uint32_t fixed_dt_us;
+    uint32_t seed;
+    uint32_t suite_mask;
     bool write_summary_csv;
     bool write_samples_csv;
     bool log_each_case;
@@ -23,9 +39,12 @@ typedef struct {
 #define GRAPE_BENCHMARK_CONFIG_DEFAULT()                         \
     {                                                            \
         .output_directory = GRAPE_BENCHMARK_OUTPUT_DIRECTORY,    \
-        .warmup_frames = GRAPE_BENCHMARK_WARMUP_FRAMES,          \
-        .measured_frames = GRAPE_BENCHMARK_MEASURED_FRAMES,      \
+        .warmup_iterations = GRAPE_BENCHMARK_WARMUP_ITERATIONS,  \
+        .measured_iterations = GRAPE_BENCHMARK_MEASURED_ITERATIONS, \
         .case_cooldown_ms = GRAPE_BENCHMARK_CASE_COOLDOWN_MS,    \
+        .fixed_dt_us = GRAPE_BENCHMARK_FIXED_DT_US,              \
+        .seed = GRAPE_BENCHMARK_SEED,                            \
+        .suite_mask = GRAPE_BENCHMARK_SUITE_ALL,                 \
         .write_summary_csv = GRAPE_BENCHMARK_WRITE_SUMMARY_CSV,  \
         .write_samples_csv = GRAPE_BENCHMARK_WRITE_SAMPLES_CSV,  \
         .log_each_case = GRAPE_BENCHMARK_LOG_EACH_CASE,          \

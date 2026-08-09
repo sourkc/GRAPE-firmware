@@ -1,4 +1,5 @@
 #include "grape_benchmark_internal.h"
+#include "sdkconfig.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -6,73 +7,84 @@
 
 #include "esp_chip_info.h"
 #include "esp_heap_caps.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
-#include "esp_system.h"
-#include "sdkconfig.h"
 
 static const char *TAG = "grape_bench";
 
-static bool make_path(
-    char *buffer,
-    size_t buffer_size,
-    const char *directory,
-    const char *filename
-)
+static const char *kind_name(grape_benchmark_kind_t kind)
 {
-    if (!buffer || buffer_size == 0 || !directory || !filename) {
+    switch (kind) {
+        case GRAPE_BENCHMARK_KIND_MICRO: return "micro";
+        case GRAPE_BENCHMARK_KIND_PIPELINE: return "pipeline";
+        case GRAPE_BENCHMARK_KIND_SCENE: return "scene";
+        case GRAPE_BENCHMARK_KIND_LIFECYCLE: return "lifecycle";
+        default: return "unknown";
+    }
+}
+
+static bool make_path(char *out, size_t capacity,
+                      const char *directory, const char *name)
+{
+    if (!out || capacity == 0 || !directory || !name) {
         return false;
     }
+    int written = snprintf(out, capacity, "%s/%s", directory, name);
+    return written > 0 && (size_t)written < capacity;
+}
 
-    size_t length = strlen(directory);
-    const char *separator = (length > 0 && directory[length - 1] == '/') ? "" : "/";
+static void write_distribution_header(FILE *file, const char *prefix)
+{
+    fprintf(file,
+            ",%s_mean_us,%s_stddev_us,%s_min_us,%s_p50_us,%s_p95_us,%s_p99_us,%s_max_us",
+            prefix, prefix, prefix, prefix, prefix, prefix, prefix);
+}
 
-    int written = snprintf(
-        buffer,
-        buffer_size,
-        "%s%s%s",
-        directory,
-        separator,
-        filename
-    );
-
-    return written > 0 && (size_t)written < buffer_size;
+static void write_distribution(FILE *file, const grape_benchmark_distribution_t *dist)
+{
+    fprintf(file,
+            ",%.3f,%.3f,%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32,
+            dist->mean_us,
+            dist->stddev_us,
+            dist->min_us,
+            dist->p50_us,
+            dist->p95_us,
+            dist->p99_us,
+            dist->max_us);
 }
 
 static void write_summary_header(FILE *file)
 {
-    if (!file) {
-        return;
+    fprintf(file, "status,kind,group,name");
+    for (size_t i = 0; i < GRAPE_BENCHMARK_MAX_PARAMS; ++i) {
+        fprintf(file, ",param%u_name,param%u_value", (unsigned)i, (unsigned)i);
     }
-
-    fprintf(file,
-            "group,case,"
-            "param0_name,param0_value,param1_name,param1_value,"
-            "param2_name,param2_value,param3_name,param3_value,"
-            "frames,elapsed_us,fps,"
-            "update_wall_avg_us,update_wall_min_us,update_wall_max_us,"
-            "present_wall_avg_us,present_wall_min_us,present_wall_max_us,"
-            "frame_wall_avg_us,frame_wall_min_us,frame_wall_max_us");
+    fprintf(file, ",iterations,elapsed_us,iterations_per_second");
+    write_distribution_header(file, "work");
+    write_distribution_header(file, "present");
+    write_distribution_header(file, "total");
+    write_distribution_header(file, "refresh_wait");
 
     for (int i = 0; i < GRAPE_TELEMETRY_TIMER_COUNT; ++i) {
         const char *name = grape_telemetry_timer_csv_name((grape_telemetry_timer_t)i);
-        fprintf(file,
-                ",%s_total_us,%s_avg_us,%s_max_us,%s_calls",
+        fprintf(file, ",%s_total_us,%s_avg_us,%s_max_us,%s_calls",
                 name, name, name, name);
     }
 
+    for (size_t i = 0; i < GRAPE_BENCHMARK_MAX_METRICS; ++i) {
+        fprintf(file, ",metric%u_name,metric%u_unit,metric%u_value",
+                (unsigned)i, (unsigned)i, (unsigned)i);
+    }
     fputc('\n', file);
-    fflush(file);
 }
 
 static void write_samples_header(FILE *file)
 {
-    if (!file) {
-        return;
+    fprintf(file, "kind,group,name");
+    for (size_t i = 0; i < GRAPE_BENCHMARK_MAX_PARAMS; ++i) {
+        fprintf(file, ",param%u_name,param%u_value", (unsigned)i, (unsigned)i);
     }
-
-    fprintf(file,
-            "group,case,frame,update_us,present_us,frame_us\n");
-    fflush(file);
+    fprintf(file, ",iteration,work_us,present_us,total_us,refresh_wait_us\n");
 }
 
 esp_err_t grape_benchmark_report_open(grape_benchmark_runtime_t *runtime)
@@ -81,19 +93,13 @@ esp_err_t grape_benchmark_report_open(grape_benchmark_runtime_t *runtime)
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (!runtime->config.output_directory) {
-        return ESP_OK;
-    }
-
     char path[256];
-
     if (runtime->config.write_summary_csv &&
         make_path(path, sizeof(path), runtime->config.output_directory,
                   "grape_benchmark_summary.csv")) {
         runtime->summary_csv = fopen(path, "w");
         if (!runtime->summary_csv) {
-            ESP_LOGW(TAG,
-                     "Could not open %s (%s); summary will only be logged",
+            ESP_LOGW(TAG, "Could not open %s (%s); summary will only be logged",
                      path, strerror(errno));
         } else {
             write_summary_header(runtime->summary_csv);
@@ -106,8 +112,7 @@ esp_err_t grape_benchmark_report_open(grape_benchmark_runtime_t *runtime)
                   "grape_benchmark_samples.csv")) {
         runtime->samples_csv = fopen(path, "w");
         if (!runtime->samples_csv) {
-            ESP_LOGW(TAG,
-                     "Could not open %s (%s); per-frame samples will not be saved",
+            ESP_LOGW(TAG, "Could not open %s (%s); samples disabled",
                      path, strerror(errno));
         } else {
             write_samples_header(runtime->samples_csv);
@@ -124,12 +129,10 @@ void grape_benchmark_report_close(grape_benchmark_runtime_t *runtime)
     if (!runtime) {
         return;
     }
-
     if (runtime->summary_csv) {
         fclose(runtime->summary_csv);
         runtime->summary_csv = NULL;
     }
-
     if (runtime->samples_csv) {
         fclose(runtime->samples_csv);
         runtime->samples_csv = NULL;
@@ -156,9 +159,7 @@ void grape_benchmark_report_metadata(grape_benchmark_runtime_t *runtime)
 
     esp_chip_info_t chip;
     esp_chip_info(&chip);
-
-    const grape_display_info_t *display =
-        grape_get_display_info(runtime->grape);
+    const grape_display_info_t *display = grape_get_display_info(runtime->grape);
 
     fprintf(file, "benchmark_build=%s\n", GRAPE_BENCHMARK_BUILD_LABEL);
     fprintf(file, "idf_version=%s\n", esp_get_idf_version());
@@ -180,168 +181,176 @@ void grape_benchmark_report_metadata(grape_benchmark_runtime_t *runtime)
     }
 
     fprintf(file, "telemetry_level=%d\n", GRAPE_TELEMETRY_LEVEL);
-    fprintf(file, "warmup_frames=%" PRIu32 "\n", runtime->config.warmup_frames);
-    fprintf(file, "measured_frames=%" PRIu32 "\n", runtime->config.measured_frames);
+    fprintf(file, "warmup_iterations=%" PRIu32 "\n", runtime->config.warmup_iterations);
+    fprintf(file, "measured_iterations=%" PRIu32 "\n", runtime->config.measured_iterations);
+    fprintf(file, "fixed_dt_us=%" PRIu32 "\n", runtime->config.fixed_dt_us);
+    fprintf(file, "seed=0x%08" PRIx32 "\n", runtime->config.seed);
+    fprintf(file, "suite_mask=0x%08" PRIx32 "\n", runtime->config.suite_mask);
 
     fclose(file);
     ESP_LOGI(TAG, "Metadata: %s", path);
+}
+
+void grape_benchmark_report_skip(
+    grape_benchmark_runtime_t *runtime,
+    const grape_benchmark_case_t *bench_case,
+    esp_err_t reason
+)
+{
+    if (!runtime || !bench_case) {
+        return;
+    }
+    (void)reason;
+
+    ESP_LOGW(TAG, "SKIP %-14s %-26s (%s)",
+             bench_case->group, bench_case->name, esp_err_to_name(reason));
+
+    if (runtime->summary_csv) {
+        fprintf(runtime->summary_csv, "skip,%s,%s,%s",
+                kind_name(bench_case->kind), bench_case->group, bench_case->name);
+        for (size_t i = 0; i < GRAPE_BENCHMARK_MAX_PARAMS; ++i) {
+            const grape_benchmark_param_t *param = &bench_case->params[i];
+            fprintf(runtime->summary_csv, ",%s,%.9g",
+                    param->name ? param->name : "",
+                    param->name ? param->value : 0.0);
+        }
+
+        grape_benchmark_distribution_t zero_dist = {0};
+        fprintf(runtime->summary_csv, ",0,0,0");
+        write_distribution(runtime->summary_csv, &zero_dist);
+        write_distribution(runtime->summary_csv, &zero_dist);
+        write_distribution(runtime->summary_csv, &zero_dist);
+        write_distribution(runtime->summary_csv, &zero_dist);
+
+        for (int i = 0; i < GRAPE_TELEMETRY_TIMER_COUNT; ++i) {
+            fprintf(runtime->summary_csv, ",0,0,0,0");
+        }
+        for (size_t i = 0; i < GRAPE_BENCHMARK_MAX_METRICS; ++i) {
+            fprintf(runtime->summary_csv, ",,,0");
+        }
+
+        fputc('\n', runtime->summary_csv);
+        fflush(runtime->summary_csv);
+    }
 }
 
 void grape_benchmark_report_case(
     grape_benchmark_runtime_t *runtime,
     const grape_benchmark_case_t *bench_case,
     const grape_benchmark_result_t *result,
-    const grape_benchmark_frame_sample_t *samples
+    const grape_benchmark_sample_t *samples
 )
 {
-    if (!runtime || !bench_case || !result || result->frames == 0) {
+    if (!runtime || !bench_case || !result || result->iterations == 0) {
         return;
     }
 
-    double fps =
-        ((double)result->frames * 1000000.0) / (double)result->elapsed_us;
-
-    double update_avg =
-        (double)result->update_total_us / (double)result->frames;
-    double present_avg =
-        (double)result->present_total_us / (double)result->frames;
-    double frame_avg =
-        (double)result->frame_total_us / (double)result->frames;
+    double ips = result->elapsed_us
+        ? ((double)result->iterations * 1000000.0) / (double)result->elapsed_us
+        : 0.0;
 
     if (runtime->config.log_each_case) {
-        const grape_telemetry_stat_t *cpu_raster =
-            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_CPU_SURFACE_RASTER];
-        const grape_telemetry_stat_t *ppa_blend =
-            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_PPA_BLEND_HW];
-        const grape_telemetry_stat_t *refresh_wait =
-            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_DISPLAY_REFRESH_WAIT];
-
-        double cpu_raster_per_frame =
-            (double)cpu_raster->total_us / (double)result->frames;
-        double ppa_blend_per_frame =
-            (double)ppa_blend->total_us / (double)result->frames;
-        double refresh_wait_per_frame =
-            (double)refresh_wait->total_us / (double)result->frames;
-
         ESP_LOGI(TAG,
-                 "%-15s %-28s FPS=%7.2f frame=%7.3f ms present=%7.3f ms update=%7.3f ms",
+                 "%-9s %-14s %-26s work=%7.3f ms p50=%7.3f p95=%7.3f p99=%7.3f max=%7.3f ms",
+                 kind_name(bench_case->kind),
                  bench_case->group,
                  bench_case->name,
-                 fps,
-                 frame_avg / 1000.0,
-                 present_avg / 1000.0,
-                 update_avg / 1000.0);
+                 result->work.mean_us / 1000.0,
+                 result->work.p50_us / 1000.0,
+                 result->work.p95_us / 1000.0,
+                 result->work.p99_us / 1000.0,
+                 result->work.max_us / 1000.0);
 
-        ESP_LOGI(TAG,
-                 "  per-frame: CPU raster=%7.3f ms PPA blend=%7.3f ms refresh wait=%7.3f ms",
-                 cpu_raster_per_frame / 1000.0,
-                 ppa_blend_per_frame / 1000.0,
-                 refresh_wait_per_frame / 1000.0);
-
-        const grape_telemetry_stat_t *shear_prep =
-            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_PREP];
-        const grape_telemetry_stat_t *shear_x1 =
-            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_X1];
-        const grape_telemetry_stat_t *shear_y =
-            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_Y];
-        const grape_telemetry_stat_t *shear_x2 =
-            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_X2];
-        const grape_telemetry_stat_t *shear_clear =
-            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_CLEAR];
-        const grape_telemetry_stat_t *shear_composite =
-            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_COMPOSITE];
-        const grape_telemetry_stat_t *shear_quarter =
-            &result->telemetry.timers[GRAPE_TELEMETRY_TIMER_SHEAR_QUARTER_TURN];
-
-        if (shear_prep->calls || shear_x1->calls || shear_y->calls ||
-            shear_x2->calls || shear_quarter->calls || shear_composite->calls) {
-            double prep_per_frame =
-                (double)shear_prep->total_us / (double)result->frames;
-            double x1_per_frame =
-                (double)shear_x1->total_us / (double)result->frames;
-            double y_per_frame =
-                (double)shear_y->total_us / (double)result->frames;
-            double x2_per_frame =
-                (double)shear_x2->total_us / (double)result->frames;
-            double clear_per_frame =
-                (double)shear_clear->total_us / (double)result->frames;
-            double composite_per_frame =
-                (double)shear_composite->total_us / (double)result->frames;
-            double quarter_per_frame =
-                (double)shear_quarter->total_us / (double)result->frames;
-
+        if ((bench_case->flags & GRAPE_BENCHMARK_CASE_PRESENT) != 0U ||
+            result->telemetry.timers[GRAPE_TELEMETRY_TIMER_DISPLAY_REFRESH_WAIT].calls) {
             ESP_LOGI(TAG,
-                     "  shear: prep=%7.3f ms X1=%7.3f ms Y=%7.3f ms X2=%7.3f ms clear=%7.3f ms composite=%7.3f ms quarter=%7.3f ms",
-                     prep_per_frame / 1000.0,
-                     x1_per_frame / 1000.0,
-                     y_per_frame / 1000.0,
-                     x2_per_frame / 1000.0,
-                     clear_per_frame / 1000.0,
-                     composite_per_frame / 1000.0,
-                     quarter_per_frame / 1000.0);
+                     "  total=%7.3f ms present=%7.3f ms refresh_wait=%7.3f ms p50=%7.3f p95=%7.3f p99=%7.3f",
+                     result->total.mean_us / 1000.0,
+                     result->present.mean_us / 1000.0,
+                     result->refresh_wait.mean_us / 1000.0,
+                     result->refresh_wait.p50_us / 1000.0,
+                     result->refresh_wait.p95_us / 1000.0,
+                     result->refresh_wait.p99_us / 1000.0);
+        }
+
+        if (result->metric_count > 0) {
+            char line[384];
+            size_t used = (size_t)snprintf(line, sizeof(line), "  metrics:");
+            for (size_t i = 0; i < result->metric_count && used < sizeof(line); ++i) {
+                int written = snprintf(line + used, sizeof(line) - used,
+                                       " %s=%.4g%s",
+                                       result->metrics[i].name,
+                                       result->metrics[i].value,
+                                       result->metrics[i].unit ? result->metrics[i].unit : "");
+                if (written < 0) break;
+                used += (size_t)written;
+            }
+            ESP_LOGI(TAG, "%s", line);
         }
     }
 
     if (runtime->summary_csv) {
-        fprintf(runtime->summary_csv,
-                "%s,%s",
-                bench_case->group,
-                bench_case->name);
-
+        fprintf(runtime->summary_csv, "ok,%s,%s,%s",
+                kind_name(bench_case->kind), bench_case->group, bench_case->name);
         for (size_t i = 0; i < GRAPE_BENCHMARK_MAX_PARAMS; ++i) {
             const grape_benchmark_param_t *param = &bench_case->params[i];
-            fprintf(runtime->summary_csv,
-                    ",%s,%.9g",
+            fprintf(runtime->summary_csv, ",%s,%.9g",
                     param->name ? param->name : "",
                     param->name ? param->value : 0.0);
         }
 
-        fprintf(runtime->summary_csv,
-                ",%" PRIu32 ",%" PRIu64 ",%.6f"
-                ",%.3f,%" PRIu32 ",%" PRIu32
-                ",%.3f,%" PRIu32 ",%" PRIu32
-                ",%.3f,%" PRIu32 ",%" PRIu32,
-                result->frames,
-                result->elapsed_us,
-                fps,
-                update_avg,
-                result->update_min_us,
-                result->update_max_us,
-                present_avg,
-                result->present_min_us,
-                result->present_max_us,
-                frame_avg,
-                result->frame_min_us,
-                result->frame_max_us);
+        fprintf(runtime->summary_csv, ",%" PRIu32 ",%" PRIu64 ",%.6f",
+                result->iterations, result->elapsed_us, ips);
+        write_distribution(runtime->summary_csv, &result->work);
+        write_distribution(runtime->summary_csv, &result->present);
+        write_distribution(runtime->summary_csv, &result->total);
+        write_distribution(runtime->summary_csv, &result->refresh_wait);
 
         for (int i = 0; i < GRAPE_TELEMETRY_TIMER_COUNT; ++i) {
             const grape_telemetry_stat_t *stat = &result->telemetry.timers[i];
             double avg = stat->calls
                 ? (double)stat->total_us / (double)stat->calls
                 : 0.0;
-
             fprintf(runtime->summary_csv,
                     ",%" PRIu64 ",%.3f,%" PRIu64 ",%" PRIu32,
-                    stat->total_us,
-                    avg,
-                    stat->max_us,
-                    stat->calls);
+                    stat->total_us, avg, stat->max_us, stat->calls);
         }
 
+        for (size_t i = 0; i < GRAPE_BENCHMARK_MAX_METRICS; ++i) {
+            if (i < result->metric_count) {
+                fprintf(runtime->summary_csv, ",%s,%s,%.9g",
+                        result->metrics[i].name ? result->metrics[i].name : "",
+                        result->metrics[i].unit ? result->metrics[i].unit : "",
+                        result->metrics[i].value);
+            } else {
+                fprintf(runtime->summary_csv, ",,,0");
+            }
+        }
         fputc('\n', runtime->summary_csv);
         fflush(runtime->summary_csv);
     }
 
     if (runtime->samples_csv && samples) {
-        for (uint32_t i = 0; i < result->frames; ++i) {
+        for (uint32_t i = 0; i < result->iterations; ++i) {
             fprintf(runtime->samples_csv,
-                    "%s,%s,%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "\n",
+                    "%s,%s,%s",
+                    kind_name(bench_case->kind),
                     bench_case->group,
-                    bench_case->name,
-                    samples[i].frame_index,
-                    samples[i].update_us,
+                    bench_case->name);
+            for (size_t p = 0; p < GRAPE_BENCHMARK_MAX_PARAMS; ++p) {
+                const grape_benchmark_param_t *param = &bench_case->params[p];
+                fprintf(runtime->samples_csv,
+                        ",%s,%.9g",
+                        param->name ? param->name : "",
+                        param->name ? param->value : 0.0);
+            }
+            fprintf(runtime->samples_csv,
+                    ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "\n",
+                    samples[i].iteration_index,
+                    samples[i].work_us,
                     samples[i].present_us,
-                    samples[i].frame_us);
+                    samples[i].total_us,
+                    samples[i].refresh_wait_us);
         }
         fflush(runtime->samples_csv);
     }
