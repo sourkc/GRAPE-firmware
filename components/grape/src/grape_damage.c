@@ -185,36 +185,140 @@ static inline bool occupancy_any_bit_range(const uint8_t *bitmap,
     return (bitmap[last_byte] & last_mask) != 0U;
 }
 
-static bool occupancy_any_in_rect(const grape_texture_t *texture,
-                                  uint32_t x0,
-                                  uint32_t y0,
-                                  uint32_t x1,
-                                  uint32_t y1)
+static inline bool occupancy_cell_is_set(const grape_texture_t *texture,
+                                         uint32_t x,
+                                         uint32_t y)
 {
-    if (texture->occupancy_all_full) {
-        return true;
-    }
-    if (texture->occupancy_all_empty || !texture->occupancy ||
-        x0 > x1 || y0 > y1 ||
-        x0 >= texture->occupancy_columns ||
-        y0 >= texture->occupancy_rows) {
+    size_t index = (size_t)y * texture->occupancy_columns + x;
+    return (texture->occupancy[index >> 3U] &
+            (uint8_t)(1U << (index & 7U))) != 0U;
+}
+
+static bool parallelogram_intersects_rect(float quad_center_x,
+                                          float quad_center_y,
+                                          float edge_x_x,
+                                          float edge_x_y,
+                                          float edge_y_x,
+                                          float edge_y_y,
+                                          float rect_left,
+                                          float rect_top,
+                                          float rect_right,
+                                          float rect_bottom)
+{
+    const float half_edge_x_x = 0.5f * edge_x_x;
+    const float half_edge_x_y = 0.5f * edge_x_y;
+    const float half_edge_y_x = 0.5f * edge_y_x;
+    const float half_edge_y_y = 0.5f * edge_y_y;
+
+    const float rect_center_x = 0.5f * (rect_left + rect_right);
+    const float rect_center_y = 0.5f * (rect_top + rect_bottom);
+    const float rect_half_x = 0.5f * (rect_right - rect_left);
+    const float rect_half_y = 0.5f * (rect_bottom - rect_top);
+    const float delta_x = rect_center_x - quad_center_x;
+    const float delta_y = rect_center_y - quad_center_y;
+
+    const float quad_radius_x = fabsf(half_edge_x_x) + fabsf(half_edge_y_x);
+    if (fabsf(delta_x) > quad_radius_x + rect_half_x) {
         return false;
     }
 
-    if (x1 >= texture->occupancy_columns) {
-        x1 = texture->occupancy_columns - 1U;
-    }
-    if (y1 >= texture->occupancy_rows) {
-        y1 = texture->occupancy_rows - 1U;
+    const float quad_radius_y = fabsf(half_edge_x_y) + fabsf(half_edge_y_y);
+    if (fabsf(delta_y) > quad_radius_y + rect_half_y) {
+        return false;
     }
 
-    for (uint32_t y = y0; y <= y1; ++y) {
-        size_t row_start = (size_t)y * texture->occupancy_columns;
-        if (occupancy_any_bit_range(
+    const float edge_x_normal_x = -edge_x_y;
+    const float edge_x_normal_y = edge_x_x;
+    const float delta_on_edge_x_normal =
+        delta_x * edge_x_normal_x + delta_y * edge_x_normal_y;
+    const float quad_radius_edge_x_normal = fabsf(
+        half_edge_y_x * edge_x_normal_x +
+        half_edge_y_y * edge_x_normal_y
+    );
+    const float rect_radius_edge_x_normal =
+        rect_half_x * fabsf(edge_x_normal_x) +
+        rect_half_y * fabsf(edge_x_normal_y);
+    if (fabsf(delta_on_edge_x_normal) >
+        quad_radius_edge_x_normal + rect_radius_edge_x_normal) {
+        return false;
+    }
+
+    const float edge_y_normal_x = -edge_y_y;
+    const float edge_y_normal_y = edge_y_x;
+    const float delta_on_edge_y_normal =
+        delta_x * edge_y_normal_x + delta_y * edge_y_normal_y;
+    const float quad_radius_edge_y_normal = fabsf(
+        half_edge_x_x * edge_y_normal_x +
+        half_edge_x_y * edge_y_normal_y
+    );
+    const float rect_radius_edge_y_normal =
+        rect_half_x * fabsf(edge_y_normal_x) +
+        rect_half_y * fabsf(edge_y_normal_y);
+    if (fabsf(delta_on_edge_y_normal) >
+        quad_radius_edge_y_normal + rect_radius_edge_y_normal) {
+        return false;
+    }
+
+    return true;
+}
+
+static bool occupancy_intersects_local_tile(const grape_texture_t *texture,
+                                            uint32_t cell_x0,
+                                            uint32_t cell_y0,
+                                            uint32_t cell_x1,
+                                            uint32_t cell_y1,
+                                            float local_x00,
+                                            float local_y00,
+                                            float edge_x_local_x,
+                                            float edge_x_local_y,
+                                            float edge_y_local_x,
+                                            float edge_y_local_y)
+{
+    const uint32_t cell_size = CONFIG_GRAPE_TEXTURE_OCCUPANCY_CELL_SIZE;
+    const float quad_center_x = local_x00 +
+        0.5f * (edge_x_local_x + edge_y_local_x);
+    const float quad_center_y = local_y00 +
+        0.5f * (edge_x_local_y + edge_y_local_y);
+
+    for (uint32_t cell_y = cell_y0; cell_y <= cell_y1; ++cell_y) {
+        size_t row_start = (size_t)cell_y * texture->occupancy_columns;
+        if (!occupancy_any_bit_range(
                 texture->occupancy,
-                row_start + x0,
-                row_start + x1)) {
-            return true;
+                row_start + cell_x0,
+                row_start + cell_x1)) {
+            continue;
+        }
+
+        float cell_top = (float)(cell_y * cell_size);
+        float cell_bottom = cell_top + (float)cell_size;
+        if (cell_bottom > (float)texture->height) {
+            cell_bottom = (float)texture->height;
+        }
+
+        for (uint32_t cell_x = cell_x0; cell_x <= cell_x1; ++cell_x) {
+            if (!occupancy_cell_is_set(texture, cell_x, cell_y)) {
+                continue;
+            }
+
+            float cell_left = (float)(cell_x * cell_size);
+            float cell_right = cell_left + (float)cell_size;
+            if (cell_right > (float)texture->width) {
+                cell_right = (float)texture->width;
+            }
+
+            if (parallelogram_intersects_rect(
+                    quad_center_x,
+                    quad_center_y,
+                    edge_x_local_x,
+                    edge_x_local_y,
+                    edge_y_local_x,
+                    edge_y_local_y,
+                    cell_left,
+                    cell_top,
+                    cell_right,
+                    cell_bottom)) {
+                return true;
+            }
         }
     }
 
@@ -355,12 +459,18 @@ static bool mark_partial_surface_tiles(uint8_t *bitmap,
                 cell_y1 = surface->texture->occupancy_rows - 1U;
             }
 
-            if (!occupancy_any_in_rect(
+            if (!occupancy_intersects_local_tile(
                     surface->texture,
                     cell_x0,
                     cell_y0,
                     cell_x1,
-                    cell_y1)) {
+                    cell_y1,
+                    local_x00,
+                    local_y00,
+                    edge_x_local_x,
+                    edge_x_local_y,
+                    edge_y_local_x,
+                    edge_y_local_y)) {
                 continue;
             }
 
