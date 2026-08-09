@@ -49,13 +49,14 @@ static esp_err_t texture_init_occupancy(grape_texture_t *texture)
     texture->occupancy_columns = (uint32_t)columns;
     texture->occupancy_rows = (uint32_t)rows;
 
+    size_t cell_count = (size_t)columns * (size_t)rows;
     if (texture->format != GRAPE_PIXEL_FORMAT_A8) {
+        texture->occupancy_occupied_count = cell_count;
         texture->occupancy_all_full = true;
         texture->occupancy_all_empty = false;
         return ESP_OK;
     }
 
-    size_t cell_count = (size_t)columns * (size_t)rows;
     if (cell_count > SIZE_MAX - 7U) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -79,6 +80,7 @@ static esp_err_t texture_init_occupancy(grape_texture_t *texture)
         return ESP_ERR_NO_MEM;
     }
 
+    texture->occupancy_occupied_count = 0;
     texture->occupancy_all_full = false;
     texture->occupancy_all_empty = true;
     return ESP_OK;
@@ -91,6 +93,8 @@ esp_err_t grape_texture_rebuild_occupancy(grape_texture_t *texture)
     }
 
     if (texture->format != GRAPE_PIXEL_FORMAT_A8) {
+        texture->occupancy_occupied_count =
+            (size_t)texture->occupancy_columns * texture->occupancy_rows;
         texture->occupancy_all_full = true;
         texture->occupancy_all_empty = false;
         return ESP_OK;
@@ -141,6 +145,7 @@ esp_err_t grape_texture_rebuild_occupancy(grape_texture_t *texture)
         }
     }
 
+    texture->occupancy_occupied_count = occupied_count;
     texture->occupancy_all_empty = occupied_count == 0;
     texture->occupancy_all_full = occupied_count == cell_count;
     return ESP_OK;

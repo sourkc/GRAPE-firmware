@@ -38,6 +38,7 @@ esp_err_t grape_benchmark_texture_occupancy_info(
         .columns = texture->occupancy_columns,
         .rows = texture->occupancy_rows,
         .bitmap_size = texture->occupancy_bitmap_size,
+        .occupied_cells = texture->occupancy_occupied_count,
         .all_full = texture->occupancy_all_full,
         .all_empty = texture->occupancy_all_empty,
     };

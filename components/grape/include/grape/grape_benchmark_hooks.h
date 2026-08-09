@@ -41,6 +41,7 @@ typedef struct {
     uint32_t columns;
     uint32_t rows;
     size_t bitmap_size;
+    size_t occupied_cells;
     bool all_full;
     bool all_empty;
 } grape_benchmark_occupancy_info_t;

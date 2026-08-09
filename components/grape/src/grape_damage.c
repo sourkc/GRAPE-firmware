@@ -194,6 +194,62 @@ static inline bool occupancy_cell_is_set(const grape_texture_t *texture,
             (uint8_t)(1U << (index & 7U))) != 0U;
 }
 
+static bool mark_float_aabb(uint8_t *bitmap,
+                            const grape_damage_state_t *damage,
+                            const grape_context_t *context,
+                            float min_x,
+                            float min_y,
+                            float max_x,
+                            float max_y)
+{
+    const float screen_width = (float)context->display_info.width;
+    const float screen_height = (float)context->display_info.height;
+
+    if (max_x <= 0.0f || max_y <= 0.0f ||
+        min_x >= screen_width || min_y >= screen_height ||
+        max_x <= min_x || max_y <= min_y) {
+        return false;
+    }
+
+    if (min_x < 0.0f) min_x = 0.0f;
+    if (min_y < 0.0f) min_y = 0.0f;
+    if (max_x > screen_width) max_x = screen_width;
+    if (max_y > screen_height) max_y = screen_height;
+
+    int32_t pixel_x0 = (int32_t)min_x;
+    int32_t pixel_y0 = (int32_t)min_y;
+    int32_t pixel_x1 = (int32_t)max_x;
+    int32_t pixel_y1 = (int32_t)max_y;
+    if ((float)pixel_x1 < max_x) {
+        pixel_x1++;
+    }
+    if ((float)pixel_y1 < max_y) {
+        pixel_y1++;
+    }
+    if (pixel_x1 <= pixel_x0 || pixel_y1 <= pixel_y0) {
+        return false;
+    }
+
+    const int32_t tile_size = CONFIG_GRAPE_DAMAGE_TILE_SIZE;
+    uint32_t x0 = (uint32_t)(pixel_x0 / tile_size);
+    uint32_t y0 = (uint32_t)(pixel_y0 / tile_size);
+    uint32_t x1 = (uint32_t)((pixel_x1 - 1) / tile_size);
+    uint32_t y1 = (uint32_t)((pixel_y1 - 1) / tile_size);
+
+    if (x0 >= damage->tile_columns) x0 = damage->tile_columns - 1U;
+    if (y0 >= damage->tile_rows) y0 = damage->tile_rows - 1U;
+    if (x1 >= damage->tile_columns) x1 = damage->tile_columns - 1U;
+    if (y1 >= damage->tile_rows) y1 = damage->tile_rows - 1U;
+
+    for (uint32_t y = y0; y <= y1; ++y) {
+        for (uint32_t x = x0; x <= x1; ++x) {
+            tile_set(bitmap, tile_index(damage, x, y));
+        }
+    }
+
+    return true;
+}
+
 static bool parallelogram_intersects_rect(float quad_center_x,
                                           float quad_center_y,
                                           float edge_x_x,
@@ -325,10 +381,10 @@ static bool occupancy_intersects_local_tile(const grape_texture_t *texture,
     return false;
 }
 
-static bool mark_partial_surface_tiles(uint8_t *bitmap,
-                                       const grape_damage_state_t *damage,
-                                       const grape_context_t *context,
-                                       const grape_surface_t *surface)
+static bool mark_partial_surface_tiles_screen(uint8_t *bitmap,
+                                              const grape_damage_state_t *damage,
+                                              const grape_context_t *context,
+                                              const grape_surface_t *surface)
 {
     grape_rect_t candidate_bounds = grape_rect_intersection(
         surface->bounds,
@@ -480,6 +536,106 @@ static bool mark_partial_surface_tiles(uint8_t *bitmap,
     }
 
     return marked;
+}
+
+static bool mark_partial_surface_cells_source(uint8_t *bitmap,
+                                              const grape_damage_state_t *damage,
+                                              const grape_context_t *context,
+                                              const grape_surface_t *surface)
+{
+    const grape_texture_t *texture = surface->texture;
+    const uint32_t cell_size = CONFIG_GRAPE_TEXTURE_OCCUPANCY_CELL_SIZE;
+    const float m00 = surface->cos_rotation * surface->transform.scale_x;
+    const float m01 = -surface->sin_rotation * surface->transform.scale_y;
+    const float m10 = surface->sin_rotation * surface->transform.scale_x;
+    const float m11 = surface->cos_rotation * surface->transform.scale_y;
+    const float offset_x = surface->transform.x
+                         - m00 * surface->transform.origin_x
+                         - m01 * surface->transform.origin_y;
+    const float offset_y = surface->transform.y
+                         - m10 * surface->transform.origin_x
+                         - m11 * surface->transform.origin_y;
+    const float full_step_x_x = m00 * (float)cell_size;
+    const float full_step_x_y = m10 * (float)cell_size;
+    bool marked = false;
+
+    for (uint32_t cell_y = 0; cell_y < texture->occupancy_rows; ++cell_y) {
+        uint32_t local_y0 = cell_y * cell_size;
+        uint32_t cell_height = texture->height - local_y0;
+        if (cell_height > cell_size) {
+            cell_height = cell_size;
+        }
+
+        float edge_y_x = m01 * (float)cell_height;
+        float edge_y_y = m11 * (float)cell_height;
+        float p00_x = offset_x + m01 * (float)local_y0;
+        float p00_y = offset_y + m11 * (float)local_y0;
+
+        for (uint32_t cell_x = 0; cell_x < texture->occupancy_columns; ++cell_x) {
+            uint32_t local_x0 = cell_x * cell_size;
+            uint32_t cell_width = texture->width - local_x0;
+            if (cell_width > cell_size) {
+                cell_width = cell_size;
+            }
+
+            float edge_x_x = cell_width == cell_size
+                ? full_step_x_x
+                : m00 * (float)cell_width;
+            float edge_x_y = cell_width == cell_size
+                ? full_step_x_y
+                : m10 * (float)cell_width;
+
+            if (occupancy_cell_is_set(texture, cell_x, cell_y)) {
+                float min_x = p00_x;
+                float max_x = p00_x;
+                float min_y = p00_y;
+                float max_y = p00_y;
+
+                if (edge_x_x < 0.0f) min_x += edge_x_x; else max_x += edge_x_x;
+                if (edge_y_x < 0.0f) min_x += edge_y_x; else max_x += edge_y_x;
+                if (edge_x_y < 0.0f) min_y += edge_x_y; else max_y += edge_x_y;
+                if (edge_y_y < 0.0f) min_y += edge_y_y; else max_y += edge_y_y;
+
+                if (mark_float_aabb(
+                        bitmap,
+                        damage,
+                        context,
+                        min_x,
+                        min_y,
+                        max_x,
+                        max_y)) {
+                    marked = true;
+                }
+            }
+
+            p00_x += edge_x_x;
+            p00_y += edge_x_y;
+        }
+    }
+
+    return marked;
+}
+
+static bool partial_surface_prefers_screen_driven(
+    const grape_surface_t *surface
+)
+{
+    const grape_texture_t *texture = surface->texture;
+    const size_t cell_count =
+        (size_t)texture->occupancy_columns * texture->occupancy_rows;
+
+    if (cell_count < 256U) {
+        return false;
+    }
+
+    /*
+     * Benchmarks show that source-driven marking is better for ordinary
+     * partial textures, while the screen-driven path wins decisively only for
+     * large, nearly full occupancy maps. Keep the selector intentionally
+     * stable so transforms do not cause the marking strategy to oscillate.
+     */
+    const size_t empty_cells = cell_count - texture->occupancy_occupied_count;
+    return empty_cells <= cell_count / 16U;
 }
 
 static bool mark_full_surface_quad(uint8_t *bitmap,
@@ -651,12 +807,22 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
         return ESP_OK;
     }
 
-    bool marked = mark_partial_surface_tiles(
-        surface->context->damage.tiles,
-        &surface->context->damage,
-        surface->context,
-        surface
-    );
+    bool marked;
+    if (partial_surface_prefers_screen_driven(surface)) {
+        marked = mark_partial_surface_tiles_screen(
+            surface->context->damage.tiles,
+            &surface->context->damage,
+            surface->context,
+            surface
+        );
+    } else {
+        marked = mark_partial_surface_cells_source(
+            surface->context->damage.tiles,
+            &surface->context->damage,
+            surface->context,
+            surface
+        );
+    }
 
     if (marked) {
         surface->context->damage.has_damage = true;

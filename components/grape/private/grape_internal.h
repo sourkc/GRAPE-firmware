@@ -37,6 +37,7 @@ struct grape_texture {
     size_t occupancy_bitmap_size;
     uint32_t occupancy_columns;
     uint32_t occupancy_rows;
+    size_t occupancy_occupied_count;
     bool occupancy_all_full;
     bool occupancy_all_empty;
 };

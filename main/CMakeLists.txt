@@ -4,6 +4,5 @@ idf_component_register(
     REQUIRES
         grape
         grape_benchmark
-        grape_storage
         esp_timer
 )

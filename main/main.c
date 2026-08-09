@@ -8,7 +8,6 @@
 #include "grape/grape.h"
 #include "grape/grape_benchmark.h"
 #include "grape/grape_telemetry_config.h"
-#include "grape_storage_sd.h"
 
 #include "app_config.h"
 
@@ -163,20 +162,9 @@ void app_main(void)
     ESP_ERROR_CHECK(grape_init(&config, &grape));
 
 #if GRAPE_APP_RUN_BENCHMARK
-    esp_err_t sd_ret = grape_storage_sd_mount();
-
-    if (sd_ret != ESP_OK) {
-        ESP_LOGW(TAG, "SD card unavailable, benchmark will run without file output: %s",
-                 esp_err_to_name(sd_ret));
-    }
-
     grape_benchmark_config_t benchmark_config = GRAPE_BENCHMARK_CONFIG_DEFAULT();
     benchmark_config.suite_mask = GRAPE_APP_BENCHMARK_SUITE_MASK;
     ESP_ERROR_CHECK(grape_benchmark_run(grape, &benchmark_config));
-
-    if (grape_storage_sd_is_mounted()) {
-        grape_storage_sd_unmount();
-    }
 
     grape_deinit(grape);
     return;

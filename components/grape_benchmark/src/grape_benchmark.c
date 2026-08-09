@@ -400,7 +400,6 @@ static esp_err_t run_measured(
     uint64_t measured_elapsed_us = 0;
     for (uint32_t i = 0; i < measured_iterations; ++i) {
         uint32_t sequence = warmup_iterations + i;
-        samples[i].iteration_index = i;
 
         esp_err_t ret = execute_iteration(
             runtime,
@@ -413,6 +412,7 @@ static esp_err_t run_measured(
         if (ret != ESP_OK) {
             return ret;
         }
+        samples[i].iteration_index = i;
         measured_elapsed_us += samples[i].total_us;
     }
     result->iterations = measured_iterations;
@@ -537,9 +537,17 @@ static esp_err_t run_case(
                  bench_case->group, bench_case->name, esp_err_to_name(ret));
     }
 
+    if (ret == ESP_OK && runtime->report_error != ESP_OK) {
+        ret = runtime->report_error;
+    }
+
     free(samples);
 
 cleanup:
+    if (ret == ESP_OK && runtime->report_error != ESP_OK) {
+        ret = runtime->report_error;
+    }
+
     if (bench_case->teardown) {
         bench_case->teardown(runtime, bench_case, state);
     }
@@ -653,7 +661,8 @@ esp_err_t grape_benchmark_run(
         }
     }
 
-    grape_benchmark_report_close(&runtime);
     restore_environment(&runtime, &environment);
-    return ESP_OK;
+    ret = grape_benchmark_report_save_wait(&runtime);
+    grape_benchmark_report_close(&runtime);
+    return ret;
 }

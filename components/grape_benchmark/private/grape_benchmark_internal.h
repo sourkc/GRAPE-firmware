@@ -35,6 +35,13 @@ typedef struct {
     double value;
 } grape_benchmark_metric_t;
 
+typedef struct {
+    char *data;
+    size_t size;
+    size_t capacity;
+    bool enabled;
+} grape_benchmark_text_buffer_t;
+
 typedef struct grape_benchmark_runtime grape_benchmark_runtime_t;
 typedef struct grape_benchmark_case grape_benchmark_case_t;
 
@@ -121,8 +128,10 @@ typedef struct {
 struct grape_benchmark_runtime {
     grape_context_t *grape;
     grape_benchmark_config_t config;
-    FILE *summary_csv;
-    FILE *samples_csv;
+    grape_benchmark_text_buffer_t summary_buffer;
+    grape_benchmark_text_buffer_t samples_buffer;
+    grape_benchmark_text_buffer_t metadata_buffer;
+    esp_err_t report_error;
 };
 
 typedef const grape_benchmark_case_t *(*grape_benchmark_case_provider_fn)(
@@ -142,6 +151,7 @@ float grape_benchmark_fixed_time_s(const grape_benchmark_runtime_t *runtime,
 
 esp_err_t grape_benchmark_report_open(grape_benchmark_runtime_t *runtime);
 void grape_benchmark_report_close(grape_benchmark_runtime_t *runtime);
+esp_err_t grape_benchmark_report_save_wait(grape_benchmark_runtime_t *runtime);
 void grape_benchmark_report_metadata(grape_benchmark_runtime_t *runtime);
 void grape_benchmark_report_case(
     grape_benchmark_runtime_t *runtime,

@@ -15,9 +15,12 @@ Set the boot mode in `main/app_config.h`:
 #define GRAPE_APP_RUN_BENCHMARK 1
 ```
 
-The application mounts the onboard SD card when available, runs the selected
-suites, writes the reports, then unmounts the card. The benchmark still runs and
-logs results if storage is unavailable.
+The benchmark does not require an SD card while it is running. Summary, sample,
+and metadata output is accumulated in PSRAM. After the selected suites finish,
+the runner attempts to mount the onboard SD card and writes the buffered reports.
+If no card is present, the completed result stays in PSRAM and the runner waits,
+retrying every `GRAPE_BENCHMARK_SD_RETRY_MS`, until a card is inserted and all
+reports are saved successfully.
 
 Defaults are in:
 
@@ -167,7 +170,7 @@ cause by themselves.
 
 ## Reports
 
-When the output directory is mounted, the suite writes:
+After measurement completes and the output directory becomes available, the suite writes:
 
 ```text
 grape_benchmark_summary.csv
@@ -183,9 +186,10 @@ The summary contains one row per case with:
 - every registered GRAPE telemetry timer total/average/max/call count
 - benchmark-specific named metrics
 
-The samples CSV contains per-iteration workload/present/total timing. Samples are
-buffered in RAM and written only after the measured section, so SD writes are not
-inside measured iterations.
+The samples CSV contains per-iteration workload/present/total timing. All report
+text is buffered in PSRAM for the full run and written only after benchmarking is
+complete, so SD-card availability and file I/O cannot affect measured iterations.
+The `iteration` field is the zero-based measured-sample index within each case.
 
 Metadata records the build label, IDF target/version, chip revision, CPU
 frequency, PSRAM, display information, fixed timestep, deterministic seed, suite

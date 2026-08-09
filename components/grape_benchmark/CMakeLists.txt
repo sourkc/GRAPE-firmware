@@ -14,6 +14,6 @@ idf_component_register(
         "src/cases/grape_benchmark_scenes.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "private"
-    REQUIRES grape grape_common esp_timer
+    REQUIRES grape grape_common grape_storage esp_timer
     PRIV_REQUIRES log heap esp_system esp_hw_support
 )

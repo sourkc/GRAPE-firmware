@@ -205,12 +205,13 @@ static size_t mark_metrics(grape_benchmark_runtime_t *runtime,
     (void)runtime;
     (void)bench_case;
     mark_case_state_t *state = opaque_state;
-    if (capacity < 4) return 0;
+    if (capacity < 5) return 0;
     out[0] = (grape_benchmark_metric_t){ "occupancy_cells", "", (double)state->occupancy.columns * state->occupancy.rows };
-    out[1] = (grape_benchmark_metric_t){ "occupancy_bytes", "B", (double)state->occupancy.bitmap_size };
-    out[2] = (grape_benchmark_metric_t){ "occupancy_all_full", "", state->occupancy.all_full ? 1.0 : 0.0 };
-    out[3] = (grape_benchmark_metric_t){ "occupancy_all_empty", "", state->occupancy.all_empty ? 1.0 : 0.0 };
-    return 4;
+    out[1] = (grape_benchmark_metric_t){ "occupied_cells", "", (double)state->occupancy.occupied_cells };
+    out[2] = (grape_benchmark_metric_t){ "occupancy_bytes", "B", (double)state->occupancy.bitmap_size };
+    out[3] = (grape_benchmark_metric_t){ "occupancy_all_full", "", state->occupancy.all_full ? 1.0 : 0.0 };
+    out[4] = (grape_benchmark_metric_t){ "occupancy_all_empty", "", state->occupancy.all_empty ? 1.0 : 0.0 };
+    return 5;
 }
 
 static void mark_teardown(grape_benchmark_runtime_t *runtime,
