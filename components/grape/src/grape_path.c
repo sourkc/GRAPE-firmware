@@ -9,11 +9,14 @@
 typedef enum {
     GRAPE_PATH_COMMAND_MOVE_TO = 0,
     GRAPE_PATH_COMMAND_LINE_TO,
+    GRAPE_PATH_COMMAND_QUAD_TO,
     GRAPE_PATH_COMMAND_CLOSE,
 } grape_path_command_type_t;
 
 typedef struct {
     grape_path_command_type_t type;
+    float control_x;
+    float control_y;
     float x;
     float y;
 } grape_path_command_t;
@@ -30,11 +33,20 @@ typedef struct {
     int32_t winding_delta;
 } grape_path_intersection_t;
 
+typedef struct {
+    grape_path_edge_t *edges;
+    size_t count;
+    size_t capacity;
+} grape_path_edge_buffer_t;
+
+#define GRAPE_PATH_QUAD_MAX_DEPTH 16U
+#define GRAPE_PATH_QUAD_FLATNESS_SUBPIXELS 0.5f
+
 struct grape_path {
     grape_path_command_t *commands;
     size_t command_count;
     size_t command_capacity;
-    size_t line_count;
+    size_t segment_count;
     float current_x;
     float current_y;
     float contour_start_x;
@@ -112,6 +124,49 @@ static void path_include_point(grape_path_t *path, float x, float y)
     if (y > path->bounds.max_y) path->bounds.max_y = y;
 }
 
+static float quadratic_value(float p0, float p1, float p2, float t)
+{
+    float one_minus_t = 1.0f - t;
+    return one_minus_t * one_minus_t * p0 +
+           2.0f * one_minus_t * t * p1 +
+           t * t * p2;
+}
+
+static void path_include_quad_bounds(grape_path_t *path,
+                                     float x0,
+                                     float y0,
+                                     float control_x,
+                                     float control_y,
+                                     float x1,
+                                     float y1)
+{
+    path_include_point(path, x1, y1);
+
+    float denominator_x = x0 - 2.0f * control_x + x1;
+    if (denominator_x != 0.0f) {
+        float t = (x0 - control_x) / denominator_x;
+        if (t > 0.0f && t < 1.0f) {
+            path_include_point(
+                path,
+                quadratic_value(x0, control_x, x1, t),
+                quadratic_value(y0, control_y, y1, t)
+            );
+        }
+    }
+
+    float denominator_y = y0 - 2.0f * control_y + y1;
+    if (denominator_y != 0.0f) {
+        float t = (y0 - control_y) / denominator_y;
+        if (t > 0.0f && t < 1.0f) {
+            path_include_point(
+                path,
+                quadratic_value(x0, control_x, x1, t),
+                quadratic_value(y0, control_y, y1, t)
+            );
+        }
+    }
+}
+
 esp_err_t grape_path_create(grape_path_t **out_path)
 {
     if (!out_path) {
@@ -145,7 +200,7 @@ esp_err_t grape_path_clear(grape_path_t *path)
     }
 
     path->command_count = 0;
-    path->line_count = 0;
+    path->segment_count = 0;
     path->current_x = 0.0f;
     path->current_y = 0.0f;
     path->contour_start_x = 0.0f;
@@ -202,8 +257,51 @@ esp_err_t grape_path_line_to(grape_path_t *path, float x, float y)
 
     path->current_x = x;
     path->current_y = y;
-    path->line_count++;
+    path->segment_count++;
     path_include_point(path, x, y);
+    return ESP_OK;
+}
+
+esp_err_t grape_path_quad_to(grape_path_t *path,
+                             float control_x,
+                             float control_y,
+                             float x,
+                             float y)
+{
+    if (!path ||
+        !point_is_finite(control_x, control_y) ||
+        !point_is_finite(x, y)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!path->has_current || !path->contour_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    float start_x = path->current_x;
+    float start_y = path->current_y;
+    esp_err_t ret = path_append(path, (grape_path_command_t){
+        .type = GRAPE_PATH_COMMAND_QUAD_TO,
+        .control_x = control_x,
+        .control_y = control_y,
+        .x = x,
+        .y = y,
+    });
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    path_include_quad_bounds(
+        path,
+        start_x,
+        start_y,
+        control_x,
+        control_y,
+        x,
+        y
+    );
+    path->current_x = x;
+    path->current_y = y;
+    path->segment_count++;
     return ESP_OK;
 }
 
@@ -235,7 +333,7 @@ esp_err_t grape_path_get_bounds(const grape_path_t *path, grape_path_bounds_t *o
     if (!path || !out_bounds) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (!path->has_bounds || path->line_count == 0) {
+    if (!path->has_bounds || path->segment_count == 0) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -243,44 +341,140 @@ esp_err_t grape_path_get_bounds(const grape_path_t *path, grape_path_bounds_t *o
     return ESP_OK;
 }
 
-static void edge_append(grape_path_edge_t *edges,
-                        size_t capacity,
-                        size_t *count,
-                        float x0,
-                        float y0,
-                        float x1,
-                        float y1)
+static esp_err_t edge_buffer_reserve(grape_path_edge_buffer_t *buffer, size_t required)
 {
-    if (*count >= capacity || (x0 == x1 && y0 == y1)) {
-        return;
+    if (required <= buffer->capacity) {
+        return ESP_OK;
     }
 
-    edges[(*count)++] = (grape_path_edge_t){
+    size_t capacity = buffer->capacity ? buffer->capacity : 32U;
+    while (capacity < required) {
+        if (capacity > SIZE_MAX / 2U) {
+            capacity = required;
+            break;
+        }
+        capacity *= 2U;
+    }
+
+    if (capacity > SIZE_MAX / sizeof(*buffer->edges)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    grape_path_edge_t *edges = realloc(
+        buffer->edges,
+        capacity * sizeof(*edges)
+    );
+    if (!edges) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    buffer->edges = edges;
+    buffer->capacity = capacity;
+    return ESP_OK;
+}
+
+static esp_err_t edge_buffer_append(grape_path_edge_buffer_t *buffer,
+                                    float x0,
+                                    float y0,
+                                    float x1,
+                                    float y1)
+{
+    if (x0 == x1 && y0 == y1) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = edge_buffer_reserve(buffer, buffer->count + 1U);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    buffer->edges[buffer->count++] = (grape_path_edge_t){
         .x0 = x0,
         .y0 = y0,
         .x1 = x1,
         .y1 = y1,
     };
+    return ESP_OK;
+}
+
+static bool quadratic_is_flat_enough(float x0,
+                                     float y0,
+                                     float control_x,
+                                     float control_y,
+                                     float x1,
+                                     float y1,
+                                     float tolerance)
+{
+    double second_x = (double)x0 - 2.0 * control_x + x1;
+    double second_y = (double)y0 - 2.0 * control_y + y1;
+    double tolerance_scaled = 4.0 * (double)tolerance;
+
+    return second_x * second_x + second_y * second_y <=
+           tolerance_scaled * tolerance_scaled;
+}
+
+static esp_err_t flatten_quadratic(grape_path_edge_buffer_t *buffer,
+                                   float x0,
+                                   float y0,
+                                   float control_x,
+                                   float control_y,
+                                   float x1,
+                                   float y1,
+                                   float tolerance,
+                                   uint32_t depth)
+{
+    if (depth >= GRAPE_PATH_QUAD_MAX_DEPTH ||
+        quadratic_is_flat_enough(
+            x0, y0, control_x, control_y, x1, y1, tolerance
+        )) {
+        return edge_buffer_append(buffer, x0, y0, x1, y1);
+    }
+
+    float x01 = x0 * 0.5f + control_x * 0.5f;
+    float y01 = y0 * 0.5f + control_y * 0.5f;
+    float x12 = control_x * 0.5f + x1 * 0.5f;
+    float y12 = control_y * 0.5f + y1 * 0.5f;
+    float x012 = x01 * 0.5f + x12 * 0.5f;
+    float y012 = y01 * 0.5f + y12 * 0.5f;
+
+    esp_err_t ret = flatten_quadratic(
+        buffer,
+        x0, y0,
+        x01, y01,
+        x012, y012,
+        tolerance,
+        depth + 1U
+    );
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    return flatten_quadratic(
+        buffer,
+        x012, y012,
+        x12, y12,
+        x1, y1,
+        tolerance,
+        depth + 1U
+    );
 }
 
 static esp_err_t path_build_edges(const grape_path_t *path,
+                                  float quadratic_tolerance,
                                   grape_path_edge_t **out_edges,
                                   size_t *out_edge_count)
 {
-    if (!path || !out_edges || !out_edge_count || path->command_count == 0) {
+    if (!path || !out_edges || !out_edge_count || path->command_count == 0 ||
+        !isfinite(quadratic_tolerance) || quadratic_tolerance <= 0.0f) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (path->command_count > SIZE_MAX / sizeof(grape_path_edge_t)) {
-        return ESP_ERR_INVALID_SIZE;
+    grape_path_edge_buffer_t buffer = {0};
+    esp_err_t ret = edge_buffer_reserve(&buffer, path->command_count);
+    if (ret != ESP_OK) {
+        return ret;
     }
 
-    grape_path_edge_t *edges = malloc(path->command_count * sizeof(*edges));
-    if (!edges) {
-        return ESP_ERR_NO_MEM;
-    }
-
-    size_t edge_count = 0;
     bool contour_active = false;
     bool contour_has_segment = false;
     float current_x = 0.0f;
@@ -294,8 +488,10 @@ static esp_err_t path_build_edges(const grape_path_t *path,
         switch (command->type) {
         case GRAPE_PATH_COMMAND_MOVE_TO:
             if (contour_active && contour_has_segment) {
-                edge_append(edges, path->command_count, &edge_count,
-                            current_x, current_y, start_x, start_y);
+                ret = edge_buffer_append(
+                    &buffer, current_x, current_y, start_x, start_y
+                );
+                if (ret != ESP_OK) goto fail;
             }
             current_x = command->x;
             current_y = command->y;
@@ -307,11 +503,32 @@ static esp_err_t path_build_edges(const grape_path_t *path,
 
         case GRAPE_PATH_COMMAND_LINE_TO:
             if (!contour_active) {
-                free(edges);
-                return ESP_ERR_INVALID_STATE;
+                ret = ESP_ERR_INVALID_STATE;
+                goto fail;
             }
-            edge_append(edges, path->command_count, &edge_count,
-                        current_x, current_y, command->x, command->y);
+            ret = edge_buffer_append(
+                &buffer, current_x, current_y, command->x, command->y
+            );
+            if (ret != ESP_OK) goto fail;
+            current_x = command->x;
+            current_y = command->y;
+            contour_has_segment = true;
+            break;
+
+        case GRAPE_PATH_COMMAND_QUAD_TO:
+            if (!contour_active) {
+                ret = ESP_ERR_INVALID_STATE;
+                goto fail;
+            }
+            ret = flatten_quadratic(
+                &buffer,
+                current_x, current_y,
+                command->control_x, command->control_y,
+                command->x, command->y,
+                quadratic_tolerance,
+                0U
+            );
+            if (ret != ESP_OK) goto fail;
             current_x = command->x;
             current_y = command->y;
             contour_has_segment = true;
@@ -319,32 +536,40 @@ static esp_err_t path_build_edges(const grape_path_t *path,
 
         case GRAPE_PATH_COMMAND_CLOSE:
             if (contour_active && contour_has_segment) {
-                edge_append(edges, path->command_count, &edge_count,
-                            current_x, current_y, start_x, start_y);
+                ret = edge_buffer_append(
+                    &buffer, current_x, current_y, start_x, start_y
+                );
+                if (ret != ESP_OK) goto fail;
             }
             contour_active = false;
             contour_has_segment = false;
             break;
 
         default:
-            free(edges);
-            return ESP_ERR_INVALID_STATE;
+            ret = ESP_ERR_INVALID_STATE;
+            goto fail;
         }
     }
 
     if (contour_active && contour_has_segment) {
-        edge_append(edges, path->command_count, &edge_count,
-                    current_x, current_y, start_x, start_y);
+        ret = edge_buffer_append(
+            &buffer, current_x, current_y, start_x, start_y
+        );
+        if (ret != ESP_OK) goto fail;
     }
 
-    if (edge_count == 0) {
-        free(edges);
-        return ESP_ERR_INVALID_STATE;
+    if (buffer.count == 0) {
+        ret = ESP_ERR_INVALID_STATE;
+        goto fail;
     }
 
-    *out_edges = edges;
-    *out_edge_count = edge_count;
+    *out_edges = buffer.edges;
+    *out_edge_count = buffer.count;
     return ESP_OK;
+
+fail:
+    free(buffer.edges);
+    return ret;
 }
 
 static int intersection_compare(const void *lhs, const void *rhs)
@@ -438,7 +663,10 @@ esp_err_t grape_path_rasterize_a8(grape_context_t *context,
 
     grape_path_edge_t *edges = NULL;
     size_t edge_count = 0;
-    ret = path_build_edges(path, &edges, &edge_count);
+    float quadratic_tolerance = GRAPE_PATH_QUAD_FLATNESS_SUBPIXELS /
+                                (config->pixels_per_unit *
+                                 (float)config->samples_per_axis);
+    ret = path_build_edges(path, quadratic_tolerance, &edges, &edge_count);
     if (ret != ESP_OK) {
         return ret;
     }

@@ -66,10 +66,19 @@ GRAPE includes deterministic micro, pipeline, lifecycle, and end-to-end scene
 benchmarks. See `BENCHMARK.md` for running/reporting details and
 `BENCHMARK_COVERAGE.md` for the frozen performance coverage map.
 
+## Vector paths
+
+GRAPE vector paths currently support filled contours built from `move_to`,
+`line_to`, `quad_to`, and `close`. Quadratic Bezier curves are flattened
+adaptively at rasterization time, then the existing non-zero winding A8
+rasterizer handles fill and antialiasing. The resulting mask is an ordinary A8
+texture and uses the normal GRAPE surface/compositor pipeline.
+
+Strokes, cubic Beziers, SVG parsing, and font loading are not implemented yet.
+
 ## Planned stuff
 - JPEG images (hardware)
 - Vector graphics
-  - Vector surfaces
   - Font rendering
   - Eventually maybe SVG rendering
 - GFXLINK

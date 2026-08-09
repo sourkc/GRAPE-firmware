@@ -173,18 +173,20 @@ static esp_err_t run_vector_demo(grape_context_t *grape)
         }                        \
     } while (0)
 
-    /* Outer diamond, clockwise. */
+    /* Outer rounded contour, clockwise. */
     PATH_CHECK(grape_path_move_to(path, 150.0f, 0.0f));
-    PATH_CHECK(grape_path_line_to(path, 300.0f, 150.0f));
-    PATH_CHECK(grape_path_line_to(path, 150.0f, 300.0f));
-    PATH_CHECK(grape_path_line_to(path, 0.0f, 150.0f));
+    PATH_CHECK(grape_path_quad_to(path, 300.0f, 0.0f, 300.0f, 150.0f));
+    PATH_CHECK(grape_path_quad_to(path, 300.0f, 300.0f, 150.0f, 300.0f));
+    PATH_CHECK(grape_path_quad_to(path, 0.0f, 300.0f, 0.0f, 150.0f));
+    PATH_CHECK(grape_path_quad_to(path, 0.0f, 0.0f, 150.0f, 0.0f));
     PATH_CHECK(grape_path_close(path));
 
-    /* Inner diamond, opposite winding, producing a real vector hole. */
-    PATH_CHECK(grape_path_move_to(path, 150.0f, 72.0f));
-    PATH_CHECK(grape_path_line_to(path, 72.0f, 150.0f));
-    PATH_CHECK(grape_path_line_to(path, 150.0f, 228.0f));
-    PATH_CHECK(grape_path_line_to(path, 228.0f, 150.0f));
+    /* Inner rounded contour, opposite winding, producing a curved hole. */
+    PATH_CHECK(grape_path_move_to(path, 150.0f, 75.0f));
+    PATH_CHECK(grape_path_quad_to(path, 75.0f, 75.0f, 75.0f, 150.0f));
+    PATH_CHECK(grape_path_quad_to(path, 75.0f, 225.0f, 150.0f, 225.0f));
+    PATH_CHECK(grape_path_quad_to(path, 225.0f, 225.0f, 225.0f, 150.0f));
+    PATH_CHECK(grape_path_quad_to(path, 225.0f, 75.0f, 150.0f, 75.0f));
     PATH_CHECK(grape_path_close(path));
 
     grape_path_rasterize_config_t raster_config =
