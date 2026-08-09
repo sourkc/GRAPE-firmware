@@ -25,7 +25,7 @@ Primary suites: `damage_mark`, `pixel_backend`, `lifecycle`.
 ## Damage marking/history/planning
 
 Covered systems: explicit/tile damage, transformed whole-quad marking,
-quad-vs-tile tests, occupancy-cell projection, old/new surface coverage,
+quad-vs-tile tests, screen-driven partial-texture occupancy queries, old/new surface coverage,
 logical/current/previous/render visible damage roles, planner root scan,
 horizontal/vertical split search, child shrinking, candidate evaluation,
 profitable split selection, max-rectangle limit, rectangle-overhead cost,
