@@ -970,6 +970,111 @@ static void consider_split(const grape_context_t *context,
     }
 }
 
+static void consider_clean_split(const grape_context_t *context,
+                                 grape_damage_split_region_t *region,
+                                 grape_damage_tile_region_t first,
+                                 grape_damage_tile_region_t second,
+                                 int64_t parent_cost,
+                                 uint64_t *best_balance)
+{
+    if (tile_region_empty(first) || tile_region_empty(second)) {
+        return;
+    }
+
+    int64_t first_area = tile_region_pixel_area(context, first);
+    int64_t second_area = tile_region_pixel_area(context, second);
+    int64_t split_cost = first_area + second_area +
+                         2LL * (int64_t)CONFIG_GRAPE_DAMAGE_RECT_OVERHEAD_PIXELS;
+    int64_t saving = parent_cost - split_cost;
+    uint64_t balance = first_area >= second_area
+        ? (uint64_t)(first_area - second_area)
+        : (uint64_t)(second_area - first_area);
+
+    if (saving > region->split_saving ||
+        (saving == region->split_saving && balance < *best_balance)) {
+        region->split_saving = saving;
+        region->split_a = first;
+        region->split_b = second;
+        *best_balance = balance;
+    }
+}
+
+static bool axis_bounds_span_region(const grape_damage_tile_region_t *axis_bounds,
+                                    size_t length,
+                                    grape_damage_tile_region_t bounds,
+                                    bool row_axis)
+{
+    for (size_t i = 0; i < length; ++i) {
+        grape_damage_tile_region_t slice = axis_bounds[i];
+        if (tile_region_empty(slice)) {
+            continue;
+        }
+
+        if (row_axis) {
+            if (slice.x0 != bounds.x0 || slice.x1 != bounds.x1) {
+                return false;
+            }
+        } else if (slice.y0 != bounds.y0 || slice.y1 != bounds.y1) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void consider_clean_axis_splits(const grape_context_t *context,
+                                       grape_damage_state_t *damage,
+                                       const grape_damage_tile_region_t *axis_bounds,
+                                       size_t length,
+                                       grape_damage_split_region_t *region,
+                                       int64_t parent_cost,
+                                       uint32_t *candidate_count,
+                                       uint64_t *best_balance)
+{
+    if (length <= 1U) {
+        return;
+    }
+
+    damage->suffix_bounds[length] = (grape_damage_tile_region_t){0};
+    for (size_t i = length; i-- > 0U;) {
+        damage->suffix_bounds[i] = tile_region_union(
+            axis_bounds[i],
+            damage->suffix_bounds[i + 1U]
+        );
+    }
+
+    grape_damage_tile_region_t prefix = {0};
+    size_t i = 0;
+    while (i < length) {
+        if (!tile_region_empty(axis_bounds[i])) {
+            prefix = tile_region_union(prefix, axis_bounds[i]);
+            i++;
+            continue;
+        }
+
+        size_t run_end = i + 1U;
+        while (run_end < length && tile_region_empty(axis_bounds[run_end])) {
+            run_end++;
+        }
+
+        if (!tile_region_empty(prefix) &&
+            run_end < length &&
+            !tile_region_empty(damage->suffix_bounds[run_end])) {
+            (*candidate_count)++;
+            consider_clean_split(
+                context,
+                region,
+                prefix,
+                damage->suffix_bounds[run_end],
+                parent_cost,
+                best_balance
+            );
+        }
+
+        i = run_end;
+    }
+}
+
 static void find_best_split(grape_context_t *context,
                             const uint8_t *bitmap,
                             grape_damage_split_region_t *region,
@@ -991,6 +1096,42 @@ static void find_best_split(grape_context_t *context,
 
     int64_t parent_cost = tile_region_pixel_area(context, bounds) +
                           (int64_t)CONFIG_GRAPE_DAMAGE_RECT_OVERHEAD_PIXELS;
+    uint64_t clean_balance = UINT64_MAX;
+
+    if (axis_bounds_span_region(
+            damage->column_bounds, width, bounds, false)) {
+        consider_clean_axis_splits(
+            context,
+            damage,
+            damage->column_bounds,
+            width,
+            region,
+            parent_cost,
+            candidate_count,
+            &clean_balance
+        );
+    }
+    if (axis_bounds_span_region(
+            damage->row_bounds, height, bounds, true)) {
+        consider_clean_axis_splits(
+            context,
+            damage,
+            damage->row_bounds,
+            height,
+            region,
+            parent_cost,
+            candidate_count,
+            &clean_balance
+        );
+    }
+
+    if (region->split_saving > 0) {
+        return;
+    }
+
+    region->split_a = (grape_damage_tile_region_t){0};
+    region->split_b = (grape_damage_tile_region_t){0};
+    region->split_saving = INT64_MIN;
 
     if (width > 1U) {
         damage->suffix_bounds[width] = (grape_damage_tile_region_t){0};
