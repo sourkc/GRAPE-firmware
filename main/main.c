@@ -154,6 +154,91 @@ static float noise_to_unit(float value)
     return value * 0.5f + 0.5f;
 }
 
+#if GRAPE_APP_RUN_VECTOR_DEMO
+static esp_err_t run_vector_demo(grape_context_t *grape)
+{
+    grape_path_t *path = NULL;
+    grape_path_raster_t raster = {0};
+    grape_surface_t *surface = NULL;
+    esp_err_t ret = grape_path_create(&path);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+#define PATH_CHECK(expr)         \
+    do {                         \
+        ret = (expr);            \
+        if (ret != ESP_OK) {     \
+            goto cleanup;        \
+        }                        \
+    } while (0)
+
+    /* Outer diamond, clockwise. */
+    PATH_CHECK(grape_path_move_to(path, 150.0f, 0.0f));
+    PATH_CHECK(grape_path_line_to(path, 300.0f, 150.0f));
+    PATH_CHECK(grape_path_line_to(path, 150.0f, 300.0f));
+    PATH_CHECK(grape_path_line_to(path, 0.0f, 150.0f));
+    PATH_CHECK(grape_path_close(path));
+
+    /* Inner diamond, opposite winding, producing a real vector hole. */
+    PATH_CHECK(grape_path_move_to(path, 150.0f, 72.0f));
+    PATH_CHECK(grape_path_line_to(path, 72.0f, 150.0f));
+    PATH_CHECK(grape_path_line_to(path, 150.0f, 228.0f));
+    PATH_CHECK(grape_path_line_to(path, 228.0f, 150.0f));
+    PATH_CHECK(grape_path_close(path));
+
+    grape_path_rasterize_config_t raster_config =
+        GRAPE_PATH_RASTERIZE_CONFIG_DEFAULT();
+    raster_config.padding_pixels = 2;
+
+    PATH_CHECK(grape_path_rasterize_a8(grape, path, &raster_config, &raster));
+    PATH_CHECK(grape_surface_create(grape, raster.texture, &surface));
+    PATH_CHECK(grape_surface_set_tint(surface, (grape_color_t){
+        .r = 206,
+        .g = 135,
+        .b = 255,
+        .a = 255,
+    }));
+
+    const grape_display_info_t *display = grape_get_display_info(grape);
+    float scale = 1.0f / raster.pixels_per_unit;
+    float rendered_width = (float)grape_texture_width(raster.texture) * scale;
+    float rendered_height = (float)grape_texture_height(raster.texture) * scale;
+    PATH_CHECK(grape_surface_set_position(
+        surface,
+        ((float)display->width - rendered_width) * 0.5f,
+        ((float)display->height - rendered_height) * 0.5f
+    ));
+    PATH_CHECK(grape_surface_set_scale(surface, scale, scale));
+    PATH_CHECK(grape_present(grape));
+
+    ESP_LOGI(TAG,
+             "vector demo: %" PRIu32 "x%" PRIu32
+             " A8, %ux%u samples/pixel, path origin=(%.1f, %.1f)",
+             grape_texture_width(raster.texture),
+             grape_texture_height(raster.texture),
+             raster_config.samples_per_axis,
+             raster_config.samples_per_axis,
+             raster.path_origin_x,
+             raster.path_origin_y);
+
+    grape_path_destroy(path);
+#undef PATH_CHECK
+    return ESP_OK;
+
+cleanup:
+    if (surface) {
+        grape_surface_destroy(surface);
+    }
+    if (raster.texture) {
+        grape_texture_destroy(raster.texture);
+    }
+    grape_path_destroy(path);
+#undef PATH_CHECK
+    return ret;
+}
+#endif
+
 void app_main(void)
 {
     grape_context_t *grape = NULL;
@@ -168,6 +253,13 @@ void app_main(void)
 
     grape_deinit(grape);
     return;
+#endif
+
+#if GRAPE_APP_RUN_VECTOR_DEMO
+    ESP_ERROR_CHECK(run_vector_demo(grape));
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 #endif
 
     ESP_ERROR_CHECK(

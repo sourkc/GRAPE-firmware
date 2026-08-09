@@ -34,7 +34,8 @@ extern "C" {
     X(SHEAR_CLEAR,          2, "shear.clear",              "shear_clear") \
     X(SHEAR_QUARTER_TURN,   2, "shear.quarter_turn",       "shear_quarter_turn") \
     X(SHEAR_COMPOSITE,      2, "shear.composite",          "shear_composite") \
-    X(DISPLAY_SUBMIT,       2, "display.submit",           "display_submit")
+    X(DISPLAY_SUBMIT,       2, "display.submit",           "display_submit") \
+    X(VECTOR_RASTERIZE,     2, "vector.rasterize",         "vector_rasterize")
 
 typedef enum {
 #define GRAPE_TELEMETRY_ENUM(name, level, label, csv) GRAPE_TELEMETRY_TIMER_##name,

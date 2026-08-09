@@ -4,6 +4,7 @@ idf_component_register(
         "src/grape_feature.c"
         "src/grape_benchmark_hooks.c"
         "src/grape_texture.c"
+        "src/grape_path.c"
         "src/grape_surface.c"
         "src/grape_damage.c"
         "src/grape_debug.c"
