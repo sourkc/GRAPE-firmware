@@ -6,6 +6,8 @@ idf_component_register(
         "src/grape_texture.c"
         "src/grape_path.c"
         "src/grape_font.c"
+        "src/grape_glyph_cache.c"
+        "src/grape_text.c"
         "src/grape_svg.c"
         "src/grape_surface.c"
         "src/grape_damage.c"

@@ -1,4 +1,5 @@
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -24,10 +25,16 @@ struct grape_font {
     grape_font_table_t glyf;
     grape_font_table_t cmap;
     grape_font_table_t cmap_subtable;
+    grape_font_table_t hhea;
+    grape_font_table_t hmtx;
     uint16_t units_per_em;
     uint16_t glyph_count;
     int16_t loca_format;
     uint16_t cmap_format;
+    int16_t ascender;
+    int16_t descender;
+    int16_t line_gap;
+    uint16_t hmetric_count;
 };
 
 #define TTF_TAG(a, b, c, d) \
@@ -137,13 +144,20 @@ static esp_err_t find_tables(grape_font_t *font)
             case TTF_TAG('c', 'm', 'a', 'p'):
                 font->cmap = table;
                 break;
+            case TTF_TAG('h', 'h', 'e', 'a'):
+                font->hhea = table;
+                break;
+            case TTF_TAG('h', 'm', 't', 'x'):
+                font->hmtx = table;
+                break;
             default:
                 break;
         }
     }
 
     if (font->head.length == 0U || font->maxp.length == 0U ||
-        font->loca.length == 0U || font->glyf.length == 0U) {
+        font->loca.length == 0U || font->glyf.length == 0U ||
+        font->hhea.length == 0U || font->hmtx.length == 0U) {
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -152,7 +166,8 @@ static esp_err_t find_tables(grape_font_t *font)
 
 static esp_err_t parse_metadata(grape_font_t *font)
 {
-    if (font->head.length < 54U || font->maxp.length < 6U) {
+    if (font->head.length < 54U || font->maxp.length < 6U ||
+        font->hhea.length < 36U) {
         return ESP_ERR_INVALID_SIZE;
     }
 
@@ -161,11 +176,20 @@ static esp_err_t parse_metadata(grape_font_t *font)
         !read_i16(font->data, font->size, (size_t)font->head.offset + 50U,
                   &font->loca_format) ||
         !read_u16(font->data, font->size, (size_t)font->maxp.offset + 4U,
-                  &font->glyph_count)) {
+                  &font->glyph_count) ||
+        !read_i16(font->data, font->size, (size_t)font->hhea.offset + 4U,
+                  &font->ascender) ||
+        !read_i16(font->data, font->size, (size_t)font->hhea.offset + 6U,
+                  &font->descender) ||
+        !read_i16(font->data, font->size, (size_t)font->hhea.offset + 8U,
+                  &font->line_gap) ||
+        !read_u16(font->data, font->size, (size_t)font->hhea.offset + 34U,
+                  &font->hmetric_count)) {
         return ESP_ERR_INVALID_SIZE;
     }
 
     if (font->units_per_em == 0U || font->glyph_count == 0U ||
+        font->hmetric_count == 0U || font->hmetric_count > font->glyph_count ||
         (font->loca_format != 0 && font->loca_format != 1)) {
         return ESP_ERR_NOT_SUPPORTED;
     }
@@ -174,6 +198,16 @@ static esp_err_t parse_metadata(grape_font_t *font)
     size_t loca_stride = font->loca_format == 0 ? 2U : 4U;
     if (loca_entries > SIZE_MAX / loca_stride ||
         loca_entries * loca_stride > font->loca.length) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    size_t long_metrics_size = (size_t)font->hmetric_count * 4U;
+    size_t trailing_lsb_count = (size_t)font->glyph_count - font->hmetric_count;
+    if (trailing_lsb_count > (SIZE_MAX - long_metrics_size) / 2U) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    size_t required_hmtx = long_metrics_size + trailing_lsb_count * 2U;
+    if (required_hmtx > font->hmtx.length) {
         return ESP_ERR_INVALID_SIZE;
     }
 
@@ -711,19 +745,21 @@ static esp_err_t decode_axis(const uint8_t *data,
     return ESP_OK;
 }
 
-static float path_x(const grape_font_point_t *point)
+static float path_x(const grape_font_point_t *point, float origin_x)
 {
-    return (float)point->x;
+    return origin_x + (float)point->x;
 }
 
-static float path_y(const grape_font_point_t *point)
+static float path_y(const grape_font_point_t *point, float baseline_y)
 {
-    return -(float)point->y;
+    return baseline_y - (float)point->y;
 }
 
 static esp_err_t append_contour(grape_path_t *path,
                                 const grape_font_point_t *points,
-                                size_t count)
+                                size_t count,
+                                float origin_x,
+                                float baseline_y)
 {
     if (count == 0U) {
         return ESP_OK;
@@ -737,18 +773,18 @@ static esp_err_t append_contour(grape_path_t *path,
     size_t remaining;
 
     if (first->on_curve) {
-        start_x = path_x(first);
-        start_y = path_y(first);
+        start_x = path_x(first, origin_x);
+        start_y = path_y(first, baseline_y);
         index = 1U;
         remaining = count - 1U;
     } else if (last->on_curve) {
-        start_x = path_x(last);
-        start_y = path_y(last);
+        start_x = path_x(last, origin_x);
+        start_y = path_y(last, baseline_y);
         index = 0U;
         remaining = count - 1U;
     } else {
-        start_x = ((float)last->x + (float)first->x) * 0.5f;
-        start_y = -((float)last->y + (float)first->y) * 0.5f;
+        start_x = origin_x + ((float)last->x + (float)first->x) * 0.5f;
+        start_y = baseline_y - ((float)last->y + (float)first->y) * 0.5f;
         index = 0U;
         remaining = count;
     }
@@ -761,7 +797,7 @@ static esp_err_t append_contour(grape_path_t *path,
     while (remaining > 0U) {
         const grape_font_point_t *point = &points[index];
         if (point->on_curve) {
-            ret = grape_path_line_to(path, path_x(point), path_y(point));
+            ret = grape_path_line_to(path, path_x(point, origin_x), path_y(point, baseline_y));
             if (ret != ESP_OK) {
                 return ret;
             }
@@ -770,8 +806,8 @@ static esp_err_t append_contour(grape_path_t *path,
             continue;
         }
 
-        float control_x = path_x(point);
-        float control_y = path_y(point);
+        float control_x = path_x(point, origin_x);
+        float control_y = path_y(point, baseline_y);
         if (remaining == 1U) {
             ret = grape_path_quad_to(path, control_x, control_y, start_x, start_y);
             if (ret != ESP_OK) {
@@ -789,8 +825,8 @@ static esp_err_t append_contour(grape_path_t *path,
                 path,
                 control_x,
                 control_y,
-                path_x(next),
-                path_y(next)
+                path_x(next, origin_x),
+                path_y(next, baseline_y)
             );
             if (ret != ESP_OK) {
                 return ret;
@@ -798,8 +834,10 @@ static esp_err_t append_contour(grape_path_t *path,
             index = (next_index + 1U) % count;
             remaining -= 2U;
         } else {
-            float midpoint_x = ((float)point->x + (float)next->x) * 0.5f;
-            float midpoint_y = -((float)point->y + (float)next->y) * 0.5f;
+            float midpoint_x = origin_x +
+                               ((float)point->x + (float)next->x) * 0.5f;
+            float midpoint_y = baseline_y -
+                               ((float)point->y + (float)next->y) * 0.5f;
             ret = grape_path_quad_to(
                 path,
                 control_x,
@@ -877,6 +915,21 @@ uint16_t grape_font_cmap_format(const grape_font_t *font)
     return font ? font->cmap_format : 0U;
 }
 
+int16_t grape_font_ascender(const grape_font_t *font)
+{
+    return font ? font->ascender : 0;
+}
+
+int16_t grape_font_descender(const grape_font_t *font)
+{
+    return font ? font->descender : 0;
+}
+
+int16_t grape_font_line_gap(const grape_font_t *font)
+{
+    return font ? font->line_gap : 0;
+}
+
 esp_err_t grape_font_get_glyph_id(const grape_font_t *font,
                                   uint32_t codepoint,
                                   uint16_t *out_glyph_id)
@@ -909,11 +962,49 @@ esp_err_t grape_font_get_glyph_info(const grape_font_t *font,
     return read_glyph_info(font, glyph_id, out_info, NULL, NULL);
 }
 
-esp_err_t grape_font_get_glyph_path(const grape_font_t *font,
-                                    uint16_t glyph_id,
-                                    grape_path_t *path)
+esp_err_t grape_font_get_glyph_metrics(const grape_font_t *font,
+                                       uint16_t glyph_id,
+                                       grape_font_glyph_metrics_t *out_metrics)
 {
-    if (!font || !path || glyph_id >= font->glyph_count) {
+    if (!font || !out_metrics || glyph_id >= font->glyph_count) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint16_t advance_width = 0;
+    int16_t left_side_bearing = 0;
+    if (glyph_id < font->hmetric_count) {
+        size_t metric = (size_t)font->hmtx.offset + (size_t)glyph_id * 4U;
+        if (!read_u16(font->data, font->size, metric, &advance_width) ||
+            !read_i16(font->data, font->size, metric + 2U, &left_side_bearing)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+    } else {
+        size_t last_metric = (size_t)font->hmtx.offset +
+                             ((size_t)font->hmetric_count - 1U) * 4U;
+        size_t trailing_lsb = (size_t)font->hmtx.offset +
+                              (size_t)font->hmetric_count * 4U +
+                              ((size_t)glyph_id - font->hmetric_count) * 2U;
+        if (!read_u16(font->data, font->size, last_metric, &advance_width) ||
+            !read_i16(font->data, font->size, trailing_lsb, &left_side_bearing)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+    }
+
+    *out_metrics = (grape_font_glyph_metrics_t){
+        .advance_width = advance_width,
+        .left_side_bearing = left_side_bearing,
+    };
+    return ESP_OK;
+}
+
+esp_err_t grape_font_append_glyph_path(const grape_font_t *font,
+                                       uint16_t glyph_id,
+                                       grape_path_t *path,
+                                       float origin_x,
+                                       float baseline_y)
+{
+    if (!font || !path || glyph_id >= font->glyph_count ||
+        !isfinite(origin_x) || !isfinite(baseline_y)) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -931,15 +1022,10 @@ esp_err_t grape_font_get_glyph_path(const grape_font_t *font,
         return ret;
     }
     if (info.kind == GRAPE_FONT_GLYPH_EMPTY || info.contour_count == 0) {
-        return ESP_ERR_NOT_FOUND;
+        return ESP_OK;
     }
     if (info.kind == GRAPE_FONT_GLYPH_COMPOSITE) {
         return ESP_ERR_NOT_SUPPORTED;
-    }
-
-    ret = grape_path_clear(path);
-    if (ret != ESP_OK) {
-        return ret;
     }
 
     size_t contour_count = (size_t)info.contour_count;
@@ -1018,7 +1104,9 @@ esp_err_t grape_font_get_glyph_path(const grape_font_t *font,
             ret = append_contour(
                 path,
                 &points[contour_start],
-                contour_end - contour_start + 1U
+                contour_end - contour_start + 1U,
+                origin_x,
+                baseline_y
             );
             if (ret != ESP_OK) {
                 break;
@@ -1030,7 +1118,32 @@ esp_err_t grape_font_get_glyph_path(const grape_font_t *font,
     free(points);
     free(flags);
     free(end_points);
+    return ret;
+}
 
+esp_err_t grape_font_get_glyph_path(const grape_font_t *font,
+                                    uint16_t glyph_id,
+                                    grape_path_t *path)
+{
+    if (!font || !path || glyph_id >= font->glyph_count) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    grape_font_glyph_info_t info = {0};
+    esp_err_t ret = grape_font_get_glyph_info(font, glyph_id, &info);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    if (info.kind == GRAPE_FONT_GLYPH_EMPTY || info.contour_count == 0) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ret = grape_path_clear(path);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = grape_font_append_glyph_path(font, glyph_id, path, 0.0f, 0.0f);
     if (ret != ESP_OK) {
         grape_path_clear(path);
     }

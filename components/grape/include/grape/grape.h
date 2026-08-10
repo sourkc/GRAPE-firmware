@@ -5,8 +5,10 @@
 #include "grape/grape_debug.h"
 #include "grape/grape_feature.h"
 #include "grape/grape_font.h"
+#include "grape/grape_glyph_cache.h"
 #include "grape/grape_path.h"
 #include "grape/grape_svg.h"
+#include "grape/grape_text.h"
 
 #ifdef __cplusplus
 extern "C" {
