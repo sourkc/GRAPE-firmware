@@ -164,12 +164,16 @@ static float noise_to_unit(float value)
 #if GRAPE_APP_RUN_FONT_DEMO
 #define FONT_DEMO_DIRECTORY GRAPE_STORAGE_SD_MOUNT_POINT "/fonts"
 #define FONT_DEMO_PATH_CAPACITY 384U
+#define FONT_DEMO_COMPARE_COUNT 4U
+#define FONT_DEMO_TARGET_PPEM 128.0f
+#define FONT_DEMO_SOURCE_PPEM 192.0f
 
 static void *s_font_demo_data;
 static grape_font_t *s_font_demo_font;
-static grape_glyph_cache_t *s_font_demo_cache;
-static grape_texture_t *s_font_demo_texture;
-static grape_surface_t *s_font_demo_surface;
+static grape_glyph_cache_t *s_font_demo_native_cache;
+static grape_glyph_cache_t *s_font_demo_scaled_cache;
+static grape_texture_t *s_font_demo_textures[FONT_DEMO_COMPARE_COUNT * 2U];
+static grape_surface_t *s_font_demo_surfaces[FONT_DEMO_COMPARE_COUNT * 2U];
 
 static bool has_ttf_extension(const char *name)
 {
@@ -273,11 +277,76 @@ static esp_err_t load_font_file(const char *path, void **out_data, size_t *out_s
     return ESP_OK;
 }
 
-static const uint32_t s_font_demo_codepoints[] = {
-    'G', 'R', 'A', 'P', 'E',
-};
+static esp_err_t choose_compare_codepoints(const grape_font_t *font,
+                                           uint32_t *out_codepoints,
+                                           size_t count)
+{
+    static const uint32_t candidates[] = {
+        'A', 'O', 'S', 'M', 'G', 'R', 'P', 'E', 'B', 'C', 'N', 'U',
+    };
 
-static const char s_font_demo_text[] = "GRAPE";
+    if (!font || !out_codepoints || count == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t selected = 0U;
+    for (size_t i = 0U;
+         i < sizeof(candidates) / sizeof(candidates[0]) && selected < count;
+         ++i) {
+        uint16_t glyph_id = 0U;
+        if (grape_font_get_glyph_id(font, candidates[i], &glyph_id) != ESP_OK) {
+            continue;
+        }
+
+        grape_font_glyph_info_t info = {0};
+        if (grape_font_get_glyph_info(font, glyph_id, &info) != ESP_OK ||
+            info.kind != GRAPE_FONT_GLYPH_SIMPLE || info.contour_count == 0) {
+            continue;
+        }
+
+        out_codepoints[selected++] = candidates[i];
+    }
+
+    return selected == count ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+static esp_err_t create_text_surface(grape_context_t *grape,
+                                     grape_text_raster_t *raster,
+                                     float center_x,
+                                     float center_y,
+                                     grape_texture_t **out_texture,
+                                     grape_surface_t **out_surface)
+{
+    if (!grape || !raster || !raster->texture || !out_texture || !out_surface) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *out_texture = raster->texture;
+    *out_surface = NULL;
+
+    esp_err_t ret = grape_surface_create(grape, raster->texture, out_surface);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    grape_color_t glyph_color = {
+        .r = 248,
+        .g = 244,
+        .b = 255,
+        .a = 255,
+    };
+    ret = grape_surface_set_tint(*out_surface, glyph_color);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    grape_transform_t transform = GRAPE_TRANSFORM_DEFAULT();
+    transform.x = center_x;
+    transform.y = center_y;
+    transform.origin_x = (float)grape_texture_width(raster->texture) * 0.5f;
+    transform.origin_y = (float)grape_texture_height(raster->texture) * 0.5f;
+    return grape_surface_set_transform(*out_surface, &transform);
+}
 
 static esp_err_t run_font_demo(grape_context_t *grape)
 {
@@ -297,7 +366,7 @@ static esp_err_t run_font_demo(grape_context_t *grape)
         return ret;
     }
 
-    size_t font_size = 0;
+    size_t font_size = 0U;
     ret = load_font_file(font_path, &s_font_demo_data, &font_size);
     if (ret != ESP_OK) {
         return ret;
@@ -308,116 +377,128 @@ static esp_err_t run_font_demo(grape_context_t *grape)
         return ret;
     }
 
-    grape_text_measurement_t measurement = {0};
-    ret = grape_text_measure_codepoints(
+    uint32_t codepoints[FONT_DEMO_COMPARE_COUNT] = {0};
+    ret = choose_compare_codepoints(
         s_font_demo_font,
-        s_font_demo_codepoints,
-        sizeof(s_font_demo_codepoints) / sizeof(s_font_demo_codepoints[0]),
-        &measurement
+        codepoints,
+        FONT_DEMO_COMPARE_COUNT
     );
-    if (ret != ESP_OK || !measurement.has_bounds) {
-        return ret == ESP_OK ? ESP_ERR_INVALID_SIZE : ret;
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Could not find enough simple comparison glyphs");
+        return ret;
     }
-
-    float path_width = measurement.bounds.max_x - measurement.bounds.min_x;
-    float path_height = measurement.bounds.max_y - measurement.bounds.min_y;
-    if (path_width <= 0.0f || path_height <= 0.0f) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    float layout_width = fmaxf(path_width, measurement.advance_width);
-    float scale_x = (float)display->width * 0.86f / layout_width;
-    float scale_y = (float)display->height * 0.34f / path_height;
-    float pixels_per_unit = fminf(scale_x, scale_y);
 
     grape_glyph_cache_config_t cache_config = GRAPE_GLYPH_CACHE_CONFIG_DEFAULT();
     cache_config.capacity_bytes = 4U * 1024U * 1024U;
     cache_config.scale_backend = GRAPE_GLYPH_CACHE_SCALE_CPU;
     cache_config.max_downscale_ratio = 2.0f;
-    ret = grape_glyph_cache_create(grape, &cache_config, &s_font_demo_cache);
+
+    ret = grape_glyph_cache_create(grape, &cache_config, &s_font_demo_native_cache);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = grape_glyph_cache_create(grape, &cache_config, &s_font_demo_scaled_cache);
     if (ret != ESP_OK) {
         return ret;
     }
 
-    grape_path_rasterize_config_t raster_config = GRAPE_PATH_RASTERIZE_CONFIG_DEFAULT();
-    raster_config.pixels_per_unit = pixels_per_unit * 1.5f;
-    raster_config.samples_per_axis = 4;
-    raster_config.padding_pixels = 2;
-    raster_config.memory = GRAPE_MEMORY_PSRAM;
-
-    grape_text_raster_t warm_raster = {0};
-    ret = grape_text_rasterize_codepoints_a8(
-        s_font_demo_cache,
-        s_font_demo_font,
-        s_font_demo_codepoints,
-        sizeof(s_font_demo_codepoints) / sizeof(s_font_demo_codepoints[0]),
-        &raster_config,
-        &warm_raster
-    );
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    ret = grape_texture_destroy(warm_raster.texture);
-    if (ret != ESP_OK) {
-        return ret;
+    float units_per_em = (float)grape_font_units_per_em(s_font_demo_font);
+    if (units_per_em <= 0.0f) {
+        return ESP_ERR_INVALID_SIZE;
     }
 
-    raster_config.pixels_per_unit = pixels_per_unit;
-    grape_text_raster_t raster = {0};
-    ret = grape_text_rasterize_codepoints_a8(
-        s_font_demo_cache,
-        s_font_demo_font,
-        s_font_demo_codepoints,
-        sizeof(s_font_demo_codepoints) / sizeof(s_font_demo_codepoints[0]),
-        &raster_config,
-        &raster
-    );
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    s_font_demo_texture = raster.texture;
+    grape_path_rasterize_config_t target_config =
+        GRAPE_PATH_RASTERIZE_CONFIG_DEFAULT();
+    target_config.pixels_per_unit = FONT_DEMO_TARGET_PPEM / units_per_em;
+    target_config.samples_per_axis = 4U;
+    target_config.padding_pixels = 2U;
+    target_config.memory = GRAPE_MEMORY_PSRAM;
 
-    grape_text_raster_t exact_probe = {0};
-    ret = grape_text_rasterize_codepoints_a8(
-        s_font_demo_cache,
-        s_font_demo_font,
-        s_font_demo_codepoints,
-        sizeof(s_font_demo_codepoints) / sizeof(s_font_demo_codepoints[0]),
-        &raster_config,
-        &exact_probe
-    );
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    ret = grape_texture_destroy(exact_probe.texture);
-    if (ret != ESP_OK) {
-        return ret;
-    }
+    grape_path_rasterize_config_t source_config = target_config;
+    source_config.pixels_per_unit = FONT_DEMO_SOURCE_PPEM / units_per_em;
 
-    ret = grape_surface_create(grape, s_font_demo_texture, &s_font_demo_surface);
-    if (ret != ESP_OK) {
-        return ret;
-    }
+    for (size_t i = 0U; i < FONT_DEMO_COMPARE_COUNT; ++i) {
+        grape_text_raster_t warm = {0};
+        ret = grape_text_rasterize_codepoints_a8(
+            s_font_demo_scaled_cache,
+            s_font_demo_font,
+            &codepoints[i],
+            1U,
+            &source_config,
+            &warm
+        );
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        ret = grape_texture_destroy(warm.texture);
+        if (ret != ESP_OK) {
+            return ret;
+        }
 
-    grape_color_t glyph_color = {
-        .r = 248,
-        .g = 244,
-        .b = 255,
-        .a = 255,
-    };
-    ret = grape_surface_set_tint(s_font_demo_surface, glyph_color);
-    if (ret != ESP_OK) {
-        return ret;
-    }
+        grape_text_raster_t native = {0};
+        ret = grape_text_rasterize_codepoints_a8(
+            s_font_demo_native_cache,
+            s_font_demo_font,
+            &codepoints[i],
+            1U,
+            &target_config,
+            &native
+        );
+        if (ret != ESP_OK) {
+            return ret;
+        }
 
-    grape_transform_t transform = GRAPE_TRANSFORM_DEFAULT();
-    transform.x = (float)display->width * 0.5f;
-    transform.y = (float)display->height * 0.5f;
-    transform.origin_x = (float)grape_texture_width(s_font_demo_texture) * 0.5f;
-    transform.origin_y = (float)grape_texture_height(s_font_demo_texture) * 0.5f;
-    ret = grape_surface_set_transform(s_font_demo_surface, &transform);
-    if (ret != ESP_OK) {
-        return ret;
+        grape_text_raster_t scaled = {0};
+        ret = grape_text_rasterize_codepoints_a8(
+            s_font_demo_scaled_cache,
+            s_font_demo_font,
+            &codepoints[i],
+            1U,
+            &target_config,
+            &scaled
+        );
+        if (ret != ESP_OK) {
+            return ret;
+        }
+
+        float row_y = (float)display->height *
+                      ((float)i + 0.5f) / (float)FONT_DEMO_COMPARE_COUNT;
+        size_t native_index = i * 2U;
+        size_t scaled_index = native_index + 1U;
+
+        ret = create_text_surface(
+            grape,
+            &native,
+            (float)display->width * 0.28f,
+            row_y,
+            &s_font_demo_textures[native_index],
+            &s_font_demo_surfaces[native_index]
+        );
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        ret = create_text_surface(
+            grape,
+            &scaled,
+            (float)display->width * 0.72f,
+            row_y,
+            &s_font_demo_textures[scaled_index],
+            &s_font_demo_surfaces[scaled_index]
+        );
+        if (ret != ESP_OK) {
+            return ret;
+        }
+
+        ESP_LOGI(TAG,
+                 "Compare '%c': left=native %.0fpx/em %ux%u, right=CPU %.0f->%.0fpx/em %ux%u",
+                 (char)codepoints[i],
+                 FONT_DEMO_TARGET_PPEM,
+                 (unsigned)grape_texture_width(native.texture),
+                 (unsigned)grape_texture_height(native.texture),
+                 FONT_DEMO_SOURCE_PPEM,
+                 FONT_DEMO_TARGET_PPEM,
+                 (unsigned)grape_texture_width(scaled.texture),
+                 (unsigned)grape_texture_height(scaled.texture));
     }
 
     ret = grape_present(grape);
@@ -425,64 +506,31 @@ static esp_err_t run_font_demo(grape_context_t *grape)
         return ret;
     }
 
-    grape_glyph_cache_stats_t cache_stats = {0};
-    grape_glyph_cache_get_stats(s_font_demo_cache, &cache_stats);
+    grape_glyph_cache_stats_t native_stats = {0};
+    grape_glyph_cache_stats_t scaled_stats = {0};
+    grape_glyph_cache_get_stats(s_font_demo_native_cache, &native_stats);
+    grape_glyph_cache_get_stats(s_font_demo_scaled_cache, &scaled_stats);
 
     ESP_LOGI(TAG,
-             "TTF demo: %s (%u bytes), units/em=%u, glyphs=%u, cmap=format %u, hhea=[%d,%d] gap=%d",
+             "TTF compare demo: %s (%u bytes), units/em=%u, cmap=format %u",
              font_path,
              (unsigned)font_size,
              (unsigned)grape_font_units_per_em(s_font_demo_font),
-             (unsigned)grape_font_glyph_count(s_font_demo_font),
-             (unsigned)grape_font_cmap_format(s_font_demo_font),
-             (int)grape_font_ascender(s_font_demo_font),
-             (int)grape_font_descender(s_font_demo_font),
-             (int)grape_font_line_gap(s_font_demo_font));
+             (unsigned)grape_font_cmap_format(s_font_demo_font));
     ESP_LOGI(TAG,
-             "TTF text: '%s' glyphs=%u advance=%.1f units raster=%ux%u scale=%.5f",
-             s_font_demo_text,
-             (unsigned)raster.glyph_count,
-             raster.advance_width,
-             (unsigned)grape_texture_width(s_font_demo_texture),
-             (unsigned)grape_texture_height(s_font_demo_texture),
-             pixels_per_unit);
+             "LEFT native cache: requests=%llu exact=%llu scaled=%llu misses=%llu cpu_scales=%llu",
+             (unsigned long long)native_stats.requests,
+             (unsigned long long)native_stats.exact_hits,
+             (unsigned long long)native_stats.scaled_hits,
+             (unsigned long long)native_stats.misses,
+             (unsigned long long)native_stats.cpu_scales);
     ESP_LOGI(TAG,
-             "Glyph cache: %u entries %u/%u bytes, requests=%llu exact=%llu scaled=%llu misses=%llu evictions=%llu cpu_scales=%llu uncached=%llu",
-             (unsigned)cache_stats.entry_count,
-             (unsigned)cache_stats.used_bytes,
-             (unsigned)cache_stats.capacity_bytes,
-             (unsigned long long)cache_stats.requests,
-             (unsigned long long)cache_stats.exact_hits,
-             (unsigned long long)cache_stats.scaled_hits,
-             (unsigned long long)cache_stats.misses,
-             (unsigned long long)cache_stats.evictions,
-             (unsigned long long)cache_stats.cpu_scales,
-             (unsigned long long)cache_stats.uncached_rasters);
-
-    for (size_t i = 0; i < sizeof(s_font_demo_codepoints) /
-                           sizeof(s_font_demo_codepoints[0]); ++i) {
-        uint16_t glyph_id = 0;
-        grape_font_glyph_metrics_t metrics = {0};
-        ret = grape_font_get_glyph_id(
-            s_font_demo_font,
-            s_font_demo_codepoints[i],
-            &glyph_id
-        );
-        if (ret != ESP_OK) {
-            return ret;
-        }
-        ret = grape_font_get_glyph_metrics(s_font_demo_font, glyph_id, &metrics);
-        if (ret != ESP_OK) {
-            return ret;
-        }
-        ESP_LOGI(TAG,
-                 "  '%c' U+%04" PRIX32 " -> glyph=%u advance=%u lsb=%d",
-                 (char)s_font_demo_codepoints[i],
-                 s_font_demo_codepoints[i],
-                 (unsigned)glyph_id,
-                 (unsigned)metrics.advance_width,
-                 (int)metrics.left_side_bearing);
-    }
+             "RIGHT scaled cache: requests=%llu exact=%llu scaled=%llu misses=%llu cpu_scales=%llu",
+             (unsigned long long)scaled_stats.requests,
+             (unsigned long long)scaled_stats.exact_hits,
+             (unsigned long long)scaled_stats.scaled_hits,
+             (unsigned long long)scaled_stats.misses,
+             (unsigned long long)scaled_stats.cpu_scales);
 
     return ESP_OK;
 }
