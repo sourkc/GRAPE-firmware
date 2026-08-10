@@ -4,6 +4,7 @@
 #include "grape/grape_display.h"
 #include "grape/grape_debug.h"
 #include "grape/grape_feature.h"
+#include "grape/grape_font.h"
 #include "grape/grape_path.h"
 #include "grape/grape_svg.h"
 

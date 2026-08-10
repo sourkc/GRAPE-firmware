@@ -5,5 +5,8 @@ idf_component_register(
     REQUIRES
         grape
         grape_benchmark
+        grape_storage
         esp_timer
+        esp_hw_support
+        heap
 )

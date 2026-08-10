@@ -1,13 +1,20 @@
+#include <dirent.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "grape/grape.h"
 #include "grape/grape_benchmark.h"
 #include "grape/grape_telemetry_config.h"
+#include "grape_storage_sd.h"
 
 #include "app_config.h"
 
@@ -154,6 +161,320 @@ static float noise_to_unit(float value)
     return value * 0.5f + 0.5f;
 }
 
+#if GRAPE_APP_RUN_FONT_DEMO
+#define FONT_DEMO_DIRECTORY GRAPE_STORAGE_SD_MOUNT_POINT "/fonts"
+#define FONT_DEMO_PATH_CAPACITY 384U
+
+static void *s_font_demo_data;
+static grape_font_t *s_font_demo_font;
+static grape_path_t *s_font_demo_path;
+static grape_texture_t *s_font_demo_texture;
+static grape_surface_t *s_font_demo_surface;
+
+static bool has_ttf_extension(const char *name)
+{
+    const char *extension = strrchr(name, '.');
+    return extension && strcasecmp(extension, ".ttf") == 0;
+}
+
+static esp_err_t choose_random_font_path(char *path, size_t capacity)
+{
+    if (!path || capacity == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    DIR *directory = opendir(FONT_DEMO_DIRECTORY);
+    if (!directory) {
+        ESP_LOGE(TAG, "Could not open %s", FONT_DEMO_DIRECTORY);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    uint32_t matches = 0;
+    char chosen[FONT_DEMO_PATH_CAPACITY] = {0};
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        if (!has_ttf_extension(entry->d_name)) {
+            continue;
+        }
+
+        matches++;
+        if (matches == 1U || esp_random() % matches == 0U) {
+            int written = snprintf(
+                chosen,
+                sizeof(chosen),
+                "%s/%s",
+                FONT_DEMO_DIRECTORY,
+                entry->d_name
+            );
+            if (written < 0 || (size_t)written >= sizeof(chosen)) {
+                closedir(directory);
+                return ESP_ERR_INVALID_SIZE;
+            }
+        }
+    }
+
+    closedir(directory);
+    if (matches == 0U) {
+        ESP_LOGE(TAG, "No .ttf files found in %s", FONT_DEMO_DIRECTORY);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (strlen(chosen) + 1U > capacity) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    strcpy(path, chosen);
+    return ESP_OK;
+}
+
+static esp_err_t load_font_file(const char *path, void **out_data, size_t *out_size)
+{
+    if (!path || !out_data || !out_size) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *out_data = NULL;
+    *out_size = 0U;
+
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return ESP_FAIL;
+    }
+
+    long file_size = ftell(file);
+    if (file_size <= 0 || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    size_t size = (size_t)file_size;
+    void *data = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!data) {
+        data = heap_caps_malloc(size, MALLOC_CAP_8BIT);
+    }
+    if (!data) {
+        fclose(file);
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (fread(data, 1U, size, file) != size) {
+        heap_caps_free(data);
+        fclose(file);
+        return ESP_FAIL;
+    }
+
+    fclose(file);
+    *out_data = data;
+    *out_size = size;
+    return ESP_OK;
+}
+
+static bool glyph_is_demo_candidate(const grape_font_glyph_info_t *info,
+                                    uint16_t units_per_em,
+                                    bool prefer_large)
+{
+    if (!info || info->kind != GRAPE_FONT_GLYPH_SIMPLE || info->contour_count <= 0) {
+        return false;
+    }
+
+    int32_t width = (int32_t)info->x_max - info->x_min;
+    int32_t height = (int32_t)info->y_max - info->y_min;
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+
+    if (!prefer_large) {
+        return true;
+    }
+
+    return width >= (int32_t)units_per_em / 4 &&
+           height >= (int32_t)units_per_em / 3;
+}
+
+static esp_err_t choose_random_simple_glyph(const grape_font_t *font,
+                                            uint16_t *out_glyph_id,
+                                            grape_font_glyph_info_t *out_info)
+{
+    if (!font || !out_glyph_id || !out_info) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint16_t glyph_count = grape_font_glyph_count(font);
+    uint16_t units_per_em = grape_font_units_per_em(font);
+
+    for (uint32_t pass = 0; pass < 2U; ++pass) {
+        bool prefer_large = pass == 0U;
+        uint32_t candidates = 0;
+        uint16_t chosen_id = 0;
+        grape_font_glyph_info_t chosen_info = {0};
+
+        for (uint32_t glyph_id = 0; glyph_id < glyph_count; ++glyph_id) {
+            grape_font_glyph_info_t info = {0};
+            esp_err_t ret = grape_font_get_glyph_info(
+                font,
+                (uint16_t)glyph_id,
+                &info
+            );
+            if (ret != ESP_OK) {
+                return ret;
+            }
+            if (!glyph_is_demo_candidate(&info, units_per_em, prefer_large)) {
+                continue;
+            }
+
+            candidates++;
+            if (candidates == 1U || esp_random() % candidates == 0U) {
+                chosen_id = (uint16_t)glyph_id;
+                chosen_info = info;
+            }
+        }
+
+        if (candidates > 0U) {
+            *out_glyph_id = chosen_id;
+            *out_info = chosen_info;
+            return ESP_OK;
+        }
+    }
+
+    return ESP_ERR_NOT_FOUND;
+}
+
+static esp_err_t run_font_demo(grape_context_t *grape)
+{
+    const grape_display_info_t *display = grape_get_display_info(grape);
+    if (!display) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t ret = grape_storage_sd_mount();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    char font_path[FONT_DEMO_PATH_CAPACITY] = {0};
+    ret = choose_random_font_path(font_path, sizeof(font_path));
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    size_t font_size = 0;
+    ret = load_font_file(font_path, &s_font_demo_data, &font_size);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = grape_font_load_memory(s_font_demo_data, font_size, &s_font_demo_font);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    uint16_t glyph_id = 0;
+    grape_font_glyph_info_t glyph_info = {0};
+    ret = choose_random_simple_glyph(s_font_demo_font, &glyph_id, &glyph_info);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = grape_path_create(&s_font_demo_path);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = grape_font_get_glyph_path(s_font_demo_font, glyph_id, s_font_demo_path);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    grape_path_bounds_t bounds = {0};
+    ret = grape_path_get_bounds(s_font_demo_path, &bounds);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    float path_width = bounds.max_x - bounds.min_x;
+    float path_height = bounds.max_y - bounds.min_y;
+    if (path_width <= 0.0f || path_height <= 0.0f) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    float scale_x = (float)display->width * 0.70f / path_width;
+    float scale_y = (float)display->height * 0.60f / path_height;
+    float pixels_per_unit = fminf(scale_x, scale_y);
+
+    grape_path_rasterize_config_t raster_config = GRAPE_PATH_RASTERIZE_CONFIG_DEFAULT();
+    raster_config.pixels_per_unit = pixels_per_unit;
+    raster_config.samples_per_axis = 4;
+    raster_config.padding_pixels = 2;
+    raster_config.memory = GRAPE_MEMORY_PSRAM;
+
+    grape_path_raster_t raster = {0};
+    ret = grape_path_rasterize_a8(
+        grape,
+        s_font_demo_path,
+        &raster_config,
+        &raster
+    );
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    s_font_demo_texture = raster.texture;
+
+    ret = grape_surface_create(grape, s_font_demo_texture, &s_font_demo_surface);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    grape_color_t glyph_color = {
+        .r = 248,
+        .g = 244,
+        .b = 255,
+        .a = 255,
+    };
+    ret = grape_surface_set_tint(s_font_demo_surface, glyph_color);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    grape_transform_t transform = GRAPE_TRANSFORM_DEFAULT();
+    transform.x = (float)display->width * 0.5f;
+    transform.y = (float)display->height * 0.5f;
+    transform.origin_x = (float)grape_texture_width(s_font_demo_texture) * 0.5f;
+    transform.origin_y = (float)grape_texture_height(s_font_demo_texture) * 0.5f;
+    ret = grape_surface_set_transform(s_font_demo_surface, &transform);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = grape_present(grape);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ESP_LOGI(TAG,
+             "TTF demo: %s (%u bytes), units/em=%u, glyphs=%u",
+             font_path,
+             (unsigned)font_size,
+             (unsigned)grape_font_units_per_em(s_font_demo_font),
+             (unsigned)grape_font_glyph_count(s_font_demo_font));
+    ESP_LOGI(TAG,
+             "TTF glyph: id=%u contours=%d bbox=[%d,%d]-[%d,%d] raster=%ux%u scale=%.5f",
+             (unsigned)glyph_id,
+             (int)glyph_info.contour_count,
+             (int)glyph_info.x_min,
+             (int)glyph_info.y_min,
+             (int)glyph_info.x_max,
+             (int)glyph_info.y_max,
+             (unsigned)grape_texture_width(s_font_demo_texture),
+             (unsigned)grape_texture_height(s_font_demo_texture),
+             pixels_per_unit);
+
+    return ESP_OK;
+}
+#endif
+
 #if GRAPE_APP_RUN_VECTOR_DEMO
 extern const uint8_t grape_demo_svg_start[] asm("_binary_grape_demo_svg_start");
 
@@ -209,6 +530,9 @@ void app_main(void)
 {
     grape_context_t *grape = NULL;
     grape_config_t config = GRAPE_CONFIG_DEFAULT();
+#if GRAPE_APP_RUN_FONT_DEMO
+    config.background = (grape_color_t){ .r = 91, .g = 58, .b = 140, .a = 255 };
+#endif
 
     ESP_ERROR_CHECK(grape_init(&config, &grape));
 
@@ -219,6 +543,13 @@ void app_main(void)
 
     grape_deinit(grape);
     return;
+#endif
+
+#if GRAPE_APP_RUN_FONT_DEMO
+    ESP_ERROR_CHECK(run_font_demo(grape));
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 #endif
 
 #if GRAPE_APP_RUN_VECTOR_DEMO
