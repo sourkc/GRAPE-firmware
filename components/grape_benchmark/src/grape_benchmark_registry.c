@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-enum { GRAPE_BENCHMARK_FROZEN_SUITE_COUNT = 9 };
+enum { GRAPE_BENCHMARK_FROZEN_SUITE_COUNT = 14 };
 
 static const grape_benchmark_suite_t s_suites[] = {
     { "damage_mark", GRAPE_BENCHMARK_SUITE_DAMAGE_MARK, grape_benchmark_damage_mark_cases },
@@ -14,11 +14,16 @@ static const grape_benchmark_suite_t s_suites[] = {
     { "presentation", GRAPE_BENCHMARK_SUITE_PRESENTATION, grape_benchmark_presentation_cases },
     { "lifecycle", GRAPE_BENCHMARK_SUITE_LIFECYCLE, grape_benchmark_lifecycle_cases },
     { "scenes", GRAPE_BENCHMARK_SUITE_SCENES, grape_benchmark_scene_cases },
+    { "vector", GRAPE_BENCHMARK_SUITE_VECTOR, grape_benchmark_vector_cases },
+    { "svg", GRAPE_BENCHMARK_SUITE_SVG, grape_benchmark_svg_cases },
+    { "font", GRAPE_BENCHMARK_SUITE_FONT, grape_benchmark_font_cases },
+    { "glyph_cache", GRAPE_BENCHMARK_SUITE_GLYPH_CACHE, grape_benchmark_glyph_cache_cases },
+    { "text", GRAPE_BENCHMARK_SUITE_TEXT, grape_benchmark_text_cases },
 };
 
 _Static_assert(
     sizeof(s_suites) / sizeof(s_suites[0]) == GRAPE_BENCHMARK_FROZEN_SUITE_COUNT,
-    "benchmark coverage v1 must keep all registered suites"
+    "benchmark coverage v2 must keep all registered suites"
 );
 
 esp_err_t grape_benchmark_validate_registry(void)

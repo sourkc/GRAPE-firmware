@@ -2,6 +2,7 @@
 #include <stdlib.h>
 
 #include "grape_glyph_cache_internal.h"
+#include "grape/grape_telemetry.h"
 
 #define GRAPE_GLYPH_CACHE_ENTRY_INITIAL_CAPACITY 32U
 
@@ -388,8 +389,9 @@ static esp_err_t scale_from_entry(grape_glyph_cache_t *cache,
                                   float *out_origin_y)
 {
     switch (cache->config.scale_backend) {
-        case GRAPE_GLYPH_CACHE_SCALE_CPU:
+        case GRAPE_GLYPH_CACHE_SCALE_CPU: {
             cache->cpu_scales++;
+            GRAPE_TIME_SCOPE(GLYPH_CACHE_SCALE);
             return scale_cpu(
                 cache,
                 source,
@@ -398,6 +400,7 @@ static esp_err_t scale_from_entry(grape_glyph_cache_t *cache,
                 out_origin_x,
                 out_origin_y
             );
+        }
         case GRAPE_GLYPH_CACHE_SCALE_PPA:
             return ESP_ERR_NOT_SUPPORTED;
         default:

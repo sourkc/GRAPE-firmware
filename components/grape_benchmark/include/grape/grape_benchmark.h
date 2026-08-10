@@ -20,7 +20,12 @@ typedef enum {
     GRAPE_BENCHMARK_SUITE_PRESENTATION     = 1u << 6,
     GRAPE_BENCHMARK_SUITE_LIFECYCLE        = 1u << 7,
     GRAPE_BENCHMARK_SUITE_SCENES           = 1u << 8,
-    GRAPE_BENCHMARK_SUITE_ALL              = (1u << 9) - 1u,
+    GRAPE_BENCHMARK_SUITE_VECTOR           = 1u << 9,
+    GRAPE_BENCHMARK_SUITE_SVG              = 1u << 10,
+    GRAPE_BENCHMARK_SUITE_GLYPH_CACHE      = 1u << 11,
+    GRAPE_BENCHMARK_SUITE_TEXT             = 1u << 12,
+    GRAPE_BENCHMARK_SUITE_FONT             = 1u << 13,
+    GRAPE_BENCHMARK_SUITE_ALL              = (1u << 14) - 1u,
 } grape_benchmark_suite_mask_t;
 
 typedef struct {

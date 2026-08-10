@@ -12,4 +12,4 @@
 #define GRAPE_BENCHMARK_WRITE_SUMMARY_CSV            1
 #define GRAPE_BENCHMARK_WRITE_SAMPLES_CSV            1
 #define GRAPE_BENCHMARK_LOG_EACH_CASE                1
-#define GRAPE_BENCHMARK_BUILD_LABEL                  "coverage-v1"
+#define GRAPE_BENCHMARK_BUILD_LABEL                  "coverage-v2"

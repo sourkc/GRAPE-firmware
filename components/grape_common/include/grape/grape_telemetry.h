@@ -35,7 +35,12 @@ extern "C" {
     X(SHEAR_QUARTER_TURN,   2, "shear.quarter_turn",       "shear_quarter_turn") \
     X(SHEAR_COMPOSITE,      2, "shear.composite",          "shear_composite") \
     X(DISPLAY_SUBMIT,       2, "display.submit",           "display_submit") \
-    X(VECTOR_RASTERIZE,     2, "vector.rasterize",         "vector_rasterize")
+    X(VECTOR_RASTERIZE,     2, "vector.rasterize",         "vector_rasterize") \
+    X(SVG_PATH_PARSE,       2, "svg.path_parse",            "svg_path_parse") \
+    X(SVG_DOCUMENT_CREATE,  2, "svg.document_create",       "svg_document_create") \
+    X(GLYPH_CACHE_SCALE,    2, "text.glyph_cache_scale",    "glyph_cache_scale") \
+    X(TEXT_RASTERIZE,       2, "text.rasterize",            "text_rasterize") \
+    X(TEXT_COMPOSE,         2, "text.compose",              "text_compose")
 
 typedef enum {
 #define GRAPE_TELEMETRY_ENUM(name, level, label, csv) GRAPE_TELEMETRY_TIMER_##name,

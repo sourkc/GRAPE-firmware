@@ -6,6 +6,7 @@
 #include "expat.h"
 
 #include "grape/grape_svg.h"
+#include "grape/grape_telemetry.h"
 #include "grape/grape_surface.h"
 
 typedef struct {
@@ -254,6 +255,7 @@ static esp_err_t svg_execute_command(grape_path_t *path,
 
 esp_err_t grape_svg_parse_path_data(grape_path_t *path, const char *data)
 {
+    GRAPE_TIME_SCOPE(SVG_PATH_PARSE);
     if (!path || !data) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -631,6 +633,7 @@ esp_err_t grape_svg_document_create(grape_context_t *context,
                                     const grape_svg_document_config_t *config,
                                     grape_svg_document_t **out_document)
 {
+    GRAPE_TIME_SCOPE(SVG_DOCUMENT_CREATE);
     if (!context || !svg_text || !config || !out_document ||
         !isfinite(config->x) || !isfinite(config->y) ||
         !isfinite(config->width) || !isfinite(config->height) ||

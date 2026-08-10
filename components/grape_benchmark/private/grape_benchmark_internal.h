@@ -132,6 +132,7 @@ struct grape_benchmark_runtime {
     grape_benchmark_text_buffer_t samples_buffer;
     grape_benchmark_text_buffer_t metadata_buffer;
     esp_err_t report_error;
+    uint32_t stack_min_free_bytes;
 };
 
 typedef const grape_benchmark_case_t *(*grape_benchmark_case_provider_fn)(
@@ -174,5 +175,12 @@ const grape_benchmark_case_t *grape_benchmark_fragmentation_cases(size_t *out_co
 const grape_benchmark_case_t *grape_benchmark_presentation_cases(size_t *out_count);
 const grape_benchmark_case_t *grape_benchmark_lifecycle_cases(size_t *out_count);
 const grape_benchmark_case_t *grape_benchmark_scene_cases(size_t *out_count);
+const grape_benchmark_case_t *grape_benchmark_vector_cases(size_t *out_count);
+const grape_benchmark_case_t *grape_benchmark_svg_cases(size_t *out_count);
+const grape_benchmark_case_t *grape_benchmark_font_cases(size_t *out_count);
+const grape_benchmark_case_t *grape_benchmark_glyph_cache_cases(size_t *out_count);
+const grape_benchmark_case_t *grape_benchmark_text_cases(size_t *out_count);
+
+esp_err_t grape_benchmark_fixture_font_load(grape_font_t **out_font);
 esp_err_t grape_benchmark_validate_registry(void);
 const grape_benchmark_suite_t *grape_benchmark_suites(size_t *out_count);

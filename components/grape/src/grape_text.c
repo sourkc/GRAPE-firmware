@@ -2,6 +2,7 @@
 
 #include "grape_glyph_cache_internal.h"
 #include "grape/grape_text.h"
+#include "grape/grape_telemetry.h"
 
 static void bounds_include(grape_path_bounds_t *bounds,
                            bool *has_bounds,
@@ -328,6 +329,7 @@ esp_err_t grape_text_rasterize_codepoints_a8(
     const grape_path_rasterize_config_t *config,
     grape_text_raster_t *out_raster)
 {
+    GRAPE_TIME_SCOPE(TEXT_RASTERIZE);
     if (!cache || !font || (!codepoints && codepoint_count != 0U) ||
         !config || !out_raster || !isfinite(config->pixels_per_unit) ||
         config->pixels_per_unit <= 0.0f || config->samples_per_axis == 0U ||
@@ -419,7 +421,9 @@ esp_err_t grape_text_rasterize_codepoints_a8(
                 config->pixels_per_unit;
             float top =
                 (glyph.path_origin_y - origin_y) * config->pixels_per_unit;
-            blit_a8_translated(texture, glyph.texture, left, top);
+            GRAPE_TIME_BLOCK(TEXT_COMPOSE) {
+                blit_a8_translated(texture, glyph.texture, left, top);
+            }
             grape_glyph_cache_release(cache, &glyph);
         }
 

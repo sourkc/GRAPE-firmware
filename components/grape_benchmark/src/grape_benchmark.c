@@ -15,6 +15,49 @@
 
 static const char *TAG = "grape_bench";
 
+#define GRAPE_BENCHMARK_STACK_WARNING_BYTES 512U
+
+static uint32_t benchmark_stack_free_bytes(void)
+{
+    uint64_t free_bytes = (uint64_t)uxTaskGetStackHighWaterMark(NULL) *
+                          sizeof(StackType_t);
+    return free_bytes > UINT32_MAX ? UINT32_MAX : (uint32_t)free_bytes;
+}
+
+static void benchmark_note_stack_headroom(
+    grape_benchmark_runtime_t *runtime,
+    const grape_benchmark_case_t *bench_case,
+    const char *phase
+)
+{
+    if (!runtime) {
+        return;
+    }
+
+    uint32_t free_bytes = benchmark_stack_free_bytes();
+    if (free_bytes >= runtime->stack_min_free_bytes) {
+        return;
+    }
+
+    runtime->stack_min_free_bytes = free_bytes;
+    if (bench_case) {
+        ESP_LOGI(TAG,
+                 "Stack minimum free=%" PRIu32 " bytes after %s/%s (%s)",
+                 free_bytes,
+                 bench_case->group,
+                 bench_case->name,
+                 phase ? phase : "case");
+    } else {
+        ESP_LOGI(TAG, "Stack minimum free=%" PRIu32 " bytes", free_bytes);
+    }
+
+    if (free_bytes < GRAPE_BENCHMARK_STACK_WARNING_BYTES) {
+        ESP_LOGW(TAG,
+                 "Benchmark stack headroom is low: %" PRIu32 " bytes",
+                 free_bytes);
+    }
+}
+
 typedef struct {
     bool telemetry_auto_report;
     bool debug_layers[GRAPE_DEBUG_LAYER_COUNT];
@@ -474,9 +517,13 @@ static esp_err_t run_case(
 )
 {
     void *state = NULL;
+    grape_benchmark_sample_t *samples = NULL;
+    grape_benchmark_result_t *result = NULL;
+
     esp_err_t ret = bench_case->setup
         ? bench_case->setup(runtime, bench_case, &state)
         : ESP_OK;
+    benchmark_note_stack_headroom(runtime, bench_case, "setup");
 
     if (ret == ESP_ERR_NOT_SUPPORTED) {
         grape_benchmark_report_skip(runtime, bench_case, ret);
@@ -496,6 +543,7 @@ static esp_err_t run_case(
     }
 
     ret = run_warmup(runtime, bench_case, state, warmup_iterations);
+    benchmark_note_stack_headroom(runtime, bench_case, "warmup");
     if (ret != ESP_OK) {
         if (ret == ESP_ERR_NOT_SUPPORTED) {
             grape_benchmark_report_skip(runtime, bench_case, ret);
@@ -507,31 +555,34 @@ static esp_err_t run_case(
         goto cleanup;
     }
 
-    grape_benchmark_sample_t *samples = calloc(
-        measured_iterations,
-        sizeof(*samples)
-    );
+    samples = calloc(measured_iterations, sizeof(*samples));
     if (!samples) {
         ret = ESP_ERR_NO_MEM;
         goto cleanup;
     }
 
-    grape_benchmark_result_t result;
+    result = calloc(1, sizeof(*result));
+    if (!result) {
+        ret = ESP_ERR_NO_MEM;
+        goto cleanup;
+    }
+
     ret = run_measured(
         runtime,
         bench_case,
         state,
         warmup_iterations,
         measured_iterations,
-        &result,
+        result,
         samples
     );
+    benchmark_note_stack_headroom(runtime, bench_case, "measurement");
 
     if (ret == ESP_ERR_NOT_SUPPORTED) {
         grape_benchmark_report_skip(runtime, bench_case, ret);
         ret = ESP_OK;
     } else if (ret == ESP_OK) {
-        grape_benchmark_report_case(runtime, bench_case, &result, samples);
+        grape_benchmark_report_case(runtime, bench_case, result, samples);
     } else {
         ESP_LOGE(TAG, "Measurement failed for %s/%s: %s",
                  bench_case->group, bench_case->name, esp_err_to_name(ret));
@@ -541,9 +592,10 @@ static esp_err_t run_case(
         ret = runtime->report_error;
     }
 
+cleanup:
+    free(result);
     free(samples);
 
-cleanup:
     if (ret == ESP_OK && runtime->report_error != ESP_OK) {
         ret = runtime->report_error;
     }
@@ -551,6 +603,7 @@ cleanup:
     if (bench_case->teardown) {
         bench_case->teardown(runtime, bench_case, state);
     }
+    benchmark_note_stack_headroom(runtime, bench_case, "teardown");
 
     if (ret == ESP_OK) {
         esp_err_t reset_ret = reset_between_cases(runtime);
@@ -577,6 +630,7 @@ esp_err_t grape_benchmark_run(
     grape_benchmark_runtime_t runtime = {
         .grape = grape,
         .config = GRAPE_BENCHMARK_CONFIG_DEFAULT(),
+        .stack_min_free_bytes = UINT32_MAX,
     };
     if (config) {
         runtime.config = *config;
@@ -626,6 +680,7 @@ esp_err_t grape_benchmark_run(
              (unsigned)selected_case_count,
              runtime.config.seed,
              runtime.config.fixed_dt_us);
+    benchmark_note_stack_headroom(&runtime, NULL, NULL);
 
 #if GRAPE_TELEMETRY_LEVEL < 2
     ESP_LOGW(TAG,
@@ -660,6 +715,10 @@ esp_err_t grape_benchmark_run(
             }
         }
     }
+
+    ESP_LOGI(TAG,
+             "Benchmark minimum main-task stack headroom: %" PRIu32 " bytes",
+             runtime.stack_min_free_bytes);
 
     restore_environment(&runtime, &environment);
     ret = grape_benchmark_report_save_wait(&runtime);
