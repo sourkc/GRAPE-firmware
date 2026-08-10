@@ -14,17 +14,26 @@
 extern "C" {
 #endif
 
+/**
+ * Algorithm backend type used for rotating textures
+ */
 typedef enum {
-    GRAPE_ROTATION_BACKEND_AUTO = 0,
-    GRAPE_ROTATION_BACKEND_AFFINE,
-    GRAPE_ROTATION_BACKEND_THREE_SHEAR,
+    GRAPE_ROTATION_BACKEND_AUTO = 0,        ///< Automatically selects a rotation backend.
+    GRAPE_ROTATION_BACKEND_AFFINE,          ///< Rotates by inverse-mapping destination pixels through an affine transform. (See /docs/MATH.md#affine-rotation)
+    GRAPE_ROTATION_BACKEND_THREE_SHEAR,     ///< Rotates using three sequential shear transforms. (See /docs/MATH.md#three-shear-rotation)
 } grape_rotation_backend_t;
 
+/**
+ * Config structure for GRAPE instances
+ */
 typedef struct {
-    const char *display_driver;
-    grape_color_t background;
+    const char *display_driver;     ///< Display driver ID
+    grape_color_t background;       ///< Background color
 } grape_config_t;
 
+/**
+ * Default GRAPE configuration
+ */
 #define GRAPE_CONFIG_DEFAULT()                          \
     {                                                   \
         .display_driver = NULL,                         \

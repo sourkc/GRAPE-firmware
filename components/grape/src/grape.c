@@ -7,6 +7,12 @@
 
 static const char *TAG = "grape";
 
+/**
+ * Determines the amount of bytes per pixel from the pixel format
+ *
+ * @param format Format of the pixel
+ * @return Size in bytes
+ */
 size_t grape_bytes_per_pixel(grape_pixel_format_t format)
 {
     switch (format) {
@@ -21,6 +27,13 @@ size_t grape_bytes_per_pixel(grape_pixel_format_t format)
     }
 }
 
+/**
+ * Initializes a GRAPE instance
+ *
+ * @param config GRAPE config structure
+ * @param out_context Receives the current context of the current GRAPE instance, that is being initialized
+ * @return ESP_OK on success or an error code on failure
+ */
 esp_err_t grape_init(const grape_config_t *config, grape_context_t **out_context)
 {
     if (!out_context) {
@@ -49,6 +62,7 @@ esp_err_t grape_init(const grape_config_t *config, grape_context_t **out_context
         return ret;
     }
 
+    // Get display info. If no info is returned ot the color format is not supported, deinitialize and throw an error.
     const grape_display_info_t *info = grape_display_get_info(context->display);
     if (!info || (info->format != GRAPE_PIXEL_FORMAT_RGB565 && info->format != GRAPE_PIXEL_FORMAT_RGB888)) {
         grape_display_close(context->display);
@@ -57,8 +71,8 @@ esp_err_t grape_init(const grape_config_t *config, grape_context_t **out_context
     }
 
     context->display_info = *info;
-    context->background = resolved.background;
-    context->rotation_backend = GRAPE_ROTATION_BACKEND_AUTO;
+    context->background = resolved.background; // Background color
+    context->rotation_backend = GRAPE_ROTATION_BACKEND_AUTO; // Backend used for rotation, see ../../include/grape/grape.h for available backends
     grape_feature_init(context);
 
     size_t bpp = grape_bytes_per_pixel(info->format);
@@ -75,6 +89,7 @@ esp_err_t grape_init(const grape_config_t *config, grape_context_t **out_context
         return ESP_ERR_INVALID_SIZE;
     }
 
+    // Initialize the damage subsystem
     ret = grape_damage_init(context);
     if (ret != ESP_OK) {
         grape_display_close(context->display);
@@ -92,10 +107,15 @@ esp_err_t grape_init(const grape_config_t *config, grape_context_t **out_context
     grape_ppa_init(context);
 
     grape_damage_all(context);
-    *out_context = context;
+    *out_context = context; // Set the context to the generated context
     return ESP_OK;
 }
 
+/**
+ * Deinitialize the GRAPE instance
+ *
+ * @param context Input context
+ */
 void grape_deinit(grape_context_t *context)
 {
     if (!context) {
@@ -118,17 +138,23 @@ void grape_deinit(grape_context_t *context)
     free(context);
 }
 
+/**
+ *
+ * @param context GRAPE context
+ * @return ESP_OK on success or an error code on error
+ */
 esp_err_t grape_present(grape_context_t *context)
 {
     if (!context) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    grape_telemetry_report_if_due();
+    grape_telemetry_report_if_due(); // Do a telemetry and timings report if enabled. May affect performance!
     GRAPE_TIME_SCOPE(PRESENT);
 
     esp_err_t ret = ESP_OK;
 
+    // Shows debug damage area rects if enabled. May affect performance!
     if (grape_debug_is_layer_enabled(context, GRAPE_DEBUG_LAYER_DAMAGE_RECTS)) {
         ret = grape_damage_build_logical_rects(context);
         if (ret != ESP_OK) {
@@ -175,8 +201,9 @@ esp_err_t grape_present(grape_context_t *context)
             render_damage,
             render_damage_count,
             &target
-        );
+        ); // Begin frame write on the display driver side
         if (ret != ESP_OK) {
+            // If frame write failed, we do a full frame re-draw
             context->display_backbuffer_needs_full_redraw = true;
             grape_debug_reset_frame(context);
             return ret;
@@ -194,11 +221,12 @@ esp_err_t grape_present(grape_context_t *context)
             }
         }
 
+        // Register time for timing reports. May affect performance!
         uint64_t refresh_wait_before = grape_telemetry_timer_cumulative_us(
             GRAPE_TELEMETRY_TIMER_DISPLAY_REFRESH_WAIT
         );
 
-        ret = grape_display_present(context->display);
+        ret = grape_display_present(context->display); // Push the framebuffer onto the display
         context->render_target = (grape_display_render_target_t){0};
 
         uint64_t refresh_wait_after = grape_telemetry_timer_cumulative_us(
@@ -225,6 +253,14 @@ esp_err_t grape_present(grape_context_t *context)
     return ESP_OK;
 }
 
+/**
+ * Adds a rectangular area to dirty regions to force redraw
+ * of said region next frame
+ *
+ * @param context GRAPE context
+ * @param rect Rectangle to incalidate
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_invalidate(grape_context_t *context, grape_rect_t rect)
 {
     if (!context) {
@@ -233,6 +269,13 @@ esp_err_t grape_invalidate(grape_context_t *context, grape_rect_t rect)
     return grape_damage_add(context, rect);
 }
 
+/**
+ * Adds the whole screen to dirty regions to force redraw
+ * on next frame
+ *
+ * @param context GRAPE context
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_invalidate_all(grape_context_t *context)
 {
     if (!context) {
@@ -242,6 +285,13 @@ esp_err_t grape_invalidate_all(grape_context_t *context)
     return ESP_OK;
 }
 
+/**
+ * Sets the background color of the screen
+ *
+ * @param context GRAPE context
+ * @param color Background color
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_set_background(grape_context_t *context, grape_color_t color)
 {
     if (!context) {
@@ -252,6 +302,14 @@ esp_err_t grape_set_background(grape_context_t *context, grape_color_t color)
     return ESP_OK;
 }
 
+/**
+ * Sets the rotation backend. Types of backends:
+ *  GRAPE_ROTATION_BACKEND_AUTO (default): Automatically decide the rotation backend
+ *
+ * @param context GRAPE context
+ * @param backend Rotation backend
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_set_rotation_backend(grape_context_t *context, grape_rotation_backend_t backend)
 {
     if (!context ||
@@ -276,11 +334,23 @@ esp_err_t grape_set_rotation_backend(grape_context_t *context, grape_rotation_ba
     return ESP_OK;
 }
 
+/**
+ * Returns the current rotation backend
+ *
+ * @param context GRAPE context
+ * @return Current rotation backend
+ */
 grape_rotation_backend_t grape_get_rotation_backend(const grape_context_t *context)
 {
     return context ? context->rotation_backend : GRAPE_ROTATION_BACKEND_AUTO;
 }
 
+/**
+ * Returns information on the current display
+ *
+ * @param context GRAPE context
+ * @return Current display information
+ */
 const grape_display_info_t *grape_get_display_info(const grape_context_t *context)
 {
     return context ? &context->display_info : NULL;
