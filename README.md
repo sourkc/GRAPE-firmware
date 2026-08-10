@@ -81,14 +81,19 @@ antialiasing. The resulting mask is an ordinary A8 texture and uses the normal
 GRAPE surface/compositor pipeline.
 
 `grape_svg_parse_path_data()` parses SVG path-data strings (`M/L/H/V/Q/T/C/S/A/Z`,
-absolute and relative) directly into a `grape_path_t`. Full SVG/XML scene parsing,
-strokes, and font loading are not implemented yet.
+absolute and relative) directly into a `grape_path_t`. `grape_svg_document_create()`
+uses Expat to stream a minimal SVG document, preserves `<path>` painter order,
+parses the root `viewBox`, and renders solid path fills into ordinary GRAPE
+surfaces. The first document subset supports `#RGB`, `#RGBA`, `#RRGGBB`,
+`#RRGGBBAA`, black/white, empty/default black, and `fill="none"`. Group style
+inheritance, transforms, strokes, gradients, clipping/masks, and fonts are not
+implemented yet.
 
 ## Planned stuff
 - JPEG images (hardware)
 - Vector graphics
   - Font rendering
-  - Eventually maybe SVG rendering
+  - Expand SVG feature coverage
 - GFXLINK
   - USB
   - SPI

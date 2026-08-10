@@ -1,0 +1,2 @@
+dependencies:
+  espressif/expat: "^2.8.2"

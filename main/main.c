@@ -155,82 +155,53 @@ static float noise_to_unit(float value)
 }
 
 #if GRAPE_APP_RUN_VECTOR_DEMO
+extern const uint8_t grape_demo_svg_start[] asm("_binary_grape_demo_svg_start");
+
+static grape_svg_document_t *s_vector_demo_document;
+
 static esp_err_t run_vector_demo(grape_context_t *grape)
 {
-    grape_path_t *path = NULL;
-    grape_path_raster_t raster = {0};
-    grape_surface_t *surface = NULL;
-    esp_err_t ret = grape_path_create(&path);
+    const grape_display_info_t *display = grape_get_display_info(grape);
+    if (!display) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const float margin = 32.0f;
+    grape_svg_document_config_t svg_config = GRAPE_SVG_DOCUMENT_CONFIG_DEFAULT();
+    svg_config.x = margin;
+    svg_config.y = margin;
+    svg_config.width = fmaxf((float)display->width - margin * 2.0f, 1.0f);
+    svg_config.height = fmaxf((float)display->height - margin * 2.0f, 1.0f);
+    svg_config.samples_per_axis = 2;
+    svg_config.padding_pixels = 2;
+
+    esp_err_t ret = grape_svg_document_create(
+        grape,
+        (const char *)grape_demo_svg_start,
+        &svg_config,
+        &s_vector_demo_document
+    );
     if (ret != ESP_OK) {
         return ret;
     }
 
-#define PATH_CHECK(expr)         \
-    do {                         \
-        ret = (expr);            \
-        if (ret != ESP_OK) {     \
-            goto cleanup;        \
-        }                        \
-    } while (0)
+    ret = grape_present(grape);
+    if (ret != ESP_OK) {
+        grape_svg_document_destroy(s_vector_demo_document);
+        s_vector_demo_document = NULL;
+        return ret;
+    }
 
-    static const char *donut_path_data =
-        "M150 18 "
-        "A132 132 0 0 1 150 282 "
-        "A132 132 0 0 1 150 18 Z "
-        "M150 78 "
-        "A72 72 0 0 0 150 222 "
-        "A72 72 0 0 0 150 78 Z";
-    PATH_CHECK(grape_svg_parse_path_data(path, donut_path_data));
-
-    grape_path_rasterize_config_t raster_config =
-        GRAPE_PATH_RASTERIZE_CONFIG_DEFAULT();
-    raster_config.padding_pixels = 2;
-
-    PATH_CHECK(grape_path_rasterize_a8(grape, path, &raster_config, &raster));
-    PATH_CHECK(grape_surface_create(grape, raster.texture, &surface));
-    PATH_CHECK(grape_surface_set_tint(surface, (grape_color_t){
-        .r = 206,
-        .g = 135,
-        .b = 255,
-        .a = 255,
-    }));
-
-    const grape_display_info_t *display = grape_get_display_info(grape);
-    float scale = 1.0f / raster.pixels_per_unit;
-    float rendered_width = (float)grape_texture_width(raster.texture) * scale;
-    float rendered_height = (float)grape_texture_height(raster.texture) * scale;
-    PATH_CHECK(grape_surface_set_position(
-        surface,
-        ((float)display->width - rendered_width) * 0.5f,
-        ((float)display->height - rendered_height) * 0.5f
-    ));
-    PATH_CHECK(grape_surface_set_scale(surface, scale, scale));
-    PATH_CHECK(grape_present(grape));
-
+    const grape_svg_view_box_t *view_box =
+        grape_svg_document_view_box(s_vector_demo_document);
     ESP_LOGI(TAG,
-             "vector demo: %" PRIu32 "x%" PRIu32
-             " A8, %ux%u samples/pixel, path origin=(%.1f, %.1f)",
-             grape_texture_width(raster.texture),
-             grape_texture_height(raster.texture),
-             raster_config.samples_per_axis,
-             raster_config.samples_per_axis,
-             raster.path_origin_x,
-             raster.path_origin_y);
-
-    grape_path_destroy(path);
-#undef PATH_CHECK
+             "SVG demo: %u layers, viewBox %.1f %.1f %.1f %.1f",
+             (unsigned)grape_svg_document_layer_count(s_vector_demo_document),
+             view_box ? view_box->min_x : 0.0f,
+             view_box ? view_box->min_y : 0.0f,
+             view_box ? view_box->width : 0.0f,
+             view_box ? view_box->height : 0.0f);
     return ESP_OK;
-
-cleanup:
-    if (surface) {
-        grape_surface_destroy(surface);
-    }
-    if (raster.texture) {
-        grape_texture_destroy(raster.texture);
-    }
-    grape_path_destroy(path);
-#undef PATH_CHECK
-    return ret;
 }
 #endif
 
