@@ -273,71 +273,47 @@ static esp_err_t load_font_file(const char *path, void **out_data, size_t *out_s
     return ESP_OK;
 }
 
-static bool glyph_is_demo_candidate(const grape_font_glyph_info_t *info,
-                                    uint16_t units_per_em,
-                                    bool prefer_large)
+typedef struct {
+    uint32_t codepoint;
+    uint16_t glyph_id;
+    grape_font_glyph_info_t info;
+} font_demo_glyph_t;
+
+static esp_err_t choose_demo_glyph(const grape_font_t *font,
+                                   font_demo_glyph_t *out_glyph)
 {
-    if (!info || info->kind != GRAPE_FONT_GLYPH_SIMPLE || info->contour_count <= 0) {
-        return false;
-    }
-
-    int32_t width = (int32_t)info->x_max - info->x_min;
-    int32_t height = (int32_t)info->y_max - info->y_min;
-    if (width <= 0 || height <= 0) {
-        return false;
-    }
-
-    if (!prefer_large) {
-        return true;
-    }
-
-    return width >= (int32_t)units_per_em / 4 &&
-           height >= (int32_t)units_per_em / 3;
-}
-
-static esp_err_t choose_random_simple_glyph(const grape_font_t *font,
-                                            uint16_t *out_glyph_id,
-                                            grape_font_glyph_info_t *out_info)
-{
-    if (!font || !out_glyph_id || !out_info) {
+    if (!font || !out_glyph) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    uint16_t glyph_count = grape_font_glyph_count(font);
-    uint16_t units_per_em = grape_font_units_per_em(font);
+    static const uint32_t codepoints[] = {
+        'A', 'B', 'C', 'a', 'b', '0', '1', '?', '@',
+    };
 
-    for (uint32_t pass = 0; pass < 2U; ++pass) {
-        bool prefer_large = pass == 0U;
-        uint32_t candidates = 0;
-        uint16_t chosen_id = 0;
-        grape_font_glyph_info_t chosen_info = {0};
-
-        for (uint32_t glyph_id = 0; glyph_id < glyph_count; ++glyph_id) {
-            grape_font_glyph_info_t info = {0};
-            esp_err_t ret = grape_font_get_glyph_info(
-                font,
-                (uint16_t)glyph_id,
-                &info
-            );
-            if (ret != ESP_OK) {
-                return ret;
-            }
-            if (!glyph_is_demo_candidate(&info, units_per_em, prefer_large)) {
-                continue;
-            }
-
-            candidates++;
-            if (candidates == 1U || esp_random() % candidates == 0U) {
-                chosen_id = (uint16_t)glyph_id;
-                chosen_info = info;
-            }
+    for (size_t i = 0; i < sizeof(codepoints) / sizeof(codepoints[0]); ++i) {
+        uint16_t glyph_id = 0;
+        esp_err_t ret = grape_font_get_glyph_id(font, codepoints[i], &glyph_id);
+        if (ret == ESP_ERR_NOT_FOUND) {
+            continue;
+        }
+        if (ret != ESP_OK) {
+            return ret;
         }
 
-        if (candidates > 0U) {
-            *out_glyph_id = chosen_id;
-            *out_info = chosen_info;
-            return ESP_OK;
+        grape_font_glyph_info_t info = {0};
+        ret = grape_font_get_glyph_info(font, glyph_id, &info);
+        if (ret != ESP_OK) {
+            return ret;
         }
+        if (info.kind != GRAPE_FONT_GLYPH_SIMPLE || info.contour_count <= 0 ||
+            info.x_max <= info.x_min || info.y_max <= info.y_min) {
+            continue;
+        }
+
+        out_glyph->codepoint = codepoints[i];
+        out_glyph->glyph_id = glyph_id;
+        out_glyph->info = info;
+        return ESP_OK;
     }
 
     return ESP_ERR_NOT_FOUND;
@@ -372,10 +348,10 @@ static esp_err_t run_font_demo(grape_context_t *grape)
         return ret;
     }
 
-    uint16_t glyph_id = 0;
-    grape_font_glyph_info_t glyph_info = {0};
-    ret = choose_random_simple_glyph(s_font_demo_font, &glyph_id, &glyph_info);
+    font_demo_glyph_t demo_glyph = {0};
+    ret = choose_demo_glyph(s_font_demo_font, &demo_glyph);
     if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "No supported simple demo character in selected font");
         return ret;
     }
 
@@ -383,7 +359,11 @@ static esp_err_t run_font_demo(grape_context_t *grape)
     if (ret != ESP_OK) {
         return ret;
     }
-    ret = grape_font_get_glyph_path(s_font_demo_font, glyph_id, s_font_demo_path);
+    ret = grape_font_get_glyph_path(
+        s_font_demo_font,
+        demo_glyph.glyph_id,
+        s_font_demo_path
+    );
     if (ret != ESP_OK) {
         return ret;
     }
@@ -454,19 +434,22 @@ static esp_err_t run_font_demo(grape_context_t *grape)
     }
 
     ESP_LOGI(TAG,
-             "TTF demo: %s (%u bytes), units/em=%u, glyphs=%u",
+             "TTF demo: %s (%u bytes), units/em=%u, glyphs=%u, cmap=format %u",
              font_path,
              (unsigned)font_size,
              (unsigned)grape_font_units_per_em(s_font_demo_font),
-             (unsigned)grape_font_glyph_count(s_font_demo_font));
+             (unsigned)grape_font_glyph_count(s_font_demo_font),
+             (unsigned)grape_font_cmap_format(s_font_demo_font));
     ESP_LOGI(TAG,
-             "TTF glyph: id=%u contours=%d bbox=[%d,%d]-[%d,%d] raster=%ux%u scale=%.5f",
-             (unsigned)glyph_id,
-             (int)glyph_info.contour_count,
-             (int)glyph_info.x_min,
-             (int)glyph_info.y_min,
-             (int)glyph_info.x_max,
-             (int)glyph_info.y_max,
+             "TTF character: U+%04" PRIX32 " '%c' -> glyph=%u contours=%d bbox=[%d,%d]-[%d,%d] raster=%ux%u scale=%.5f",
+             demo_glyph.codepoint,
+             (char)demo_glyph.codepoint,
+             (unsigned)demo_glyph.glyph_id,
+             (int)demo_glyph.info.contour_count,
+             (int)demo_glyph.info.x_min,
+             (int)demo_glyph.info.y_min,
+             (int)demo_glyph.info.x_max,
+             (int)demo_glyph.info.y_max,
              (unsigned)grape_texture_width(s_font_demo_texture),
              (unsigned)grape_texture_height(s_font_demo_texture),
              pixels_per_unit);

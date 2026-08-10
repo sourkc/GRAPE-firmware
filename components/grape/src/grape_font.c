@@ -22,9 +22,12 @@ struct grape_font {
     grape_font_table_t maxp;
     grape_font_table_t loca;
     grape_font_table_t glyf;
+    grape_font_table_t cmap;
+    grape_font_table_t cmap_subtable;
     uint16_t units_per_em;
     uint16_t glyph_count;
     int16_t loca_format;
+    uint16_t cmap_format;
 };
 
 #define TTF_TAG(a, b, c, d) \
@@ -131,6 +134,9 @@ static esp_err_t find_tables(grape_font_t *font)
             case TTF_TAG('g', 'l', 'y', 'f'):
                 font->glyf = table;
                 break;
+            case TTF_TAG('c', 'm', 'a', 'p'):
+                font->cmap = table;
+                break;
             default:
                 break;
         }
@@ -171,6 +177,341 @@ static esp_err_t parse_metadata(grape_font_t *font)
         return ESP_ERR_INVALID_SIZE;
     }
 
+    return ESP_OK;
+}
+
+static int cmap_candidate_rank(uint16_t platform_id,
+                               uint16_t encoding_id,
+                               uint16_t format)
+{
+    int platform_rank = 0;
+    if (platform_id == 0U) {
+        platform_rank = 1;
+    } else if (platform_id == 3U &&
+               ((format == 4U && encoding_id == 1U) ||
+                (format == 12U && encoding_id == 10U))) {
+        platform_rank = 2;
+    } else {
+        return 0;
+    }
+
+    if (format == 12U) {
+        return 100 + platform_rank;
+    }
+    if (format == 4U) {
+        return 50 + platform_rank;
+    }
+    return 0;
+}
+
+static esp_err_t validate_cmap_format4(const grape_font_t *font,
+                                       grape_font_table_t subtable)
+{
+    if (subtable.length < 16U) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    uint16_t seg_count_x2 = 0;
+    if (!read_u16(font->data, font->size, (size_t)subtable.offset + 6U,
+                  &seg_count_x2) ||
+        seg_count_x2 == 0U || (seg_count_x2 & 1U) != 0U) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    size_t seg_count = (size_t)seg_count_x2 / 2U;
+    uint64_t required = 16ULL + (uint64_t)seg_count * 8ULL;
+    if (required > subtable.length) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    size_t end_codes = (size_t)subtable.offset + 14U;
+    size_t start_codes = end_codes + seg_count * 2U + 2U;
+    uint16_t previous_end = 0U;
+    for (size_t i = 0; i < seg_count; ++i) {
+        uint16_t start = 0;
+        uint16_t end = 0;
+        if (!read_u16(font->data, font->size, end_codes + i * 2U, &end) ||
+            !read_u16(font->data, font->size, start_codes + i * 2U, &start) ||
+            start > end || (i > 0U && start <= previous_end)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        previous_end = end;
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t validate_cmap_format12(const grape_font_t *font,
+                                        grape_font_table_t subtable)
+{
+    if (subtable.length < 16U) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    uint32_t group_count = 0;
+    if (!read_u32(font->data, font->size, (size_t)subtable.offset + 12U,
+                  &group_count)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    uint64_t required = 16ULL + (uint64_t)group_count * 12ULL;
+    if (required > subtable.length) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    uint32_t previous_end = 0;
+    for (uint32_t i = 0; i < group_count; ++i) {
+        size_t group = (size_t)subtable.offset + 16U + (size_t)i * 12U;
+        uint32_t start = 0;
+        uint32_t end = 0;
+        uint32_t start_glyph = 0;
+        if (!read_u32(font->data, font->size, group, &start) ||
+            !read_u32(font->data, font->size, group + 4U, &end) ||
+            !read_u32(font->data, font->size, group + 8U, &start_glyph) ||
+            start > end || end > 0x10ffffU ||
+            (i > 0U && start <= previous_end)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        uint64_t last_glyph = (uint64_t)start_glyph + (uint64_t)(end - start);
+        if (last_glyph >= font->glyph_count) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        previous_end = end;
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t select_cmap(grape_font_t *font)
+{
+    if (font->cmap.length == 0U) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (font->cmap.length < 4U) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    uint16_t version = 0;
+    uint16_t record_count = 0;
+    if (!read_u16(font->data, font->size, font->cmap.offset, &version) ||
+        !read_u16(font->data, font->size, (size_t)font->cmap.offset + 2U,
+                  &record_count) ||
+        version != 0U) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    uint64_t records_size = 4ULL + (uint64_t)record_count * 8ULL;
+    if (records_size > font->cmap.length) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    int best_rank = 0;
+    grape_font_table_t best = {0};
+    uint16_t best_format = 0;
+
+    for (uint16_t i = 0; i < record_count; ++i) {
+        size_t record = (size_t)font->cmap.offset + 4U + (size_t)i * 8U;
+        uint16_t platform_id = 0;
+        uint16_t encoding_id = 0;
+        uint32_t relative_offset = 0;
+        if (!read_u16(font->data, font->size, record, &platform_id) ||
+            !read_u16(font->data, font->size, record + 2U, &encoding_id) ||
+            !read_u32(font->data, font->size, record + 4U, &relative_offset)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        if (relative_offset > font->cmap.length - 2U) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        uint64_t absolute_offset = (uint64_t)font->cmap.offset + relative_offset;
+        if (absolute_offset > UINT32_MAX) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        size_t offset = (size_t)absolute_offset;
+        uint16_t format = 0;
+        if (!read_u16(font->data, font->size, offset, &format)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        int rank = cmap_candidate_rank(platform_id, encoding_id, format);
+        if (rank <= best_rank) {
+            continue;
+        }
+
+        uint32_t length = 0;
+        if (format == 4U) {
+            uint16_t short_length = 0;
+            if (!read_u16(font->data, font->size, offset + 2U, &short_length)) {
+                return ESP_ERR_INVALID_SIZE;
+            }
+            length = short_length;
+        } else if (format == 12U) {
+            if (!read_u32(font->data, font->size, offset + 4U, &length)) {
+                return ESP_ERR_INVALID_SIZE;
+            }
+        } else {
+            continue;
+        }
+
+        if (length == 0U || length > font->cmap.length ||
+            relative_offset > font->cmap.length - length) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        grape_font_table_t candidate = {
+            .offset = (uint32_t)offset,
+            .length = length,
+        };
+        esp_err_t ret = format == 4U
+            ? validate_cmap_format4(font, candidate)
+            : validate_cmap_format12(font, candidate);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+
+        best = candidate;
+        best_format = format;
+        best_rank = rank;
+    }
+
+    if (best_rank == 0) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    font->cmap_subtable = best;
+    font->cmap_format = best_format;
+    return ESP_OK;
+}
+
+static esp_err_t lookup_cmap_format12(const grape_font_t *font,
+                                      uint32_t codepoint,
+                                      uint16_t *out_glyph_id)
+{
+    uint32_t group_count = 0;
+    if (!read_u32(font->data, font->size,
+                  (size_t)font->cmap_subtable.offset + 12U, &group_count)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    uint32_t left = 0;
+    uint32_t right = group_count;
+    while (left < right) {
+        uint32_t mid = left + (right - left) / 2U;
+        size_t group = (size_t)font->cmap_subtable.offset +
+                       16U + (size_t)mid * 12U;
+        uint32_t start = 0;
+        uint32_t end = 0;
+        uint32_t start_glyph = 0;
+        if (!read_u32(font->data, font->size, group, &start) ||
+            !read_u32(font->data, font->size, group + 4U, &end) ||
+            !read_u32(font->data, font->size, group + 8U, &start_glyph)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        if (codepoint < start) {
+            right = mid;
+        } else if (codepoint > end) {
+            left = mid + 1U;
+        } else {
+            uint32_t glyph_id = start_glyph + (codepoint - start);
+            if (glyph_id == 0U) {
+                return ESP_ERR_NOT_FOUND;
+            }
+            if (glyph_id >= font->glyph_count || glyph_id > UINT16_MAX) {
+                return ESP_ERR_INVALID_SIZE;
+            }
+            *out_glyph_id = (uint16_t)glyph_id;
+            return ESP_OK;
+        }
+    }
+
+    return ESP_ERR_NOT_FOUND;
+}
+
+static esp_err_t lookup_cmap_format4(const grape_font_t *font,
+                                     uint32_t codepoint,
+                                     uint16_t *out_glyph_id)
+{
+    if (codepoint > UINT16_MAX) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    uint16_t seg_count_x2 = 0;
+    if (!read_u16(font->data, font->size,
+                  (size_t)font->cmap_subtable.offset + 6U, &seg_count_x2)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    size_t seg_count = (size_t)seg_count_x2 / 2U;
+    size_t end_codes = (size_t)font->cmap_subtable.offset + 14U;
+    size_t start_codes = end_codes + seg_count * 2U + 2U;
+    size_t deltas = start_codes + seg_count * 2U;
+    size_t range_offsets = deltas + seg_count * 2U;
+
+    size_t left = 0U;
+    size_t right = seg_count;
+    while (left < right) {
+        size_t mid = left + (right - left) / 2U;
+        uint16_t end = 0;
+        if (!read_u16(font->data, font->size, end_codes + mid * 2U, &end)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        if (codepoint > end) {
+            left = mid + 1U;
+        } else {
+            right = mid;
+        }
+    }
+
+    if (left >= seg_count) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    uint16_t start = 0;
+    uint16_t end = 0;
+    int16_t delta = 0;
+    uint16_t range_offset = 0;
+    if (!read_u16(font->data, font->size, start_codes + left * 2U, &start) ||
+        !read_u16(font->data, font->size, end_codes + left * 2U, &end) ||
+        !read_i16(font->data, font->size, deltas + left * 2U, &delta) ||
+        !read_u16(font->data, font->size, range_offsets + left * 2U,
+                  &range_offset)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (codepoint < start || codepoint > end) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    uint16_t glyph_id;
+    if (range_offset == 0U) {
+        glyph_id = (uint16_t)((int32_t)(uint16_t)codepoint + delta);
+    } else {
+        size_t range_word = range_offsets + left * 2U;
+        size_t character_delta = (size_t)((uint16_t)codepoint - start) * 2U;
+        if ((size_t)range_offset > SIZE_MAX - range_word ||
+            character_delta > SIZE_MAX - range_word - (size_t)range_offset) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        size_t glyph_offset_value = range_word + (size_t)range_offset +
+                                    character_delta;
+        size_t subtable_end = (size_t)font->cmap_subtable.offset +
+                              font->cmap_subtable.length;
+        if (!range_valid(subtable_end, glyph_offset_value, 2U) ||
+            !read_u16(font->data, font->size, glyph_offset_value, &glyph_id)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        if (glyph_id != 0U) {
+            glyph_id = (uint16_t)((int32_t)glyph_id + delta);
+        }
+    }
+
+    if (glyph_id == 0U) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (glyph_id >= font->glyph_count) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    *out_glyph_id = glyph_id;
     return ESP_OK;
 }
 
@@ -496,6 +837,12 @@ esp_err_t grape_font_load_memory(const void *data, size_t size, grape_font_t **o
     if (ret == ESP_OK) {
         ret = parse_metadata(font);
     }
+    if (ret == ESP_OK) {
+        esp_err_t cmap_ret = select_cmap(font);
+        if (cmap_ret != ESP_OK && cmap_ret != ESP_ERR_NOT_FOUND) {
+            ret = cmap_ret;
+        }
+    }
     if (ret != ESP_OK) {
         free(font);
         return ret;
@@ -523,6 +870,32 @@ uint16_t grape_font_units_per_em(const grape_font_t *font)
 uint16_t grape_font_glyph_count(const grape_font_t *font)
 {
     return font ? font->glyph_count : 0U;
+}
+
+uint16_t grape_font_cmap_format(const grape_font_t *font)
+{
+    return font ? font->cmap_format : 0U;
+}
+
+esp_err_t grape_font_get_glyph_id(const grape_font_t *font,
+                                  uint32_t codepoint,
+                                  uint16_t *out_glyph_id)
+{
+    if (!font || !out_glyph_id || codepoint > 0x10ffffU ||
+        (codepoint >= 0xd800U && codepoint <= 0xdfffU)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (font->cmap_format == 0U) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (font->cmap_format == 12U) {
+        return lookup_cmap_format12(font, codepoint, out_glyph_id);
+    }
+    if (font->cmap_format == 4U) {
+        return lookup_cmap_format4(font, codepoint, out_glyph_id);
+    }
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 esp_err_t grape_font_get_glyph_info(const grape_font_t *font,

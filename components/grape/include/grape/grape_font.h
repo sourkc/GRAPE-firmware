@@ -27,6 +27,10 @@ esp_err_t grape_font_load_memory(const void *data, size_t size, grape_font_t **o
 esp_err_t grape_font_destroy(grape_font_t *font);
 uint16_t grape_font_units_per_em(const grape_font_t *font);
 uint16_t grape_font_glyph_count(const grape_font_t *font);
+uint16_t grape_font_cmap_format(const grape_font_t *font);
+esp_err_t grape_font_get_glyph_id(const grape_font_t *font,
+                                  uint32_t codepoint,
+                                  uint16_t *out_glyph_id);
 esp_err_t grape_font_get_glyph_info(const grape_font_t *font,
                                     uint16_t glyph_id,
                                     grape_font_glyph_info_t *out_info);
