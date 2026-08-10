@@ -205,41 +205,11 @@ static inline void blend_coverage(uint8_t *dst, uint8_t src)
         ((uint32_t)(*dst) * (255U - src) + 127U) / 255U);
 }
 
-static uint8_t sample_a8_bilinear(const grape_texture_t *texture,
-                                  float x,
-                                  float y)
+static inline uint8_t lerp_u8(uint8_t a, uint8_t b, uint32_t weight_b)
 {
-    int32_t x0 = (int32_t)floorf(x);
-    int32_t y0 = (int32_t)floorf(y);
-    float fx = x - (float)x0;
-    float fy = y - (float)y0;
-
-    const uint8_t *pixels = grape_texture_pixels_const(texture);
-    size_t stride = grape_texture_stride(texture);
-    int32_t width = (int32_t)grape_texture_width(texture);
-    int32_t height = (int32_t)grape_texture_height(texture);
-
-    float samples[4] = {0};
-    const int32_t xs[2] = {x0, x0 + 1};
-    const int32_t ys[2] = {y0, y0 + 1};
-    for (uint32_t iy = 0; iy < 2U; ++iy) {
-        if (ys[iy] < 0 || ys[iy] >= height) {
-            continue;
-        }
-        const uint8_t *row = pixels + (size_t)ys[iy] * stride;
-        for (uint32_t ix = 0; ix < 2U; ++ix) {
-            if (xs[ix] >= 0 && xs[ix] < width) {
-                samples[iy * 2U + ix] = row[xs[ix]];
-            }
-        }
-    }
-
-    float top = samples[0] + (samples[1] - samples[0]) * fx;
-    float bottom = samples[2] + (samples[3] - samples[2]) * fx;
-    float value = top + (bottom - top) * fy;
-    if (value <= 0.0f) return 0U;
-    if (value >= 255.0f) return 255U;
-    return (uint8_t)(value + 0.5f);
+    uint32_t weight_a = 65536U - weight_b;
+    return (uint8_t)(((uint32_t)a * weight_a +
+                      (uint32_t)b * weight_b + 32768U) >> 16);
 }
 
 static void blit_a8_integer(grape_texture_t *destination,
@@ -276,6 +246,129 @@ static void blit_a8_integer(grape_texture_t *destination,
     }
 }
 
+static void blit_a8_fractional_x(grape_texture_t *destination,
+                                 const grape_texture_t *source,
+                                 int32_t left,
+                                 int32_t top,
+                                 uint32_t right_weight)
+{
+    uint8_t *dst = grape_texture_pixels(destination);
+    const uint8_t *src = grape_texture_pixels_const(source);
+    size_t dst_stride = grape_texture_stride(destination);
+    size_t src_stride = grape_texture_stride(source);
+    int32_t dst_width = (int32_t)grape_texture_width(destination);
+    int32_t dst_height = (int32_t)grape_texture_height(destination);
+    int32_t src_width = (int32_t)grape_texture_width(source);
+    int32_t src_height = (int32_t)grape_texture_height(source);
+
+    int32_t source_y0 = top < 0 ? -top : 0;
+    int32_t source_y1 = src_height;
+    if (top + source_y1 > dst_height) source_y1 = dst_height - top;
+    if (source_y0 >= source_y1 || src_width <= 0) {
+        return;
+    }
+
+    int32_t dst_x0 = left;
+    int32_t dst_x1 = left + src_width + 1;
+    if (dst_x0 < 0) dst_x0 = 0;
+    if (dst_x1 > dst_width) dst_x1 = dst_width;
+    if (dst_x0 >= dst_x1) {
+        return;
+    }
+
+    uint32_t left_weight = 65536U - right_weight;
+    for (int32_t y = source_y0; y < source_y1; ++y) {
+        uint8_t *dst_row = dst + (size_t)(top + y) * dst_stride;
+        const uint8_t *src_row = src + (size_t)y * src_stride;
+
+        int32_t x = dst_x0;
+        if (x == left) {
+            uint8_t coverage = (uint8_t)(
+                ((uint32_t)src_row[0] * right_weight + 32768U) >> 16
+            );
+            blend_coverage(&dst_row[x++], coverage);
+        }
+
+        int32_t interior_x1 = left + src_width;
+        if (interior_x1 > dst_x1) interior_x1 = dst_x1;
+        for (; x < interior_x1; ++x) {
+            int32_t source_x = x - left;
+            uint8_t coverage = (uint8_t)(
+                ((uint32_t)src_row[source_x - 1] * left_weight +
+                 (uint32_t)src_row[source_x] * right_weight + 32768U) >> 16
+            );
+            blend_coverage(&dst_row[x], coverage);
+        }
+
+        if (x < dst_x1 && x == left + src_width) {
+            uint8_t coverage = (uint8_t)(
+                ((uint32_t)src_row[src_width - 1] * left_weight + 32768U) >> 16
+            );
+            blend_coverage(&dst_row[x], coverage);
+        }
+    }
+}
+
+static void blit_a8_fractional_xy(grape_texture_t *destination,
+                                  const grape_texture_t *source,
+                                  int32_t left,
+                                  int32_t top,
+                                  uint32_t right_weight,
+                                  uint32_t bottom_weight)
+{
+    uint8_t *dst = grape_texture_pixels(destination);
+    const uint8_t *src = grape_texture_pixels_const(source);
+    size_t dst_stride = grape_texture_stride(destination);
+    size_t src_stride = grape_texture_stride(source);
+    int32_t dst_width = (int32_t)grape_texture_width(destination);
+    int32_t dst_height = (int32_t)grape_texture_height(destination);
+    int32_t src_width = (int32_t)grape_texture_width(source);
+    int32_t src_height = (int32_t)grape_texture_height(source);
+
+    int32_t x0 = left;
+    int32_t y0 = top;
+    int32_t x1 = left + src_width + (right_weight < 65536U ? 1 : 0);
+    int32_t y1 = top + src_height + (bottom_weight < 65536U ? 1 : 0);
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > dst_width) x1 = dst_width;
+    if (y1 > dst_height) y1 = dst_height;
+    if (x0 >= x1 || y0 >= y1) {
+        return;
+    }
+
+    for (int32_t y = y0; y < y1; ++y) {
+        uint8_t *dst_row = dst + (size_t)y * dst_stride;
+        int32_t source_y = y - top;
+        const uint8_t *row0 = source_y > 0 && source_y - 1 < src_height
+            ? src + (size_t)(source_y - 1) * src_stride
+            : NULL;
+        const uint8_t *row1 = source_y >= 0 && source_y < src_height
+            ? src + (size_t)source_y * src_stride
+            : NULL;
+
+        for (int32_t x = x0; x < x1; ++x) {
+            int32_t source_x = x - left;
+            uint8_t a = row0 && source_x > 0 && source_x - 1 < src_width
+                ? row0[source_x - 1]
+                : 0U;
+            uint8_t b = row0 && source_x >= 0 && source_x < src_width
+                ? row0[source_x]
+                : 0U;
+            uint8_t c = row1 && source_x > 0 && source_x - 1 < src_width
+                ? row1[source_x - 1]
+                : 0U;
+            uint8_t d = row1 && source_x >= 0 && source_x < src_width
+                ? row1[source_x]
+                : 0U;
+            uint8_t top_value = lerp_u8(a, b, right_weight);
+            uint8_t bottom_value = lerp_u8(c, d, right_weight);
+            uint8_t coverage = lerp_u8(top_value, bottom_value, bottom_weight);
+            blend_coverage(&dst_row[x], coverage);
+        }
+    }
+}
+
 static void blit_a8_translated(grape_texture_t *destination,
                                const grape_texture_t *source,
                                float left,
@@ -283,8 +376,9 @@ static void blit_a8_translated(grape_texture_t *destination,
 {
     float rounded_left = roundf(left);
     float rounded_top = roundf(top);
-    if (fabsf(left - rounded_left) < 0.0001f &&
-        fabsf(top - rounded_top) < 0.0001f) {
+    bool integer_x = fabsf(left - rounded_left) < 0.0001f;
+    bool integer_y = fabsf(top - rounded_top) < 0.0001f;
+    if (integer_x && integer_y) {
         blit_a8_integer(
             destination,
             source,
@@ -294,31 +388,38 @@ static void blit_a8_translated(grape_texture_t *destination,
         return;
     }
 
-    uint8_t *dst = grape_texture_pixels(destination);
-    size_t dst_stride = grape_texture_stride(destination);
-    int32_t dst_width = (int32_t)grape_texture_width(destination);
-    int32_t dst_height = (int32_t)grape_texture_height(destination);
-    float src_width = (float)grape_texture_width(source);
-    float src_height = (float)grape_texture_height(source);
-
-    int32_t x0 = (int32_t)floorf(left);
-    int32_t y0 = (int32_t)floorf(top);
-    int32_t x1 = (int32_t)ceilf(left + src_width);
-    int32_t y1 = (int32_t)ceilf(top + src_height);
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > dst_width) x1 = dst_width;
-    if (y1 > dst_height) y1 = dst_height;
-
-    for (int32_t y = y0; y < y1; ++y) {
-        uint8_t *row = dst + (size_t)y * dst_stride;
-        float source_y = (float)y - top;
-        for (int32_t x = x0; x < x1; ++x) {
-            float source_x = (float)x - left;
-            uint8_t coverage = sample_a8_bilinear(source, source_x, source_y);
-            blend_coverage(&row[x], coverage);
-        }
+    int32_t base_x = integer_x ? (int32_t)rounded_left : (int32_t)floorf(left);
+    int32_t base_y = integer_y ? (int32_t)rounded_top : (int32_t)floorf(top);
+    uint32_t right_weight = 65536U;
+    uint32_t bottom_weight = 65536U;
+    if (!integer_x) {
+        float fraction = left - (float)base_x;
+        right_weight = (uint32_t)((1.0f - fraction) * 65536.0f + 0.5f);
     }
+    if (!integer_y) {
+        float fraction = top - (float)base_y;
+        bottom_weight = (uint32_t)((1.0f - fraction) * 65536.0f + 0.5f);
+    }
+
+    if (!integer_x && integer_y) {
+        blit_a8_fractional_x(
+            destination,
+            source,
+            base_x,
+            base_y,
+            right_weight
+        );
+        return;
+    }
+
+    blit_a8_fractional_xy(
+        destination,
+        source,
+        base_x,
+        base_y,
+        right_weight,
+        bottom_weight
+    );
 }
 
 esp_err_t grape_text_rasterize_codepoints_a8(
