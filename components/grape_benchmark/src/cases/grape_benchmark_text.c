@@ -13,6 +13,8 @@ typedef enum {
     TEXT_OP_SCENE_MOVE,
     TEXT_OP_SCENE_RESIZE_SCALED,
     TEXT_OP_SCENE_RESIZE_EXACT,
+    TEXT_OP_COMPOSE_INTEGER,
+    TEXT_OP_COMPOSE_FRACTIONAL,
 } text_operation_t;
 
 typedef struct {
@@ -35,6 +37,7 @@ typedef struct {
     size_t codepoint_count;
     grape_text_measurement_t measurement;
     grape_glyph_cache_stats_t stats;
+    grape_glyph_cache_stats_t measurement_start;
     float last_ppem;
 } text_case_state_t;
 
@@ -46,26 +49,55 @@ static float pixels_per_unit(const grape_font_t *font, float ppem)
     return units ? ppem / (float)units : 0.0f;
 }
 
-static esp_err_t make_codepoints(uint32_t length,
+static uint64_t counter_delta(uint64_t value, uint64_t start)
+{
+    return value >= start ? value - start : 0U;
+}
+
+static bool composition_diagnostic(text_operation_t operation)
+{
+    return operation == TEXT_OP_COMPOSE_INTEGER ||
+           operation == TEXT_OP_COMPOSE_FRACTIONAL;
+}
+
+static bool scene_operation(text_operation_t operation)
+{
+    return operation == TEXT_OP_SCENE_MOVE ||
+           operation == TEXT_OP_SCENE_RESIZE_SCALED ||
+           operation == TEXT_OP_SCENE_RESIZE_EXACT;
+}
+
+static bool uses_glyph_cache(text_operation_t operation)
+{
+    return operation == TEXT_OP_RASTER_COLD ||
+           operation == TEXT_OP_RASTER_WARM ||
+           operation == TEXT_OP_RASTER_SCALED ||
+           composition_diagnostic(operation) ||
+           scene_operation(operation);
+}
+
+static esp_err_t make_codepoints(const text_case_config_t *config,
                                  uint32_t **out_codepoints,
                                  size_t *out_count)
 {
-    if (!out_codepoints || !out_count || length == 0U) {
+    if (!config || !out_codepoints || !out_count || config->length == 0U) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    uint32_t *codepoints = calloc(length, sizeof(*codepoints));
+    uint32_t *codepoints = calloc(config->length, sizeof(*codepoints));
     if (!codepoints) {
         return ESP_ERR_NO_MEM;
     }
 
     size_t pattern_length = strlen(s_pattern);
-    for (uint32_t i = 0; i < length; ++i) {
-        codepoints[i] = (uint8_t)s_pattern[i % pattern_length];
+    for (uint32_t i = 0; i < config->length; ++i) {
+        codepoints[i] = composition_diagnostic(config->operation)
+            ? (uint32_t)'G'
+            : (uint8_t)s_pattern[i % pattern_length];
     }
 
     *out_codepoints = codepoints;
-    *out_count = length;
+    *out_count = config->length;
     return ESP_OK;
 }
 
@@ -193,7 +225,7 @@ static esp_err_t setup(grape_benchmark_runtime_t *runtime,
 
     esp_err_t ret = grape_benchmark_fixture_font_load(&state->font);
     if (ret == ESP_OK) {
-        ret = make_codepoints(config->length, &state->codepoints, &state->codepoint_count);
+        ret = make_codepoints(config, &state->codepoints, &state->codepoint_count);
     }
     if (ret != ESP_OK) {
         destroy_state(state);
@@ -219,7 +251,7 @@ static esp_err_t setup(grape_benchmark_runtime_t *runtime,
         }
     }
 
-    if (config->operation >= TEXT_OP_RASTER_COLD) {
+    if (uses_glyph_cache(config->operation)) {
         grape_glyph_cache_config_t cache_config = GRAPE_GLYPH_CACHE_CONFIG_DEFAULT();
         cache_config.capacity_bytes = 16U * 1024U * 1024U;
         cache_config.memory = GRAPE_MEMORY_PSRAM;
@@ -235,6 +267,8 @@ static esp_err_t setup(grape_benchmark_runtime_t *runtime,
 
     switch (config->operation) {
         case TEXT_OP_RASTER_WARM:
+        case TEXT_OP_COMPOSE_INTEGER:
+        case TEXT_OP_COMPOSE_FRACTIONAL:
             ret = warm_raster(state, config->target_ppem, config->samples_per_axis);
             break;
 
@@ -356,6 +390,8 @@ static esp_err_t iteration(grape_benchmark_runtime_t *runtime,
 
         case TEXT_OP_RASTER_COLD:
         case TEXT_OP_RASTER_WARM:
+        case TEXT_OP_COMPOSE_INTEGER:
+        case TEXT_OP_COMPOSE_FRACTIONAL:
             return rasterize(
                 state,
                 config->target_ppem,
@@ -413,13 +449,27 @@ static void after_iteration(grape_benchmark_runtime_t *runtime,
 
     if (config->operation == TEXT_OP_RASTER_COLD ||
         config->operation == TEXT_OP_RASTER_WARM ||
-        config->operation == TEXT_OP_RASTER_SCALED) {
+        config->operation == TEXT_OP_RASTER_SCALED ||
+        composition_diagnostic(config->operation)) {
         destroy_raster(state);
     }
     if (config->operation == TEXT_OP_RASTER_COLD) {
         grape_glyph_cache_clear(state->cache);
     }
     grape_benchmark_damage_clear(runtime->grape);
+}
+
+static esp_err_t before_measurement(grape_benchmark_runtime_t *runtime,
+                                    const grape_benchmark_case_t *bench_case,
+                                    void *opaque_state)
+{
+    (void)runtime;
+    (void)bench_case;
+    text_case_state_t *state = opaque_state;
+    if (state->cache) {
+        grape_glyph_cache_get_stats(state->cache, &state->measurement_start);
+    }
+    return ESP_OK;
 }
 
 static size_t metrics(grape_benchmark_runtime_t *runtime,
@@ -445,16 +495,24 @@ static size_t metrics(grape_benchmark_runtime_t *runtime,
         "advance_units", "font_unit", state->measurement.advance_width,
     };
     out[2] = (grape_benchmark_metric_t){
-        "cache_exact", "", (double)state->stats.exact_hits,
+        "cache_exact", "", (double)counter_delta(
+            state->stats.exact_hits, state->measurement_start.exact_hits
+        ),
     };
     out[3] = (grape_benchmark_metric_t){
-        "cache_scaled", "", (double)state->stats.scaled_hits,
+        "cache_scaled", "", (double)counter_delta(
+            state->stats.scaled_hits, state->measurement_start.scaled_hits
+        ),
     };
     out[4] = (grape_benchmark_metric_t){
-        "cache_misses", "", (double)state->stats.misses,
+        "cache_misses", "", (double)counter_delta(
+            state->stats.misses, state->measurement_start.misses
+        ),
     };
     out[5] = (grape_benchmark_metric_t){
-        "cpu_scales", "", (double)state->stats.cpu_scales,
+        "cpu_scales", "", (double)counter_delta(
+            state->stats.cpu_scales, state->measurement_start.cpu_scales
+        ),
     };
     out[6] = (grape_benchmark_metric_t){
         "cache_bytes", "B", (double)state->stats.used_bytes,
@@ -462,7 +520,15 @@ static size_t metrics(grape_benchmark_runtime_t *runtime,
     out[7] = (grape_benchmark_metric_t){
         "last_ppem", "px/em", state->last_ppem,
     };
-    (void)config;
+    if (composition_diagnostic(config->operation) && capacity >= 9U) {
+        out[8] = (grape_benchmark_metric_t){
+            "fractional_blits", "",
+            config->operation == TEXT_OP_COMPOSE_FRACTIONAL
+                ? (double)(state->codepoint_count - 1U)
+                : 0.0,
+        };
+        return 9U;
+    }
     return 8U;
 }
 
@@ -491,6 +557,8 @@ static const char *operation_name(text_operation_t operation)
         case TEXT_OP_RASTER_COLD: return "raster_cold";
         case TEXT_OP_RASTER_WARM: return "raster_warm";
         case TEXT_OP_RASTER_SCALED: return "raster_scaled";
+        case TEXT_OP_COMPOSE_INTEGER: return "compose_integer";
+        case TEXT_OP_COMPOSE_FRACTIONAL: return "compose_fractional";
         case TEXT_OP_SCENE_MOVE: return "scene_move";
         case TEXT_OP_SCENE_RESIZE_SCALED: return "scene_resize_scaled";
         case TEXT_OP_SCENE_RESIZE_EXACT: return "scene_resize_exact";
@@ -519,7 +587,12 @@ static void add_case(text_operation_t operation,
         .samples_per_axis = samples_per_axis,
     };
 
-    if (target_ppem > 0.0f) {
+    if (operation == TEXT_OP_COMPOSE_FRACTIONAL) {
+        snprintf(
+            s_names[index], sizeof(s_names[index]),
+            "%s_n%u_s100p5", operation_name(operation), (unsigned)length
+        );
+    } else if (target_ppem > 0.0f) {
         snprintf(
             s_names[index], sizeof(s_names[index]),
             "%s_n%u_s%.0f", operation_name(operation),
@@ -532,7 +605,7 @@ static void add_case(text_operation_t operation,
         );
     }
 
-    bool scene = operation >= TEXT_OP_SCENE_MOVE;
+    bool scene = scene_operation(operation);
     uint32_t warmup = scene ? 3U : 4U;
     uint32_t measured = 24U;
     if (operation == TEXT_OP_RASTER_SCALED ||
@@ -562,6 +635,7 @@ static void add_case(text_operation_t operation,
         .setup = setup,
         .iteration = iteration,
         .after_iteration = after_iteration,
+        .before_measurement = before_measurement,
         .collect_metrics = metrics,
         .teardown = teardown,
         .params = {
@@ -569,6 +643,7 @@ static void add_case(text_operation_t operation,
             { "length", length },
             { "target_ppem", target_ppem },
             { "source_ppem", source_ppem },
+            { "target_step_ppem", step_ppem },
             { "aa", samples_per_axis },
         },
     };
@@ -604,6 +679,9 @@ const grape_benchmark_case_t *grape_benchmark_text_cases(size_t *out_count)
         add_case(TEXT_OP_RASTER_SCALED, 20U, 64.0f, 128.0f, 4.0f, 4U);
         add_case(TEXT_OP_RASTER_SCALED, 5U, 96.0f, 192.0f, 6.0f, 4U);
         add_case(TEXT_OP_RASTER_SCALED, 20U, 96.0f, 192.0f, 6.0f, 4U);
+
+        add_case(TEXT_OP_COMPOSE_INTEGER, 5U, 100.0f, 0.0f, 0.0f, 4U);
+        add_case(TEXT_OP_COMPOSE_FRACTIONAL, 5U, 100.5f, 0.0f, 0.0f, 4U);
 
         add_case(TEXT_OP_SCENE_MOVE, 5U, 128.0f, 0.0f, 0.0f, 4U);
         add_case(TEXT_OP_SCENE_RESIZE_SCALED, 5U, 96.0f, 192.0f, 4.0f, 4U);

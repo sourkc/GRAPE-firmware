@@ -567,6 +567,15 @@ static esp_err_t run_case(
         goto cleanup;
     }
 
+    if (bench_case->before_measurement) {
+        ret = bench_case->before_measurement(runtime, bench_case, state);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Measurement setup failed for %s/%s: %s",
+                     bench_case->group, bench_case->name, esp_err_to_name(ret));
+            goto cleanup;
+        }
+    }
+
     ret = run_measured(
         runtime,
         bench_case,

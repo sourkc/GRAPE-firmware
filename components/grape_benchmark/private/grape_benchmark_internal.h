@@ -65,6 +65,12 @@ typedef void (*grape_benchmark_after_iteration_fn)(
     uint32_t sequence_iteration
 );
 
+typedef esp_err_t (*grape_benchmark_before_measurement_fn)(
+    grape_benchmark_runtime_t *runtime,
+    const grape_benchmark_case_t *bench_case,
+    void *state
+);
+
 typedef size_t (*grape_benchmark_collect_metrics_fn)(
     grape_benchmark_runtime_t *runtime,
     const grape_benchmark_case_t *bench_case,
@@ -90,6 +96,7 @@ struct grape_benchmark_case {
     grape_benchmark_setup_fn setup;
     grape_benchmark_iteration_fn iteration;
     grape_benchmark_after_iteration_fn after_iteration;
+    grape_benchmark_before_measurement_fn before_measurement;
     grape_benchmark_collect_metrics_fn collect_metrics;
     grape_benchmark_teardown_fn teardown;
     grape_benchmark_param_t params[GRAPE_BENCHMARK_MAX_PARAMS];

@@ -8,6 +8,7 @@ typedef enum {
     GLYPH_CACHE_EXACT,
     GLYPH_CACHE_SCALED,
     GLYPH_CACHE_EVICTION,
+    GLYPH_CACHE_COLD_SWEEP,
 } glyph_cache_operation_t;
 
 typedef struct {
@@ -25,8 +26,14 @@ typedef struct {
     grape_glyph_cache_t *cache;
     grape_text_raster_t raster;
     grape_glyph_cache_stats_t stats;
+    grape_glyph_cache_stats_t measurement_start;
     float last_target_ppem;
 } glyph_cache_case_state_t;
+
+static uint64_t counter_delta(uint64_t value, uint64_t start)
+{
+    return value >= start ? value - start : 0U;
+}
 
 static float pixels_per_unit(const grape_font_t *font, float ppem)
 {
@@ -163,9 +170,11 @@ static esp_err_t iteration(grape_benchmark_runtime_t *runtime,
 
     uint32_t codepoint = 'G';
     float ppem = config->target_ppem;
-    if (config->operation == GLYPH_CACHE_SCALED) {
+    if (config->operation == GLYPH_CACHE_COLD_SWEEP ||
+        config->operation == GLYPH_CACHE_SCALED) {
         ppem += config->target_step_ppem * (float)sequence_iteration;
-        if (ppem >= config->source_ppem) {
+        if (config->operation == GLYPH_CACHE_SCALED &&
+            ppem >= config->source_ppem) {
             return ESP_ERR_INVALID_STATE;
         }
     } else if (config->operation == GLYPH_CACHE_EVICTION) {
@@ -192,9 +201,21 @@ static void after_iteration(grape_benchmark_runtime_t *runtime,
     glyph_cache_case_state_t *state = opaque_state;
 
     destroy_raster(state);
-    if (config->operation == GLYPH_CACHE_COLD) {
+    if (config->operation == GLYPH_CACHE_COLD ||
+        config->operation == GLYPH_CACHE_COLD_SWEEP) {
         grape_glyph_cache_clear(state->cache);
     }
+}
+
+static esp_err_t before_measurement(grape_benchmark_runtime_t *runtime,
+                                    const grape_benchmark_case_t *bench_case,
+                                    void *opaque_state)
+{
+    (void)runtime;
+    (void)bench_case;
+    glyph_cache_case_state_t *state = opaque_state;
+    grape_glyph_cache_get_stats(state->cache, &state->measurement_start);
+    return ESP_OK;
 }
 
 static size_t metrics(grape_benchmark_runtime_t *runtime,
@@ -212,22 +233,34 @@ static size_t metrics(grape_benchmark_runtime_t *runtime,
 
     grape_glyph_cache_get_stats(state->cache, &state->stats);
     out[0] = (grape_benchmark_metric_t){
-        "requests", "", (double)state->stats.requests,
+        "requests", "", (double)counter_delta(
+            state->stats.requests, state->measurement_start.requests
+        ),
     };
     out[1] = (grape_benchmark_metric_t){
-        "exact_hits", "", (double)state->stats.exact_hits,
+        "exact_hits", "", (double)counter_delta(
+            state->stats.exact_hits, state->measurement_start.exact_hits
+        ),
     };
     out[2] = (grape_benchmark_metric_t){
-        "scaled_hits", "", (double)state->stats.scaled_hits,
+        "scaled_hits", "", (double)counter_delta(
+            state->stats.scaled_hits, state->measurement_start.scaled_hits
+        ),
     };
     out[3] = (grape_benchmark_metric_t){
-        "misses", "", (double)state->stats.misses,
+        "misses", "", (double)counter_delta(
+            state->stats.misses, state->measurement_start.misses
+        ),
     };
     out[4] = (grape_benchmark_metric_t){
-        "cpu_scales", "", (double)state->stats.cpu_scales,
+        "cpu_scales", "", (double)counter_delta(
+            state->stats.cpu_scales, state->measurement_start.cpu_scales
+        ),
     };
     out[5] = (grape_benchmark_metric_t){
-        "evictions", "", (double)state->stats.evictions,
+        "evictions", "", (double)counter_delta(
+            state->stats.evictions, state->measurement_start.evictions
+        ),
     };
     out[6] = (grape_benchmark_metric_t){
         "entries", "", (double)state->stats.entry_count,
@@ -262,6 +295,7 @@ static const char *operation_name(glyph_cache_operation_t operation)
 {
     switch (operation) {
         case GLYPH_CACHE_COLD: return "cold";
+        case GLYPH_CACHE_COLD_SWEEP: return "native_sweep";
         case GLYPH_CACHE_EXACT: return "exact";
         case GLYPH_CACHE_SCALED: return "scaled";
         case GLYPH_CACHE_EVICTION: return "eviction";
@@ -297,6 +331,12 @@ static void add_case(glyph_cache_operation_t operation,
             "%s_%.0f_from_%.0f",
             operation_name(operation), target_ppem, source_ppem
         );
+    } else if (operation == GLYPH_CACHE_COLD_SWEEP) {
+        snprintf(
+            s_names[index], sizeof(s_names[index]),
+            "%s_%.0f_step%.0f",
+            operation_name(operation), target_ppem, step_ppem
+        );
     } else if (operation == GLYPH_CACHE_EVICTION) {
         snprintf(
             s_names[index], sizeof(s_names[index]),
@@ -312,8 +352,10 @@ static void add_case(glyph_cache_operation_t operation,
         );
     }
 
-    uint32_t warmup = operation == GLYPH_CACHE_SCALED ? 2U : 4U;
-    uint32_t measured = operation == GLYPH_CACHE_SCALED ? 16U : 24U;
+    bool sweep = operation == GLYPH_CACHE_COLD_SWEEP ||
+                 operation == GLYPH_CACHE_SCALED;
+    uint32_t warmup = sweep ? 2U : 4U;
+    uint32_t measured = sweep ? 16U : 24U;
     s_cases[index] = (grape_benchmark_case_t){
         .group = "glyph_cache",
         .name = s_names[index],
@@ -324,12 +366,14 @@ static void add_case(glyph_cache_operation_t operation,
         .setup = setup,
         .iteration = iteration,
         .after_iteration = after_iteration,
+        .before_measurement = before_measurement,
         .collect_metrics = metrics,
         .teardown = teardown,
         .params = {
             { "operation", operation },
             { "target_ppem", target_ppem },
             { "source_ppem", source_ppem },
+            { "target_step_ppem", step_ppem },
             { "capacity_bytes", (double)capacity_bytes },
             { "working_set", working_set },
         },
@@ -357,11 +401,19 @@ const grape_benchmark_case_t *grape_benchmark_glyph_cache_cases(size_t *out_coun
 
         add_case(GLYPH_CACHE_SCALED, 32.0f, 64.0f, 1.0f,
                  4U * 1024U * 1024U, 0U);
+        add_case(GLYPH_CACHE_COLD_SWEEP, 32.0f, 0.0f, 1.0f,
+                 4U * 1024U * 1024U, 0U);
         add_case(GLYPH_CACHE_SCALED, 48.0f, 96.0f, 2.0f,
+                 4U * 1024U * 1024U, 0U);
+        add_case(GLYPH_CACHE_COLD_SWEEP, 48.0f, 0.0f, 2.0f,
                  4U * 1024U * 1024U, 0U);
         add_case(GLYPH_CACHE_SCALED, 72.0f, 144.0f, 3.0f,
                  4U * 1024U * 1024U, 0U);
+        add_case(GLYPH_CACHE_COLD_SWEEP, 72.0f, 0.0f, 3.0f,
+                 4U * 1024U * 1024U, 0U);
         add_case(GLYPH_CACHE_SCALED, 96.0f, 192.0f, 4.0f,
+                 8U * 1024U * 1024U, 0U);
+        add_case(GLYPH_CACHE_COLD_SWEEP, 96.0f, 0.0f, 4.0f,
                  8U * 1024U * 1024U, 0U);
 
         add_case(GLYPH_CACHE_EVICTION, 128.0f, 0.0f, 0.0f,
