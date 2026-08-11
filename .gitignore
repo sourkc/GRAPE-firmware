@@ -5,3 +5,4 @@ managed_components/
 dependencies.lock
 
 /shaders/generated_*
+__pycache__
