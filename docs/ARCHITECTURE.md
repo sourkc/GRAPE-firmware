@@ -13,7 +13,13 @@ The `components/` directory houses most of GRAPE's code.
 
 ### Surfaces, Textures and the Framebuffer
 GRAPE's main unit of graphics are surfaces, code for which is located in `components/grape/src/grape_surface.c`
-Each surface has its own texture. This is what's actually getting drawn on the screen. 
-When drawing, the pixels get computed and put into the `framebuffer`. Notice: only the parts of the screen
-that changed (which are going to be referred to as "dirty regions") get re-drawn each frame. The rest of the 
-framebuffer stays static. 
+
+Each surface has a texture. This is what's actually getting drawn on the screen. 
+
+*Note: Multiple surfaces can share the same texture.*
+
+When drawing, the pixels get computed and put into the `framebuffer`.
+
+*Notice: only the parts of the screen
+that changed (which are going to be referred to as "dirty regions" or "damaged regions") get re-drawn each frame. The rest of the 
+framebuffer stays static.*

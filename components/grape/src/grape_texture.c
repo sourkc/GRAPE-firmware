@@ -4,6 +4,12 @@
 #include "esp_heap_caps.h"
 #include "grape_internal.h"
 
+/**
+ * Converts memory preference into ESP-IDF capability flags
+ *
+ * @param memory Memory type
+ * @return Capability flags
+ */
 static uint32_t texture_caps(grape_memory_t memory)
 {
     grape_memory_t resolved = memory;
@@ -22,6 +28,14 @@ static uint32_t texture_caps(grape_memory_t memory)
     return MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT;
 }
 
+/**
+ * Converts a 2D occupancy cell coordinate into a 1D index
+ *
+ * @param texture Texture
+ * @param x Occupancy map X coordinate
+ * @param y Occupancy map Y coordinate
+ * @return Index of a given coordinate
+ */
 static inline size_t occupancy_index(const grape_texture_t *texture,
                                      uint32_t x,
                                      uint32_t y)
@@ -29,11 +43,23 @@ static inline size_t occupancy_index(const grape_texture_t *texture,
     return (size_t)y * texture->occupancy_columns + x;
 }
 
+/**
+ * Sets a particular bit in an occupancy bitmap
+ *
+ * @param bitmap Occupancy bitmap
+ * @param index Index in the bitmap
+ */
 static inline void occupancy_set(uint8_t *bitmap, size_t index)
 {
     bitmap[index >> 3U] |= (uint8_t)(1U << (index & 7U));
 }
 
+/**
+ * Initializes occupancy information for a texture
+ *
+ * @param texture Texture to initialize occupancy for
+ * @return ESP_OK on success or an error code
+ */
 static esp_err_t texture_init_occupancy(grape_texture_t *texture)
 {
     const uint32_t cell_size = CONFIG_GRAPE_TEXTURE_OCCUPANCY_CELL_SIZE;
@@ -86,6 +112,12 @@ static esp_err_t texture_init_occupancy(grape_texture_t *texture)
     return ESP_OK;
 }
 
+/**
+ * Rebuilds an occupancy map for a texture
+ *
+ * @param texture Texture to calculate the occupancy map for
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_texture_rebuild_occupancy(grape_texture_t *texture)
 {
     if (!texture) {
@@ -151,6 +183,13 @@ esp_err_t grape_texture_rebuild_occupancy(grape_texture_t *texture)
     return ESP_OK;
 }
 
+/**
+ *
+ * @param context GRAPE context
+ * @param desc Texture parameters
+ * @param out_texture Returns the initialized texture
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_texture_create(grape_context_t *context, const grape_texture_desc_t *desc, grape_texture_t **out_texture)
 {
     if (!context || !desc || !out_texture || desc->width == 0 || desc->height == 0) {
@@ -200,6 +239,12 @@ esp_err_t grape_texture_create(grape_context_t *context, const grape_texture_des
     return ESP_OK;
 }
 
+/**
+ * Destroys a GRAPE texture
+ *
+ * @param texture Texture to destroy
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_texture_destroy(grape_texture_t *texture)
 {
     if (!texture) {
@@ -224,36 +269,80 @@ esp_err_t grape_texture_destroy(grape_texture_t *texture)
     return ESP_OK;
 }
 
+/**
+ * Returns the writable pixel data of a texture
+ *
+ * @param texture Texture to access
+ * @return Pointer to the texture's pixel data, or NULL if texture is NULL
+ */
 void *grape_texture_pixels(grape_texture_t *texture)
 {
     return texture ? texture->pixels : NULL;
 }
 
+/**
+ * Returns the read-only pixel data of a texture
+ *
+ * @param texture Texture to access
+ * @return Const pointer to the texture's pixel data, or NULL if texture is NULL
+ */
 const void *grape_texture_pixels_const(const grape_texture_t *texture)
 {
     return texture ? texture->pixels : NULL;
 }
 
+/**
+ * Returns the texture's stride in bytes
+ *
+ * @param texture Texture to access
+ * @return Texture stride in bytes, or 0 if texture is NULL
+ */
 size_t grape_texture_stride(const grape_texture_t *texture)
 {
     return texture ? texture->stride : 0;
 }
 
+/**
+ * Returns the texture's width in pixels
+ *
+ * @param texture Texture to access
+ * @return Texture width in pixels, or 0 if texture is NULL
+ */
 uint32_t grape_texture_width(const grape_texture_t *texture)
 {
     return texture ? texture->width : 0;
 }
 
+/**
+ * Returns the texture's height in pixels
+ *
+ * @param texture Texture to access
+ * @return Texture height in pixels, or 0 if texture is NULL
+ */
 uint32_t grape_texture_height(const grape_texture_t *texture)
 {
     return texture ? texture->height : 0;
 }
 
+/**
+ * Returns the texture's pixel format
+ *
+ * @param texture Texture to access
+ * @return Texture pixel format, or GRAPE_PIXEL_FORMAT_RGB565 if texture is NULL
+ */
 grape_pixel_format_t grape_texture_format(const grape_texture_t *texture)
 {
     return texture ? texture->format : GRAPE_PIXEL_FORMAT_RGB565;
 }
 
+/**
+ * Use this after changing the texture.
+ *  1. Marks all surfaces that use this texture as damaged regions
+ *  2. Rebuilds the occupancy map
+ *
+ * @param texture Texture to invalidate
+ * @return
+ */
 esp_err_t grape_texture_invalidate(grape_texture_t *texture)
 {
     if (!texture) {
@@ -263,6 +352,9 @@ esp_err_t grape_texture_invalidate(grape_texture_t *texture)
     grape_context_t *context = texture->context;
 
     if (texture->format == GRAPE_PIXEL_FORMAT_A8) {
+        // WARNING: Both damage passes are required for A8 textures
+
+        // Invalidate once for the OLD occupancy map
         for (grape_surface_t *surface = context->surfaces; surface; surface = surface->next) {
             if (surface->texture == texture) {
                 esp_err_t ret = grape_damage_add_surface_coverage(surface);
@@ -277,6 +369,7 @@ esp_err_t grape_texture_invalidate(grape_texture_t *texture)
             return ret;
         }
 
+        // Invalidate a second time for the NEW occupancy map
         for (grape_surface_t *surface = context->surfaces; surface; surface = surface->next) {
             if (surface->texture == texture) {
                 ret = grape_damage_add_surface_coverage(surface);
@@ -289,6 +382,7 @@ esp_err_t grape_texture_invalidate(grape_texture_t *texture)
         return ESP_OK;
     }
 
+    // Opaque textures only need one damage pass
     for (grape_surface_t *surface = context->surfaces; surface; surface = surface->next) {
         if (surface->texture == texture) {
             esp_err_t ret = grape_damage_add_surface_coverage(surface);

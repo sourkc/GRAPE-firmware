@@ -3,7 +3,15 @@
 
 #include "grape_internal.h"
 
-/* Transforms local surface coordinates into screen coordinates */
+/**
+ * Transforms local surface coordinates into screen coordinates
+ *
+ * @param surface GRAPE surface
+ * @param lx Local surface X coordinate
+ * @param ly Local surface Y coordinate
+ * @param sx Returns screen X coordinate
+ * @param sy Returns screen Y coordinate
+ */
 static void transform_point(const grape_surface_t *surface, float lx, float ly, float *sx, float *sy)
 {
     float dx = (lx - surface->transform.origin_x) * surface->transform.scale_x;
@@ -13,6 +21,12 @@ static void transform_point(const grape_surface_t *surface, float lx, float ly, 
     *sy = surface->transform.y + surface->sin_rotation * dx + surface->cos_rotation * dy;
 }
 
+/**
+ * Calculates bounds of a surface on the screen
+ *
+ * @param surface GRAPE surface
+ * @return Bounds rect of the surface
+ */
 grape_rect_t grape_surface_calculate_bounds(const grape_surface_t *surface)
 {
     if (!surface || !surface->texture || !surface->visible) {
@@ -49,13 +63,21 @@ grape_rect_t grape_surface_calculate_bounds(const grape_surface_t *surface)
     return (grape_rect_t){x0, y0, x1 - x0, y1 - y0};
 }
 
+/**
+ * Recalculates derived/cached values that we need from a surface's
+ * transform, so the renderer doesn't re-do expensive transform math every pixel
+ *
+ * @param surface GRAPE surface
+ */
 void grape_surface_recache(grape_surface_t *surface)
 {
     GRAPE_TIME_SCOPE(SURFACE_RECACHE);
 
+    // Cache sine and cosine of rotation
     surface->cos_rotation = cosf(surface->transform.rotation);
     surface->sin_rotation = sinf(surface->transform.rotation);
 
+    // Cached values needed for three-shear rotation backend
     if (surface->context->rotation_backend == GRAPE_ROTATION_BACKEND_THREE_SHEAR) {
         surface->normalized_rotation =
             atan2f(surface->sin_rotation, surface->cos_rotation);
@@ -66,15 +88,18 @@ void grape_surface_recache(grape_surface_t *surface)
         surface->shear_cache_valid = false;
     }
 
+    // Cache inverse scale for screen-to-local mapping
     float inv_scale_x = 1.0f / surface->transform.scale_x;
     float inv_scale_y = 1.0f / surface->transform.scale_y;
 
+    // Cache the inverse affine transform for local X
     surface->local_x_from_screen_x = surface->cos_rotation * inv_scale_x;
     surface->local_x_from_screen_y = surface->sin_rotation * inv_scale_x;
     surface->local_x_offset = surface->transform.origin_x
                        - surface->local_x_from_screen_x * surface->transform.x
                        - surface->local_x_from_screen_y * surface->transform.y;
 
+    // Same thing for local Y
     surface->local_y_from_screen_x = -surface->sin_rotation * inv_scale_y;
     surface->local_y_from_screen_y = surface->cos_rotation * inv_scale_y;
     surface->local_y_offset = surface->transform.origin_y
@@ -85,6 +110,13 @@ void grape_surface_recache(grape_surface_t *surface)
 
 }
 
+/**
+ * Remove a surface from the context's linked Z-sorted surface list
+ * NOTE: if you want to destroy a surface use grape_surface_destroy
+ *
+ * @param context GRAPE context
+ * @param surface GRAPE surface
+ */
 void grape_surface_remove(grape_context_t *context, grape_surface_t *surface)
 {
     if (surface->prev) {
@@ -101,6 +133,12 @@ void grape_surface_remove(grape_context_t *context, grape_surface_t *surface)
     surface->next = NULL;
 }
 
+/**
+ * Inserts a surface into the context's surface list in ascending Z order
+ *
+ * @param context GRAPE context
+ * @param surface GRAPE surface to insert
+ */
 void grape_surface_insert_sorted(grape_context_t *context, grape_surface_t *surface)
 {
     if (!context->surfaces) {
@@ -130,11 +168,20 @@ void grape_surface_insert_sorted(grape_context_t *context, grape_surface_t *surf
     }
 }
 
-static esp_err_t mark_surface_coverage(grape_surface_t *surface)
-{
-    return grape_damage_add_surface_coverage(surface);
-}
+/**
+ * For convenience :)
+ * NOTICE: might grow into more logic in the future, please keep this
+ */
+#define mark_surface_coverage(surface) grape_damage_add_surface_coverage(surface)
 
+/**
+ * Creates a GRAPE surface
+ *
+ * @param context GRAPE context
+ * @param texture Texture for the surface
+ * @param out_surface Returns a surface
+ * @return Returns ESP_OK on success or an error code
+ */
 esp_err_t grape_surface_create(grape_context_t *context, grape_texture_t *texture, grape_surface_t **out_surface)
 {
     if (!context || !texture || !out_surface || texture->context != context) {
@@ -170,6 +217,11 @@ esp_err_t grape_surface_create(grape_context_t *context, grape_texture_t *textur
     return ESP_OK;
 }
 
+/**
+ * Destroys a GRAPE surface
+ * @param surface GRAPE surface to destroy
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_surface_destroy(grape_surface_t *surface)
 {
     if (!surface) {
@@ -190,6 +242,13 @@ esp_err_t grape_surface_destroy(grape_surface_t *surface)
     return ESP_OK;
 }
 
+/**
+ * Sets the texture of a given surface
+ *
+ * @param surface GRAPE surface
+ * @param texture GRAPE texture to set
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_surface_set_texture(grape_surface_t *surface, grape_texture_t *texture)
 {
     if (!surface || !texture || texture->context != surface->context) {
@@ -211,6 +270,13 @@ esp_err_t grape_surface_set_texture(grape_surface_t *surface, grape_texture_t *t
     return mark_surface_coverage(surface);
 }
 
+/**
+ * Sets the transform of a GRAPE surface
+ *
+ * @param surface GRAPE surface
+ * @param transform Transform to set
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_surface_set_transform(grape_surface_t *surface, const grape_transform_t *transform)
 {
     if (!surface || !transform || fabsf(transform->scale_x) < FLT_EPSILON || fabsf(transform->scale_y) < FLT_EPSILON) {
@@ -229,6 +295,14 @@ esp_err_t grape_surface_set_transform(grape_surface_t *surface, const grape_tran
     return ret;
 }
 
+/**
+ * Sets the screen position of a GRAPE surface
+ *
+ * @param surface GRAPE surface
+ * @param x Screen X coordinate
+ * @param y Screen Y coordinate
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_surface_set_position(grape_surface_t *surface, float x, float y)
 {
     if (!surface) {
@@ -240,6 +314,14 @@ esp_err_t grape_surface_set_position(grape_surface_t *surface, float x, float y)
     return grape_surface_set_transform(surface, &transform);
 }
 
+/**
+ * Sets the scale of a GRAPE surface
+ *
+ * @param surface GRAPE surface
+ * @param scale_x Horizontal scale
+ * @param scale_y Vertical scale
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_surface_set_scale(grape_surface_t *surface, float scale_x, float scale_y)
 {
     if (!surface) {
@@ -251,6 +333,13 @@ esp_err_t grape_surface_set_scale(grape_surface_t *surface, float scale_x, float
     return grape_surface_set_transform(surface, &transform);
 }
 
+/**
+ * Sets the rotation of a GRAPE surface
+ *
+ * @param surface GRAPE surface
+ * @param radians Rotation in radians
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_surface_set_rotation(grape_surface_t *surface, float radians)
 {
     if (!surface) {
@@ -261,6 +350,14 @@ esp_err_t grape_surface_set_rotation(grape_surface_t *surface, float radians)
     return grape_surface_set_transform(surface, &transform);
 }
 
+/**
+ * Sets the transform origin of a GRAPE surface
+ *
+ * @param surface GRAPE surface
+ * @param origin_x Local X coordinate of the transform origin
+ * @param origin_y Local Y coordinate of the transform origin
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_surface_set_origin(grape_surface_t *surface, float origin_x, float origin_y)
 {
     if (!surface) {
@@ -272,6 +369,13 @@ esp_err_t grape_surface_set_origin(grape_surface_t *surface, float origin_x, flo
     return grape_surface_set_transform(surface, &transform);
 }
 
+/**
+ * Sets the Z position of a GRAPE surface and re-sorts it in the surface list
+ *
+ * @param surface GRAPE surface
+ * @param z New Z position
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_surface_set_z(grape_surface_t *surface, int32_t z)
 {
     if (!surface) {
@@ -292,6 +396,13 @@ esp_err_t grape_surface_set_z(grape_surface_t *surface, int32_t z)
     return ESP_OK;
 }
 
+/**
+ * Sets the opacity of a GRAPE surface
+ *
+ * @param surface GRAPE surface
+ * @param opacity Opacity from 0 to 255
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_surface_set_opacity(grape_surface_t *surface, uint8_t opacity)
 {
     if (!surface) {
@@ -310,6 +421,13 @@ esp_err_t grape_surface_set_opacity(grape_surface_t *surface, uint8_t opacity)
     return mark_surface_coverage(surface);
 }
 
+/**
+ * Sets the tint of a GRAPE surface
+ *
+ * @param surface GRAPE surface
+ * @param tint Tint color
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_surface_set_tint(grape_surface_t *surface, grape_color_t tint)
 {
     if (!surface) {
@@ -332,6 +450,13 @@ esp_err_t grape_surface_set_tint(grape_surface_t *surface, grape_color_t tint)
     return mark_surface_coverage(surface);
 }
 
+/**
+ * Sets a GRAPE surface's visibility
+ *
+ * @param surface GRAPE surface
+ * @param visible Surface visibility
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_surface_set_visible(grape_surface_t *surface, bool visible)
 {
     if (!surface) {
@@ -351,31 +476,67 @@ esp_err_t grape_surface_set_visible(grape_surface_t *surface, bool visible)
     return mark_surface_coverage(surface);
 }
 
+/**
+ * Gets the transform of a GRAPE surface
+ *
+ * @param surface GRAPE surface
+ * @return Pointer to the surface transform, or NULL if surface is NULL
+ */
 const grape_transform_t *grape_surface_transform(const grape_surface_t *surface)
 {
     return surface ? &surface->transform : NULL;
 }
 
+/**
+ * Gets the Z position of a GRAPE surface
+ *
+ * @param surface GRAPE surface
+ * @return Surface Z position, or 0 if surface is NULL
+ */
 int32_t grape_surface_z(const grape_surface_t *surface)
 {
     return surface ? surface->z : 0;
 }
 
+/**
+ * Gets the opacity of a GRAPE surface
+ *
+ * @param surface GRAPE surface
+ * @return Surface opacity, or 0 if surface is NULL
+ */
 uint8_t grape_surface_opacity(const grape_surface_t *surface)
 {
     return surface ? surface->opacity : 0;
 }
 
+/**
+ * Gets the tint of a GRAPE surface
+ *
+ * @param surface GRAPE surface
+ * @return Surface tint, or transparent black if surface is NULL
+ */
 grape_color_t grape_surface_tint(const grape_surface_t *surface)
 {
     return surface ? surface->tint : (grape_color_t){0, 0, 0, 0};
 }
 
+/**
+ * Gets a GRAPE surface's visibility
+ *
+ * @param surface GRAPE surface
+ * @return Surface visibility, or false if surface is NULL
+ */
 bool grape_surface_visible(const grape_surface_t *surface)
 {
     return surface ? surface->visible : false;
 }
 
+/**
+ * Gets the texture used by a GRAPE surface
+ *
+ * @param surface GRAPE surface
+ * @return Surface texture, or NULL if surface is NULL
+ */
 grape_texture_t *grape_surface_texture(grape_surface_t *surface)
 {
     return surface ? surface->texture : NULL;

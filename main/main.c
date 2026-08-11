@@ -21,6 +21,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "hal/clk_tree_ll.h"
+#include "esp_private/regi2c_ctrl.h"
+#include "esp_rom_sys.h"
+
 static const char *TAG = "GRAPE";
 
 #define DEMO_SQUARE_COUNT 10
@@ -451,14 +455,14 @@ static esp_err_t run_font_demo(grape_context_t *grape)
         return ret;
     }
 
-    char font_path[FONT_DEMO_PATH_CAPACITY] = {0};
-    ret = choose_random_font_path(font_path, sizeof(font_path));
-    if (ret != ESP_OK) {
-        return ret;
-    }
+    // char font_path[FONT_DEMO_PATH_CAPACITY] = {0};
+    // ret = choose_random_font_path(font_path, sizeof(font_path));
+    // if (ret != ESP_OK) {
+    //     return ret;
+    // }
 
     size_t font_size = 0U;
-    ret = load_font_file(font_path, &s_font_demo_data, &font_size);
+    ret = load_font_file("/sdcard/fonts/Aileron-Regular.ttf", &s_font_demo_data, &font_size);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -723,6 +727,16 @@ static esp_err_t run_vector_demo(grape_context_t *grape)
 
 void app_main(void)
 {
+#if EXPERIMENTAL_SET_CLOCK_400_MHZ
+    REGI2C_CLOCK_ENABLE();
+
+    clk_ll_cpll_set_config(400, 40);
+
+    REGI2C_CLOCK_DISABLE();
+
+    esp_rom_set_cpu_ticks_per_us(400);
+#endif
+
     grape_context_t *grape = NULL;
     grape_config_t config = GRAPE_CONFIG_DEFAULT();
 #if GRAPE_APP_RUN_FONT_DEMO
