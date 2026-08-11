@@ -285,25 +285,29 @@ static void shear_x(
             (float)out_y +
             0.5f;
 
-        int64_t source_y = (int64_t)floorf(y - input->top);
-        if (source_y < 0 || source_y >= input->height) {
+        float source_y_f = y - input->top;
+
+        // See /docs/PERFORMANCE.md#avoid-int64_t-floorf-in-hot-paths
+        if (source_y_f < 0.0f || source_y_f >= (float)input->height) {
             continue;
         }
+        int32_t source_y = (int32_t)source_y_f;
 
         float first_output_x = (float)output_bounds->left + 0.5f;
         float first_source_x = first_output_x - coefficient * y;
 
-        int64_t source_x =
-            (int64_t)floorf(first_source_x - input->left);
-        int64_t output_x = 0;
+        // See /docs/PERFORMANCE.md#avoid-int64_t-floorf-in-hot-paths
+        int32_t source_x =
+            grape_floor_to_i32(first_source_x - input->left);
+        int32_t output_x = 0;
 
         if (source_x < 0) {
             output_x = -source_x;
             source_x = 0;
         }
 
-        if (output_x >= output_bounds->width ||
-            source_x >= input->width) {
+        if ((uint32_t)output_x >= output_bounds->width ||
+            (uint32_t)source_x >= input->width) {
             continue;
         }
 
@@ -348,25 +352,29 @@ static void shear_y(
             (float)out_x +
             0.5f;
 
-        int64_t source_x = (int64_t)floorf(x - input->left);
-        if (source_x < 0 || source_x >= input->width) {
+        float source_x_f = x - input->left;
+
+        // See /docs/PERFORMANCE.md#avoid-int64_t-floorf-in-hot-paths
+        if (source_x_f < 0.0f || source_x_f >= (float)input->width) {
             continue;
         }
+        int32_t source_x = (int32_t)source_x_f;
 
         float first_output_y = (float)output_bounds->top + 0.5f;
         float first_source_y = first_output_y - coefficient * x;
 
-        int64_t source_y =
-            (int64_t)floorf(first_source_y - input->top);
-        int64_t output_y = 0;
+        // See /docs/PERFORMANCE.md#avoid-int64_t-floorf-in-hot-paths
+        int32_t source_y =
+            grape_floor_to_i32(first_source_y - input->top);
+        int32_t output_y = 0;
 
         if (source_y < 0) {
             output_y = -source_y;
             source_y = 0;
         }
 
-        if (output_y >= output_bounds->height ||
-            source_y >= input->height) {
+        if ((uint32_t)output_y >= output_bounds->height ||
+            (uint32_t)source_y >= input->height) {
             continue;
         }
 
@@ -636,8 +644,9 @@ static esp_err_t rotate_quarter_turn_a8_impl(
                 local_y = rotated_x + surface->transform.origin_y;
             }
 
-            int32_t source_x = (int32_t)floorf(local_x);
-            int32_t source_y = (int32_t)floorf(local_y);
+            // See /docs/PERFORMANCE.md#avoid-int64_t-floorf-in-hot-paths
+            int32_t source_x = grape_floor_to_i32(local_x);
+            int32_t source_y = grape_floor_to_i32(local_y);
 
             if (source_x < 0 || source_y < 0 ||
                 source_x >= (int32_t)surface->texture->width ||

@@ -498,30 +498,32 @@ static esp_err_t raster_surface_three_shear_a8(
             ((float)y + 0.5f) -
             surface->transform.y;
 
-        int64_t source_y =
-            (int64_t)floorf(local_y - image.top);
+        float source_y_f = local_y - image.top;
 
-        // Skip the row if it's outside of the image
-        if (source_y < 0 || source_y >= (int64_t)image.height) {
+        // See /docs/PERFORMANCE.md#avoid-int64_t-floorf-in-hot-paths
+        // Skip the row before converting: non-negative float-to-int truncation is floor.
+        if (source_y_f < 0.0f || source_y_f >= (float)image.height) {
             continue;
         }
+        int32_t source_y = (int32_t)source_y_f;
 
         // Find corresponding starting x in the rotated image
         float first_local_x =
             ((float)clipped.x + 0.5f) -
             surface->transform.x;
 
-        int64_t source_x =
-            (int64_t)floorf(first_local_x - image.left);
-        int64_t destination_x = 0;
+        // See /docs/PERFORMANCE.md#avoid-int64_t-floorf-in-hot-paths
+        int32_t source_x =
+            grape_floor_to_i32(first_local_x - image.left);
+        int32_t destination_x = 0;
 
         if (source_x < 0) {
             destination_x = -source_x;
             source_x = 0;
         }
 
-        if (destination_x >= clipped.width ||
-            source_x >= (int64_t)image.width) {
+        if ((uint32_t)destination_x >= (uint32_t)clipped.width ||
+            (uint32_t)source_x >= image.width) {
             continue;
         }
 

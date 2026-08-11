@@ -7,6 +7,13 @@
 #include "grape/grape.h"
 #include "grape/grape_telemetry.h"
 
+// See /docs/PERFORMANCE.md#avoid-int64_t-floorf-in-hot-paths
+static inline int32_t grape_floor_to_i32(float value)
+{
+    int32_t truncated = (int32_t)value;
+    return truncated - ((float)truncated > value);
+}
+
 typedef enum {
 #define GRAPE_FEATURE_ENTRY(symbol, id, name, default_mode, flags) \
     GRAPE_FEATURE_SLOT_##symbol,
