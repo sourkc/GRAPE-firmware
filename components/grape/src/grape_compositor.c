@@ -9,7 +9,17 @@ typedef struct {
     uint8_t a;
 } rgba8_t;
 
-static inline uint8_t *render_target_pixel(grape_context_t *context,
+/**
+ * Computes the memory address of pixel (x, y) inside the current
+ * render target
+ *
+ * @param context GRAPE context
+ * @param x Pixel x coordinate
+ * @param y Pixel y coordinate
+ * @param bpp Bytes per pixel
+ * @return Memory address of pixel inside the render target
+ */
+static inline uint8_t *target_pixel_address(grape_context_t *context,
                                            int32_t x,
                                            int32_t y,
                                            size_t bpp)
@@ -19,11 +29,26 @@ static inline uint8_t *render_target_pixel(grape_context_t *context,
            (size_t)x * bpp;
 }
 
+/**
+ * Multiplies 2 8-bit normalized (0-255) values to
+ * produce an 8-bit normalized value (0-255)
+ *
+ * @param a First 8-bit normalized value
+ * @param b Second 8-bit normalized value
+ * @return Result of normalized 8-bit multiplication
+ */
 static inline uint8_t mul8(uint8_t a, uint8_t b)
 {
     return (uint8_t)(((uint16_t)a * b + 127U) / 255U);
 }
 
+/**
+ * Blends 2 RGBA8 colors over each other
+ *
+ * @param dst Background color
+ * @param src Color getting blended over the background color
+ * @return Blended color
+ */
 static inline rgba8_t blend_over(rgba8_t dst, rgba8_t src)
 {
     if (src.a == 0) {
@@ -45,6 +70,11 @@ static inline rgba8_t blend_over(rgba8_t dst, rgba8_t src)
     return out;
 }
 
+/**
+ * Converts an RGB565 color into raw bytes
+ * @param dst Destination bytes
+ * @param color RGB565 color
+ */
 static inline void write_rgb565(uint8_t *dst, rgba8_t color)
 {
     uint16_t pixel = (uint16_t)(((color.r >> 3) << 11) | ((color.g >> 2) << 5) | (color.b >> 3));
@@ -52,6 +82,11 @@ static inline void write_rgb565(uint8_t *dst, rgba8_t color)
     dst[1] = (uint8_t)(pixel >> 8);
 }
 
+/**
+ * Converts an RGB8 color into raw bytes
+ * @param dst Destination bytes
+ * @param color RGB8 color
+ */
 static inline void write_rgb888(uint8_t *dst, rgba8_t color)
 {
     dst[0] = color.r;
@@ -59,6 +94,12 @@ static inline void write_rgb888(uint8_t *dst, rgba8_t color)
     dst[2] = color.b;
 }
 
+/**
+ * Converts raw bytes into an RGB565 color
+ *
+ * @param src Raw color bytes
+ * @return RGB565 color
+ */
 static inline rgba8_t read_rgb565(const uint8_t *src)
 {
     uint16_t pixel =
@@ -77,6 +118,12 @@ static inline rgba8_t read_rgb565(const uint8_t *src)
     };
 }
 
+/**
+ * Converts raw bytes into an RGB8 color
+ *
+ * @param src Raw color bytes
+ * @return RGB8 color
+ */
 static inline rgba8_t read_rgb888(const uint8_t *src)
 {
     return (rgba8_t) {
@@ -87,6 +134,13 @@ static inline rgba8_t read_rgb888(const uint8_t *src)
     };
 }
 
+/**
+ * Composites an RGBA source pixel over a framebuffer pixel.
+ *
+ * @param dst Destination pixel in bytes
+ * @param output_format Output color format
+ * @param source Source pixel to composite
+ */
 static inline void composite_source_pixel(uint8_t *dst, grape_pixel_format_t output_format, rgba8_t source)
 {
     if (source.a == 0) {
@@ -117,6 +171,20 @@ static inline void composite_source_pixel(uint8_t *dst, grape_pixel_format_t out
     }
 }
 
+/**
+ * Maps the center of a screen pixel into a surface's local texture
+ * coordinates using the cached inverse affine transform.
+ *
+ * This is evaluated once at the beginning of each raster row. Subsequent
+ * pixels advance the local coordinates using the cached horizontal
+ * transform coefficients.
+ *
+ * @param surface The surface being rendered
+ * @param x Screen X coordinate
+ * @param y Screen Y coordinate
+ * @param local_x Returned local texture X coordinate
+ * @param local_y Returned local texture Y coordinate
+ */
 static inline void affine_row_start(const grape_surface_t *surface, int32_t x, int32_t y,
                                     float *local_x, float *local_y)
 {
@@ -132,6 +200,21 @@ static inline void affine_row_start(const grape_surface_t *surface, int32_t x, i
                surface->local_y_offset;
 }
 
+/**
+ * Rasters and applies tint to an A8 surface using
+ * Inverse Affine Transform (see /docs/MATH.md#affine-rotation)
+ *
+ * WARNING: the reason that these functions are separate
+ *          is to save CPU cycles. We DO NOT want to do if else
+ *          here because that would be too expensive to do hundreds
+ *          of thousands of times per frame.
+ *
+ * @param context GRAPE context
+ * @param surface Surface to raster
+ * @param damage_rect Damage rectangle  (currently unused)
+ * @param clipped Intersection of the dirty region and the surface's bounds
+ * @param bpp Bytes per pixel in the render target format
+ */
 static void raster_surface_a8(grape_context_t *context, const grape_surface_t *surface,
                               grape_rect_t damage_rect, grape_rect_t clipped, size_t bpp)
 {
@@ -140,19 +223,21 @@ static void raster_surface_a8(grape_context_t *context, const grape_surface_t *s
     const float texture_height = (float)texture->height;
     (void)damage_rect;
 
-    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
+    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) { // Iterate over rows
         float local_x;
         float local_y;
         affine_row_start(surface, clipped.x, y, &local_x, &local_y);
 
-        uint8_t *dst = render_target_pixel(context, clipped.x, y, bpp);
+        uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp);
 
-        for (int32_t x = 0; x < clipped.width; ++x) {
+        for (int32_t x = 0; x < clipped.width; ++x) { // Iterate over columns
             if (local_x >= 0.0f && local_y >= 0.0f &&
-                local_x < texture_width && local_y < texture_height) {
+                local_x < texture_width && local_y < texture_height) { // If in bounds
 
+                // Convert floating point local coordinates to texture coordinates
                 int32_t tx = (int32_t)local_x;
                 int32_t ty = (int32_t)local_y;
+                // and find the corresponding texel in memory
                 const uint8_t *row = texture->pixels + (size_t)ty * texture->stride;
                 uint8_t alpha = row[tx];
 
@@ -162,11 +247,12 @@ static void raster_surface_a8(grape_context_t *context, const grape_surface_t *s
                         .g = surface->tint.g,
                         .b = surface->tint.b,
                         .a = mul8(mul8(alpha, surface->tint.a), surface->opacity),
-                    };
+                    }; // Apply tint and transparency
                     composite_source_pixel(dst, context->display_info.format, source);
                 }
             }
 
+            // Move the local coordinates by the affine transform constants
             local_x += surface->local_x_from_screen_x;
             local_y += surface->local_y_from_screen_x;
             dst += bpp;
@@ -174,6 +260,21 @@ static void raster_surface_a8(grape_context_t *context, const grape_surface_t *s
     }
 }
 
+/**
+ * Rasters an RGB565 surface using
+ * Inverse Affine Transform (see /docs/MATH.md#affine-rotation)
+ *
+ * WARNING: the reason that these functions are separate
+ *          is to save CPU cycles. We DO NOT want to do if else
+ *          here because that would be too expensive to do hundreds
+ *          of thousands of times per frame.
+ *
+ * @param context GRAPE context
+ * @param surface Surface to raster
+ * @param damage_rect Damage rectangle  (currently unused)
+ * @param clipped Intersection of the dirty region and the surface's bounds
+ * @param bpp Bytes per pixel in the render target format
+ */
 static void raster_surface_rgb565(grape_context_t *context, const grape_surface_t *surface,
                                   grape_rect_t damage_rect, grape_rect_t clipped, size_t bpp)
 {
@@ -187,22 +288,25 @@ static void raster_surface_rgb565(grape_context_t *context, const grape_surface_
         return;
     }
 
-    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
+    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) { // Iterate over rows
         float local_x;
         float local_y;
         affine_row_start(surface, clipped.x, y, &local_x, &local_y);
 
-        uint8_t *dst = render_target_pixel(context, clipped.x, y, bpp);
+        uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp);
 
-        for (int32_t x = 0; x < clipped.width; ++x) {
+        for (int32_t x = 0; x < clipped.width; ++x) { // Iterate over columns
             if (local_x >= 0.0f && local_y >= 0.0f &&
-                local_x < texture_width && local_y < texture_height) {
+                local_x < texture_width && local_y < texture_height) { // If in bounds
 
+                // Convert floating point local coordinates to texture coordinates
                 int32_t tx = (int32_t)local_x;
                 int32_t ty = (int32_t)local_y;
+                // and find the corresponding texel in memory
                 const uint8_t *row = texture->pixels + (size_t)ty * texture->stride;
                 uint16_t pixel = ((const uint16_t *)row)[tx];
 
+                // Split RGB565 pixel into its R5, G6 and B5 components
                 uint8_t r5 = (uint8_t)((pixel >> 11) & 0x1F);
                 uint8_t g6 = (uint8_t)((pixel >> 5) & 0x3F);
                 uint8_t b5 = (uint8_t)(pixel & 0x1F);
@@ -212,11 +316,12 @@ static void raster_surface_rgb565(grape_context_t *context, const grape_surface_
                     .g = mul8((uint8_t)((g6 << 2) | (g6 >> 4)), surface->tint.g),
                     .b = mul8((uint8_t)((b5 << 3) | (b5 >> 2)), surface->tint.b),
                     .a = surface_alpha,
-                };
+                }; // Apply tint and transparency
 
                 composite_source_pixel(dst, context->display_info.format, source);
             }
 
+            // Move the local coordinates by the affine transform constants
             local_x += surface->local_x_from_screen_x;
             local_y += surface->local_y_from_screen_x;
             dst += bpp;
@@ -224,6 +329,21 @@ static void raster_surface_rgb565(grape_context_t *context, const grape_surface_
     }
 }
 
+/**
+ * Rasters an RGB888 surface using
+ * Inverse Affine Transform (see /docs/MATH.md#affine-rotation)
+ *
+ * WARNING: the reason that these functions are separate
+ *          is to save CPU cycles. We DO NOT want to do if else
+ *          here because that would be too expensive to do hundreds
+ *          of thousands of times per frame.
+ *
+ * @param context GRAPE context
+ * @param surface Surface to raster
+ * @param damage_rect Damage rectangle  (currently unused)
+ * @param clipped Intersection of the dirty region and the surface's bounds
+ * @param bpp Bytes per pixel in the render target format
+ */
 static void raster_surface_rgb888(grape_context_t *context, const grape_surface_t *surface,
                                   grape_rect_t damage_rect, grape_rect_t clipped, size_t bpp)
 {
@@ -237,19 +357,21 @@ static void raster_surface_rgb888(grape_context_t *context, const grape_surface_
         return;
     }
 
-    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
+    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) { // Iterate over rows
         float local_x;
         float local_y;
         affine_row_start(surface, clipped.x, y, &local_x, &local_y);
 
-        uint8_t *dst = render_target_pixel(context, clipped.x, y, bpp);
+        uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp);
 
-        for (int32_t x = 0; x < clipped.width; ++x) {
+        for (int32_t x = 0; x < clipped.width; ++x) { // Iterate over columns
             if (local_x >= 0.0f && local_y >= 0.0f &&
-                local_x < texture_width && local_y < texture_height) {
+                local_x < texture_width && local_y < texture_height) { // If in bounds
 
+                // Convert floating point local coordinates to texture coordinates
                 int32_t tx = (int32_t)local_x;
                 int32_t ty = (int32_t)local_y;
+                // and find the corresponding texel in memory
                 const uint8_t *row = texture->pixels + (size_t)ty * texture->stride;
                 const uint8_t *pixel = row + (size_t)tx * 3U;
 
@@ -258,11 +380,12 @@ static void raster_surface_rgb888(grape_context_t *context, const grape_surface_
                     .g = mul8(pixel[1], surface->tint.g),
                     .b = mul8(pixel[2], surface->tint.b),
                     .a = surface_alpha,
-                };
+                }; // Apply tint and transparency
 
-                composite_source_pixel(dst, context->display_info.format, source);
+                composite_source_pixel(dst, context->display_info.format, source); // Composite onto screen
             }
 
+            // Move the local coordinates by the affine transform constants
             local_x += surface->local_x_from_screen_x;
             local_y += surface->local_y_from_screen_x;
             dst += bpp;
@@ -270,6 +393,15 @@ static void raster_surface_rgb888(grape_context_t *context, const grape_surface_
     }
 }
 
+/**
+ * Rasters any given surface using Inverse Affine Transform (see /docs/MATH.md#affine-rotation)
+ *
+ * @param context GRAPE context
+ * @param surface Surface to raster
+ * @param damage_rect Damage rectangle  (currently unused)
+ * @param clipped Intersection of the dirty region and the surface's bounds
+ * @param bpp Bytes per pixel in the render target format
+ */
 static void raster_surface_cpu(grape_context_t *context, const grape_surface_t *surface,
                                grape_rect_t damage_rect, grape_rect_t clipped, size_t bpp)
 {
@@ -288,6 +420,23 @@ static void raster_surface_cpu(grape_context_t *context, const grape_surface_t *
     }
 }
 
+/**
+ * Rasterizes an A8 surface using the three-shear method of rotation
+ * (See /docs/MATH.md#three-shear-rotation)
+ *
+ * NOTICE: This currently only does A8 and fallback to affine for any other format
+ *
+ * TODO: Implement and benchmark three-shear for other formats and add a
+ *       cost-evaluation for auto backend if it's slower than affine in some cases
+ *
+ * @param context GRAPE context
+ * @param surface Surface to raster
+ * @param damage_rect Damage rectangle (currently unused)
+ * @param clipped Intersection of the dirty region and the surface's bounds
+ * @param bpp Bytes per pixel in the render target format
+ * @param handled Returns true if we handled the rasterization and false if we didn't. Currently only works for A8
+ * @return
+ */
 static esp_err_t raster_surface_three_shear_a8(
     grape_context_t *context,
     const grape_surface_t *surface,
@@ -303,6 +452,7 @@ static esp_err_t raster_surface_three_shear_a8(
 
     *handled = false;
 
+    // Attempt to rotate using the three-shear method (See /docs/MATH.md#three-shear-rotation)
     grape_shear_image_t image;
     esp_err_t ret = grape_shear_rotate_a8(context, surface, &image);
     if (ret == ESP_ERR_NOT_SUPPORTED) {
@@ -320,6 +470,7 @@ static esp_err_t raster_surface_three_shear_a8(
 
     GRAPE_TIME_SCOPE(SHEAR_COMPOSITE);
 
+    // Attempt to use the PPA to blend the image
     bool ppa_handled = false;
     ret = grape_ppa_blend_a8_image(
         context,
@@ -341,7 +492,8 @@ static esp_err_t raster_surface_three_shear_a8(
         return ESP_OK;
     }
 
-    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
+    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) { // Iterate over rows
+        // Find corresponding row in the rotated image
         float local_y =
             ((float)y + 0.5f) -
             surface->transform.y;
@@ -349,10 +501,12 @@ static esp_err_t raster_surface_three_shear_a8(
         int64_t source_y =
             (int64_t)floorf(local_y - image.top);
 
+        // Skip the row if it's outside of the image
         if (source_y < 0 || source_y >= (int64_t)image.height) {
             continue;
         }
 
+        // Find corresponding starting x in the rotated image
         float first_local_x =
             ((float)clipped.x + 0.5f) -
             surface->transform.x;
@@ -385,7 +539,7 @@ static esp_err_t raster_surface_three_shear_a8(
             (size_t)source_y * image.stride +
             (size_t)source_x;
 
-        uint8_t *destination = render_target_pixel(
+        uint8_t *destination = target_pixel_address(
             context,
             clipped.x + (int32_t)destination_x,
             y,
@@ -421,7 +575,7 @@ static esp_err_t raster_surface_three_shear_a8(
 static void fill_background_cpu(grape_context_t *context, grape_rect_t rect, size_t bpp, rgba8_t background)
 {
     for (int32_t y = rect.y; y < rect.y + rect.height; ++y) {
-        uint8_t *dst = render_target_pixel(context, rect.x, y, bpp);
+        uint8_t *dst = target_pixel_address(context, rect.x, y, bpp);
         for (int32_t x = 0; x < rect.width; ++x) {
 
             if (context->display_info.format == GRAPE_PIXEL_FORMAT_RGB565) {
