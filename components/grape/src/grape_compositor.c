@@ -43,7 +43,7 @@ static inline uint8_t mul8(uint8_t a, uint8_t b)
 }
 
 /**
- * Blends 2 RGBA8 colors over each other
+ * Blend an RGBA8 source over an opaque RGB destination
  *
  * @param dst Background color
  * @param src Color getting blended over the background color
@@ -71,7 +71,8 @@ static inline rgba8_t blend_over(rgba8_t dst, rgba8_t src)
 }
 
 /**
- * Converts an RGB565 color into raw bytes
+ * Converts an RGBA8 color into raw RGB565 bytes
+ *
  * @param dst Destination bytes
  * @param color RGB565 color
  */
@@ -83,7 +84,8 @@ static inline void write_rgb565(uint8_t *dst, rgba8_t color)
 }
 
 /**
- * Converts an RGB8 color into raw bytes
+ * Converts an RGBA8 color into raw RGB888 bytes
+ *
  * @param dst Destination bytes
  * @param color RGB8 color
  */
@@ -95,7 +97,7 @@ static inline void write_rgb888(uint8_t *dst, rgba8_t color)
 }
 
 /**
- * Converts raw bytes into an RGB565 color
+ * Converts raw RGB565 bytes into an RGBA8 color
  *
  * @param src Raw color bytes
  * @return RGB565 color
@@ -119,7 +121,7 @@ static inline rgba8_t read_rgb565(const uint8_t *src)
 }
 
 /**
- * Converts raw bytes into an RGB8 color
+ * Converts raw RGB888 bytes into an RGBA8 color
  *
  * @param src Raw color bytes
  * @return RGB8 color
@@ -211,7 +213,7 @@ static inline void affine_row_start(const grape_surface_t *surface, int32_t x, i
  *
  * @param context GRAPE context
  * @param surface Surface to raster
- * @param damage_rect Damage rectangle  (currently unused)
+ * @param damage_rect Damage rectangle (currently unused)
  * @param clipped Intersection of the dirty region and the surface's bounds
  * @param bpp Bytes per pixel in the render target format
  */
@@ -271,7 +273,7 @@ static void raster_surface_a8(grape_context_t *context, const grape_surface_t *s
  *
  * @param context GRAPE context
  * @param surface Surface to raster
- * @param damage_rect Damage rectangle  (currently unused)
+ * @param damage_rect Damage rectangle (currently unused)
  * @param clipped Intersection of the dirty region and the surface's bounds
  * @param bpp Bytes per pixel in the render target format
  */
@@ -340,7 +342,7 @@ static void raster_surface_rgb565(grape_context_t *context, const grape_surface_
  *
  * @param context GRAPE context
  * @param surface Surface to raster
- * @param damage_rect Damage rectangle  (currently unused)
+ * @param damage_rect Damage rectangle (currently unused)
  * @param clipped Intersection of the dirty region and the surface's bounds
  * @param bpp Bytes per pixel in the render target format
  */
@@ -382,7 +384,7 @@ static void raster_surface_rgb888(grape_context_t *context, const grape_surface_
                     .a = surface_alpha,
                 }; // Apply tint and transparency
 
-                composite_source_pixel(dst, context->display_info.format, source); // Composite onto screen
+                composite_source_pixel(dst, context->display_info.format, source);
             }
 
             // Move the local coordinates by the affine transform constants
@@ -398,7 +400,7 @@ static void raster_surface_rgb888(grape_context_t *context, const grape_surface_
  *
  * @param context GRAPE context
  * @param surface Surface to raster
- * @param damage_rect Damage rectangle  (currently unused)
+ * @param damage_rect Damage rectangle
  * @param clipped Intersection of the dirty region and the surface's bounds
  * @param bpp Bytes per pixel in the render target format
  */
@@ -431,7 +433,7 @@ static void raster_surface_cpu(grape_context_t *context, const grape_surface_t *
  *
  * @param context GRAPE context
  * @param surface Surface to raster
- * @param damage_rect Damage rectangle (currently unused)
+ * @param damage_rect Damage rectangle
  * @param clipped Intersection of the dirty region and the surface's bounds
  * @param bpp Bytes per pixel in the render target format
  * @param handled Returns true if we handled the rasterization and false if we didn't. Currently only works for A8
@@ -527,6 +529,9 @@ static esp_err_t raster_surface_three_shear_a8(
             continue;
         }
 
+        // Calculates the amount of pixels safe to process before
+        // running into the destination space edge or the source
+        // image edge
         size_t available_destination =
             (size_t)clipped.width - (size_t)destination_x;
         size_t available_source =
@@ -536,6 +541,7 @@ static esp_err_t raster_surface_three_shear_a8(
                 ? available_destination
                 : available_source;
 
+        // Calculate the starting source and destination pixel addresses
         const uint8_t *source =
             image.pixels +
             (size_t)source_y * image.stride +
@@ -559,7 +565,7 @@ static esp_err_t raster_surface_three_shear_a8(
                         mul8(alpha, surface->tint.a),
                         surface->opacity
                     ),
-                };
+                }; // Apply tint and transparency
                 composite_source_pixel(
                     destination,
                     context->display_info.format,
@@ -574,6 +580,16 @@ static esp_err_t raster_surface_three_shear_a8(
     return ESP_OK;
 }
 
+/**
+ * Fills a rectangle with a certain color on the CPU
+ *
+ * NOTICE: only use this as fallback if the PPA does not support it or is slower
+ *
+ * @param context GRAPE context
+ * @param rect Rect to fill
+ * @param bpp Bytes per pixel in the output color format
+ * @param background Background color to fill
+ */
 static void fill_background_cpu(grape_context_t *context, grape_rect_t rect, size_t bpp, rgba8_t background)
 {
     for (int32_t y = rect.y; y < rect.y + rect.height; ++y) {
@@ -590,6 +606,13 @@ static void fill_background_cpu(grape_context_t *context, grape_rect_t rect, siz
     }
 }
 
+/**
+ * Renders a rectangle onto the screen
+ *
+ * @param context GRAPE context
+ * @param rect rect to composite
+ * @return ESP_OK on success or an error code
+ */
 esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
 {
     GRAPE_TIME_SCOPE(COMPOSITOR);
@@ -599,13 +622,13 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
     }
 
     size_t bpp = grape_bytes_per_pixel(context->display_info.format);
-    if (!context->render_target.pixels ||
-        context->render_target.format != context->display_info.format ||
-        context->render_target.width != context->display_info.width ||
-        context->render_target.height != context->display_info.height ||
-        rect.x < 0 || rect.y < 0 ||
-        (uint32_t)(rect.x + rect.width) > context->render_target.width ||
-        (uint32_t)(rect.y + rect.height) > context->render_target.height) {
+    if (!context->render_target.pixels ||                                   // Check if the pixel buffer exists
+        context->render_target.format != context->display_info.format ||    // Check if the render target format is the same as the display format
+        context->render_target.width != context->display_info.width ||      // Check if the render target width matches display width
+        context->render_target.height != context->display_info.height ||    // Same for height
+        rect.x < 0 || rect.y < 0 ||                                         // Check if coordinates are not outside of the screen
+        (uint32_t)(rect.x + rect.width) > context->render_target.width ||   // Same thing
+        (uint32_t)(rect.y + rect.height) > context->render_target.height) { // Same thing
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -616,6 +639,7 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         .a = 255,
     };
 
+    // Attempt to fill the rectangle using the PPA, fallback to CPU
     esp_err_t ret = ESP_FAIL;
     GRAPE_TIME_BLOCK(PPA_FILL) {
         ret = grape_ppa_fill(context, rect, context->background);
@@ -634,12 +658,14 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
          surface;
          surface = surface->next) {
 
+        // Check if the surface is even visible
         if (!surface->visible ||
             !surface->texture ||
             surface->opacity == 0) {
             continue;
         }
 
+        // Crop the damage rectangle to the surface's bounds
         grape_rect_t clipped =
             grape_rect_intersection(
                 rect,
@@ -652,6 +678,7 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
 
         bool handled = false;
 
+        // Attempt to raster the surface using three shear method if backend is set to auto, fallback to CPU
         if (context->rotation_backend == GRAPE_ROTATION_BACKEND_AUTO) {
             GRAPE_TIME_BLOCK(PPA_BLEND_DISPATCH) {
                 ret = grape_ppa_blend_surface(context, surface, rect, &handled);
@@ -685,6 +712,7 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         }
     }
 
+    // Render debug overlays
     grape_debug_render(context, rect);
     return ESP_OK;
 }
