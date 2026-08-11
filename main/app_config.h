@@ -8,7 +8,7 @@
 #define GRAPE_APP_BENCHMARK_SUITE_MASK GRAPE_BENCHMARK_SUITE_ALL
 
 
-/* Shader language demo (Mandelbrot). */
+/* Shader language demo (animated SDF raymarcher). */
 #define GRAPE_APP_RUN_SHADER_DEMO 1
 
 /* First TrueType glyph proof of life. */

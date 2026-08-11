@@ -7,6 +7,7 @@ from .ir import (
     IRBlock,
     IRBoolConstant,
     IRBreak,
+    IRBuiltinCall,
     IRCall,
     IRCast,
     IRConditional,
@@ -310,6 +311,8 @@ class _FunctionEmitter:
         if isinstance(instruction, IRCall):
             arguments = ["ctx"] + [self.values[value.id] for value in instruction.arguments]
             return f"{self.function_names[instruction.function_id]}({', '.join(arguments)})"
+        if isinstance(instruction, IRBuiltinCall):
+            return _emit_builtin_call(instruction.name, result.type, instruction.arguments, self.values)
         raise AssertionError(f"unhandled IR instruction: {type(instruction).__name__}")
 
     @staticmethod
@@ -653,6 +656,149 @@ def _emit_binary(
         return _matrix_literal(result_type, components)
 
     raise AssertionError(f"unsupported binary result type {result_type}")
+
+
+
+def _emit_builtin_call(
+    name: str,
+    result_type: ShaderType,
+    arguments: tuple[IRValue, ...],
+    values: dict[int, str],
+) -> str:
+    if name in {"abs", "ceil", "cos", "exp", "floor", "fract", "sign", "sin", "sqrt"}:
+        return _emit_componentwise_builtin(name, result_type, arguments, values)
+
+    if name in {"min", "max", "clamp", "mix", "smoothstep", "pow"}:
+        return _emit_componentwise_builtin(name, result_type, arguments, values)
+
+    if name == "dot":
+        left, right = arguments
+        left_expr = values[left.id]
+        right_expr = values[right.id]
+        terms = [
+            f"{_component_expression(left, left_expr, index)} * {_component_expression(right, right_expr, index)}"
+            for index in range(left.type.component_count)
+        ]
+        return "(" + " + ".join(terms) + ")"
+
+    if name == "length":
+        argument = arguments[0]
+        expression = values[argument.id]
+        if argument.type == ShaderType.FLOAT:
+            return f"fabsf({expression})"
+        terms = [
+            f"{_component_expression(argument, expression, index)} * {_component_expression(argument, expression, index)}"
+            for index in range(argument.type.component_count)
+        ]
+        return f"sqrtf({' + '.join(terms)})"
+
+    if name == "normalize":
+        argument = arguments[0]
+        expression = values[argument.id]
+        if argument.type == ShaderType.FLOAT:
+            return f"({expression} / fabsf({expression}))"
+        return f"grape_shader_normalize_{argument.type.value}({expression})"
+
+    if name == "cross":
+        left, right = arguments
+        a = values[left.id]
+        b = values[right.id]
+        return _vector_literal(
+            ShaderType.VEC3,
+            [
+                f"{a}.y * {b}.z - {a}.z * {b}.y",
+                f"{a}.z * {b}.x - {a}.x * {b}.z",
+                f"{a}.x * {b}.y - {a}.y * {b}.x",
+            ],
+        )
+
+    if name == "reflect":
+        incident, normal = arguments
+        incident_expr = values[incident.id]
+        normal_expr = values[normal.id]
+        if incident.type == ShaderType.FLOAT:
+            return f"({incident_expr} - 2.0f * ({normal_expr} * {incident_expr}) * {normal_expr})"
+        return f"grape_shader_reflect_{incident.type.value}({incident_expr}, {normal_expr})"
+
+    raise AssertionError(f"unhandled builtin call '{name}'")
+
+
+def _emit_componentwise_builtin(
+    name: str,
+    result_type: ShaderType,
+    arguments: tuple[IRValue, ...],
+    values: dict[int, str],
+) -> str:
+    if result_type.is_scalar:
+        return _emit_builtin_scalar(name, arguments, values, 0)
+    components = [
+        _emit_builtin_scalar(name, arguments, values, index)
+        for index in range(result_type.component_count)
+    ]
+    return _vector_literal(result_type, components)
+
+
+def _emit_builtin_scalar(
+    name: str,
+    arguments: tuple[IRValue, ...],
+    values: dict[int, str],
+    component: int,
+) -> str:
+    def arg(index: int) -> str:
+        value = arguments[index]
+        expression = values[value.id]
+        if value.type.is_vector:
+            return _component_expression(value, expression, component)
+        return expression
+
+    if name == "abs":
+        x = arg(0)
+        if arguments[0].type == ShaderType.INT:
+            return f"(({x}) < 0 ? -({x}) : ({x}))"
+        return f"fabsf({x})"
+    if name == "ceil":
+        return f"ceilf({arg(0)})"
+    if name == "cos":
+        return f"cosf({arg(0)})"
+    if name == "exp":
+        return f"expf({arg(0)})"
+    if name == "floor":
+        return f"floorf({arg(0)})"
+    if name == "fract":
+        x = arg(0)
+        return f"(({x}) - floorf({x}))"
+    if name == "sign":
+        x = arg(0)
+        if arguments[0].type == ShaderType.INT:
+            return f"((({x}) > 0) - (({x}) < 0))"
+        return f"(({x}) > 0.0f ? 1.0f : (({x}) < 0.0f ? -1.0f : 0.0f))"
+    if name == "sin":
+        return f"sinf({arg(0)})"
+    if name == "sqrt":
+        return f"sqrtf({arg(0)})"
+    if name == "min":
+        x, y = arg(0), arg(1)
+        if arguments[0].type == ShaderType.INT:
+            return f"(({x}) < ({y}) ? ({x}) : ({y}))"
+        return f"fminf({x}, {y})"
+    if name == "max":
+        x, y = arg(0), arg(1)
+        if arguments[0].type == ShaderType.INT:
+            return f"(({x}) > ({y}) ? ({x}) : ({y}))"
+        return f"fmaxf({x}, {y})"
+    if name == "clamp":
+        x, low, high = arg(0), arg(1), arg(2)
+        if arguments[0].type == ShaderType.INT:
+            return f"(({x}) < ({low}) ? ({low}) : (({x}) > ({high}) ? ({high}) : ({x})))"
+        return f"fminf(fmaxf({x}, {low}), {high})"
+    if name == "mix":
+        x, y, amount = arg(0), arg(1), arg(2)
+        return f"(({x}) * (1.0f - ({amount})) + ({y}) * ({amount}))"
+    if name == "smoothstep":
+        return f"grape_shader_smoothstepf({arg(0)}, {arg(1)}, {arg(2)})"
+    if name == "pow":
+        return f"powf({arg(0)}, {arg(1)})"
+    raise AssertionError(f"unhandled componentwise builtin '{name}'")
 
 
 def _join_equality(operator: str, comparisons: list[str]) -> str:

@@ -17,7 +17,7 @@
 #include "grape_storage_sd.h"
 
 #include "app_config.h"
-#include "generated_mandelbrot.h"
+#include "generated_raymarch_demo.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -168,8 +168,12 @@ static float noise_to_unit(float value)
 
 
 #if GRAPE_APP_RUN_SHADER_DEMO
-#define SHADER_DEMO_SURFACE_WIDTH 512U
-#define SHADER_DEMO_SURFACE_HEIGHT 320U
+#define SHADER_DEMO_SURFACE_WIDTH 320U
+#define SHADER_DEMO_SURFACE_HEIGHT 200U
+#define SHADER_DEMO_LOG_INTERVAL_FRAMES 10U
+
+static grape_surface_t *s_shader_demo_surface;
+static generated_raymarch_demo_uniforms_t s_shader_demo_uniforms;
 
 static esp_err_t run_shader_demo(grape_context_t *grape)
 {
@@ -178,14 +182,14 @@ static esp_err_t run_shader_demo(grape_context_t *grape)
         return ESP_ERR_INVALID_STATE;
     }
 
-    grape_surface_t *surface = NULL;
+    s_shader_demo_uniforms.time = 0.0f;
     esp_err_t ret = grape_surface_create_procedural(
         grape,
         SHADER_DEMO_SURFACE_WIDTH,
         SHADER_DEMO_SURFACE_HEIGHT,
-        &generated_mandelbrot_program,
-        NULL,
-        &surface
+        &generated_raymarch_demo_program,
+        &s_shader_demo_uniforms,
+        &s_shader_demo_surface
     );
     if (ret != ESP_OK) {
         return ret;
@@ -194,14 +198,45 @@ static esp_err_t run_shader_demo(grape_context_t *grape)
     grape_transform_t transform = GRAPE_TRANSFORM_DEFAULT();
     transform.x = ((float)display->width - (float)SHADER_DEMO_SURFACE_WIDTH) * 0.5f;
     transform.y = ((float)display->height - (float)SHADER_DEMO_SURFACE_HEIGHT) * 0.5f;
-    ret = grape_surface_set_transform(surface, &transform);
+    ret = grape_surface_set_transform(s_shader_demo_surface, &transform);
     if (ret != ESP_OK) {
         return ret;
     }
 
-    ESP_LOGI(TAG, "Shader language v0.5 demo: %ux%u Mandelbrot, 64 max iterations",
-             SHADER_DEMO_SURFACE_WIDTH, SHADER_DEMO_SURFACE_HEIGHT);
+    ESP_LOGI(TAG,
+             "Shader language v0.6 demo: %ux%u animated SDF raymarcher, 48 max steps",
+             SHADER_DEMO_SURFACE_WIDTH,
+             SHADER_DEMO_SURFACE_HEIGHT);
     return grape_present(grape);
+}
+
+static void animate_shader_demo(grape_context_t *grape)
+{
+    int64_t start_us = esp_timer_get_time();
+    uint32_t frame = 0U;
+
+    while (1) {
+        int64_t frame_start_us = esp_timer_get_time();
+        s_shader_demo_uniforms.time = (float)(frame_start_us - start_us) / 1000000.0f;
+
+        ESP_ERROR_CHECK(
+            grape_surface_update_shader_uniforms(
+                s_shader_demo_surface,
+                &s_shader_demo_uniforms
+            )
+        );
+        ESP_ERROR_CHECK(grape_present(grape));
+
+        frame++;
+        if (frame % SHADER_DEMO_LOG_INTERVAL_FRAMES == 0U) {
+            int64_t frame_us = esp_timer_get_time() - frame_start_us;
+            ESP_LOGI(TAG,
+                     "Raymarch frame %" PRIu32 ": %.1f ms (%.2f FPS)",
+                     frame,
+                     (double)frame_us / 1000.0,
+                     frame_us > 0 ? 1000000.0 / (double)frame_us : 0.0);
+        }
+    }
 }
 #endif
 
@@ -796,9 +831,7 @@ void app_main(void)
 
 #if GRAPE_APP_RUN_SHADER_DEMO
     ESP_ERROR_CHECK(run_shader_demo(grape));
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
+    animate_shader_demo(grape);
 #endif
 
 #if GRAPE_APP_RUN_FONT_DEMO

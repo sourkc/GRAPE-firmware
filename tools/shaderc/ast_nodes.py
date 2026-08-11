@@ -162,6 +162,7 @@ class CallExpression(Expression):
     name: str
     arguments: list[Expression]
     resolved_function_id: int | None = field(default=None, init=False)
+    resolved_builtin_name: str | None = field(default=None, init=False)
 
 
 @dataclass

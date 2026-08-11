@@ -12,6 +12,7 @@ from .ir import (
     IRBinary,
     IRBoolConstant,
     IRBreak,
+    IRBuiltinCall,
     IRCall,
     IRCast,
     IRConditional,
@@ -178,6 +179,9 @@ def _dump_ir_block(block, indent: int) -> list[str]:
         elif isinstance(instruction, IRCall):
             operands = ", ".join(f"%{argument.id}" for argument in instruction.arguments)
             lines.append(f"{prefix}{_value(instruction.result)} = call #{instruction.function_id}({operands})")
+        elif isinstance(instruction, IRBuiltinCall):
+            operands = ", ".join(f"%{argument.id}" for argument in instruction.arguments)
+            lines.append(f"{prefix}{_value(instruction.result)} = builtin_call {instruction.name}({operands})")
         elif isinstance(instruction, IRLogical):
             lines.append(f"{prefix}{_value(instruction.result)} = logical {instruction.operator} %{instruction.left.id}")
             lines.extend(_dump_ir_block(instruction.right, indent + 1))

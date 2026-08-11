@@ -1,5 +1,7 @@
 #pragma once
 
+#include <math.h>
+
 #include "grape/grape_shader.h"
 
 struct grape_shader_kernel_args {
@@ -38,6 +40,78 @@ static inline uint8_t grape_shader_float_to_u8(float value)
         return 255U;
     }
     return (uint8_t)(value * 255.0f + 0.5f);
+}
+
+static inline float grape_shader_smoothstepf(float edge0, float edge1, float x)
+{
+    float t = (x - edge0) / (edge1 - edge0);
+    t = fminf(fmaxf(t, 0.0f), 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static inline grape_shader_vec2_t grape_shader_normalize_vec2(grape_shader_vec2_t v)
+{
+    float inverse_length = 1.0f / sqrtf(v.x * v.x + v.y * v.y);
+    return (grape_shader_vec2_t) { v.x * inverse_length, v.y * inverse_length };
+}
+
+static inline grape_shader_vec3_t grape_shader_normalize_vec3(grape_shader_vec3_t v)
+{
+    float inverse_length = 1.0f / sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
+    return (grape_shader_vec3_t) { v.x * inverse_length, v.y * inverse_length, v.z * inverse_length };
+}
+
+static inline grape_shader_vec4_t grape_shader_normalize_vec4(grape_shader_vec4_t v)
+{
+    float inverse_length = 1.0f / sqrtf(v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w);
+    return (grape_shader_vec4_t) {
+        v.x * inverse_length,
+        v.y * inverse_length,
+        v.z * inverse_length,
+        v.w * inverse_length,
+    };
+}
+
+static inline grape_shader_vec2_t grape_shader_reflect_vec2(
+    grape_shader_vec2_t incident,
+    grape_shader_vec2_t normal
+)
+{
+    float scale = 2.0f * (normal.x * incident.x + normal.y * incident.y);
+    return (grape_shader_vec2_t) {
+        incident.x - scale * normal.x,
+        incident.y - scale * normal.y,
+    };
+}
+
+static inline grape_shader_vec3_t grape_shader_reflect_vec3(
+    grape_shader_vec3_t incident,
+    grape_shader_vec3_t normal
+)
+{
+    float scale = 2.0f * (normal.x * incident.x + normal.y * incident.y + normal.z * incident.z);
+    return (grape_shader_vec3_t) {
+        incident.x - scale * normal.x,
+        incident.y - scale * normal.y,
+        incident.z - scale * normal.z,
+    };
+}
+
+static inline grape_shader_vec4_t grape_shader_reflect_vec4(
+    grape_shader_vec4_t incident,
+    grape_shader_vec4_t normal
+)
+{
+    float scale = 2.0f * (
+        normal.x * incident.x + normal.y * incident.y +
+        normal.z * incident.z + normal.w * incident.w
+    );
+    return (grape_shader_vec4_t) {
+        incident.x - scale * normal.x,
+        incident.y - scale * normal.y,
+        incident.z - scale * normal.z,
+        incident.w - scale * normal.w,
+    };
 }
 
 static inline grape_shader_vec4_t grape_shader_source_a8(

@@ -28,6 +28,7 @@ from .ast_nodes import (
     VariableDecl,
     VariableDeclGroup,
 )
+from .builtins import BUILTIN_FUNCTION_NAMES, resolve_builtin
 from .diagnostics import SourceFile, fail
 from .shader_types import ShaderType
 
@@ -361,24 +362,33 @@ class SemanticAnalyzer:
             argument_types = tuple(self._analyze_expression(argument) for argument in expression.arguments)
             overloads = self.functions.get(expression.name, [])
             matches = [function for function in overloads if function.parameter_types == argument_types]
-            if len(matches) != 1:
-                signature = self._format_signature(expression.name, argument_types)
-                if not overloads:
-                    fail(self.source, expression.span, f"unknown function '{expression.name}'")
-                candidates = ", ".join(
-                    self._format_signature(function.name, function.parameter_types) for function in overloads
-                )
-                fail(
-                    self.source,
-                    expression.span,
-                    f"no matching overload for '{signature}'; candidates: {candidates}",
-                )
-            function = matches[0]
-            expression.resolved_function_id = function.id
-            expression.resolved_type = function.return_type
-            assert self.current_function is not None
-            self.call_graph[self.current_function.id].add(function.id)
-            return function.return_type
+            if len(matches) == 1:
+                function = matches[0]
+                expression.resolved_function_id = function.id
+                expression.resolved_type = function.return_type
+                assert self.current_function is not None
+                self.call_graph[self.current_function.id].add(function.id)
+                return function.return_type
+
+            builtin = resolve_builtin(expression.name, argument_types)
+            if builtin is not None:
+                expression.resolved_builtin_name = builtin.name
+                expression.resolved_type = builtin.return_type
+                return builtin.return_type
+
+            signature = self._format_signature(expression.name, argument_types)
+            if expression.name in BUILTIN_FUNCTION_NAMES:
+                fail(self.source, expression.span, f"no matching builtin overload for '{signature}'")
+            if not overloads:
+                fail(self.source, expression.span, f"unknown function '{expression.name}'")
+            candidates = ", ".join(
+                self._format_signature(function.name, function.parameter_types) for function in overloads
+            )
+            fail(
+                self.source,
+                expression.span,
+                f"no matching overload for '{signature}'; candidates: {candidates}",
+            )
 
         if isinstance(expression, ConstructorExpression):
             result_type = self._analyze_constructor(expression)

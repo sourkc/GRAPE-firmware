@@ -121,6 +121,12 @@ class IRCall(IRInstruction):
 
 
 @dataclass(frozen=True)
+class IRBuiltinCall(IRInstruction):
+    name: str
+    arguments: tuple[IRValue, ...]
+
+
+@dataclass(frozen=True)
 class IRBlock:
     instructions: list[IRInstruction]
     result: IRValue | None = None

@@ -286,7 +286,7 @@ class Parser:
         while True:
             if self._check(TokenKind.LEFT_PAREN):
                 if not isinstance(expression, NameExpression):
-                    fail(self.source, expression.span, "only named functions can be called in shader language 0.5")
+                    fail(self.source, expression.span, "only named functions can be called in shader language 0.6")
                 start = expression.span.start
                 self._advance()
                 arguments = []

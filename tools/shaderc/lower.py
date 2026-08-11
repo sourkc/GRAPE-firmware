@@ -30,6 +30,7 @@ from .ir import (
     IRBlock,
     IRBoolConstant,
     IRBreak,
+    IRBuiltinCall,
     IRCall,
     IRCast,
     IRConditional,
@@ -272,10 +273,13 @@ class Lowerer:
             return result
 
         if isinstance(expression, CallExpression):
-            assert expression.resolved_function_id is not None
             arguments = tuple(self._lower_expression(argument) for argument in expression.arguments)
             result = self._new_value(expression.resolved_type)
-            self.instructions.append(IRCall(result, expression.resolved_function_id, arguments))
+            if expression.resolved_builtin_name is not None:
+                self.instructions.append(IRBuiltinCall(result, expression.resolved_builtin_name, arguments))
+            else:
+                assert expression.resolved_function_id is not None
+                self.instructions.append(IRCall(result, expression.resolved_function_id, arguments))
             return result
 
         if isinstance(expression, ConstructorExpression):
