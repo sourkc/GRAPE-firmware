@@ -24,6 +24,17 @@ typedef struct {
     float w;
 } grape_shader_vec4_t;
 
+typedef struct {
+    grape_shader_vec2_t c0;
+    grape_shader_vec2_t c1;
+} grape_shader_mat2_t;
+
+typedef struct {
+    grape_shader_vec3_t c0;
+    grape_shader_vec3_t c1;
+    grape_shader_vec3_t c2;
+} grape_shader_mat3_t;
+
 typedef struct grape_shader_kernel_args grape_shader_kernel_args_t;
 
 typedef void (*grape_shader_kernel_fn_t)(

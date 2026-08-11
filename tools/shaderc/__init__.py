@@ -1,3 +1,3 @@
 """GRAPE shader compiler."""
 
-LANGUAGE_VERSION = "0.4"
+LANGUAGE_VERSION = "0.5"

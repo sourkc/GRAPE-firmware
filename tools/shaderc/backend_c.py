@@ -24,6 +24,7 @@ from .ir import (
     IRModule,
     IRReturn,
     IRStoreVariable,
+    IRStoreSwizzle,
     IRSwizzle,
     IRUnary,
     IRValue,
@@ -183,6 +184,19 @@ class _FunctionEmitter:
 
         if isinstance(instruction, IRStoreVariable):
             return [f"{pad}{self._variable_name(instruction.kind, instruction.variable_index)} = {self.values[instruction.value.id]};"]
+
+        if isinstance(instruction, IRStoreSwizzle):
+            target = self._variable_name(instruction.kind, instruction.variable_index)
+            source = self.values[instruction.value.id]
+            if len(instruction.components) == 1:
+                component = _COMPONENTS[instruction.components[0]]
+                return [f"{pad}{target}.{component} = {source};"]
+            lines = []
+            for source_index, target_index in enumerate(instruction.components):
+                target_component = _COMPONENTS[target_index]
+                source_component = _COMPONENTS[source_index]
+                lines.append(f"{pad}{target}.{target_component} = {source}.{source_component};")
+            return lines
 
         if isinstance(instruction, IRDeclareLocal):
             qualifier = "const " if instruction.is_const else ""
@@ -539,6 +553,10 @@ def _c_type(shader_type: ShaderType) -> str:
         return "grape_shader_vec3_t"
     if shader_type == ShaderType.VEC4:
         return "grape_shader_vec4_t"
+    if shader_type == ShaderType.MAT2:
+        return "grape_shader_mat2_t"
+    if shader_type == ShaderType.MAT3:
+        return "grape_shader_mat3_t"
     raise AssertionError(f"unhandled shader type: {shader_type}")
 
 
@@ -553,10 +571,21 @@ def _emit_unary(operator: str, operand: IRValue, values: dict[int, str]) -> str:
     source = values[operand.id]
     if operand.type.is_scalar:
         return f"({operator}{source})"
-    return _vector_literal(
-        operand.type,
-        [f"{operator}{source}.{component}" for component in _COMPONENTS[:operand.type.component_count]],
-    )
+    if operand.type.is_vector:
+        return _vector_literal(
+            operand.type,
+            [f"{operator}{source}.{component}" for component in _COMPONENTS[:operand.type.component_count]],
+        )
+    if operand.type.is_matrix:
+        return _matrix_literal(
+            operand.type,
+            [
+                f"{operator}{_matrix_component_expression(operand, source, column, row)}"
+                for column in range(operand.type.matrix_size)
+                for row in range(operand.type.matrix_size)
+            ],
+        )
+    raise AssertionError(f"unsupported unary operand type {operand.type}")
 
 
 def _emit_binary(
@@ -569,26 +598,116 @@ def _emit_binary(
     left_expr = values[left.id]
     right_expr = values[right.id]
 
-    if result_type == ShaderType.BOOL and left.type.is_vector and right.type == left.type and operator in ("==", "!="):
-        comparisons = [
-            f"({left_expr}.{component} {operator} {right_expr}.{component})"
-            for component in _COMPONENTS[:left.type.component_count]
-        ]
-        joiner = " && " if operator == "==" else " || "
-        return "(" + joiner.join(comparisons) + ")"
+    if result_type == ShaderType.BOOL and operator in ("==", "!="):
+        if left.type.is_vector and right.type == left.type:
+            comparisons = [
+                f"({left_expr}.{component} {operator} {right_expr}.{component})"
+                for component in _COMPONENTS[:left.type.component_count]
+            ]
+            return _join_equality(operator, comparisons)
+        if left.type.is_matrix and right.type == left.type:
+            comparisons = [
+                f"({_matrix_component_expression(left, left_expr, column, row)} {operator} "
+                f"{_matrix_component_expression(right, right_expr, column, row)})"
+                for column in range(left.type.matrix_size)
+                for row in range(left.type.matrix_size)
+            ]
+            return _join_equality(operator, comparisons)
+
+    if operator == "*" and left.type.is_matrix and right.type.is_vector:
+        return _emit_matrix_times_vector(left, right, values)
+
+    if operator == "*" and left.type.is_vector and right.type.is_matrix:
+        return _emit_vector_times_matrix(left, right, values)
+
+    if operator == "*" and left.type.is_matrix and right.type.is_matrix:
+        return _emit_matrix_times_matrix(left, right, values)
 
     if result_type.is_scalar:
         return f"({left_expr} {operator} {right_expr})"
 
-    components: list[str] = []
-    for component in _COMPONENTS[:result_type.component_count]:
-        lhs = left_expr if left.type == ShaderType.FLOAT else f"{left_expr}.{component}"
-        rhs = right_expr if right.type == ShaderType.FLOAT else f"{right_expr}.{component}"
-        components.append(f"{lhs} {operator} {rhs}")
-    return _vector_literal(result_type, components)
+    if result_type.is_vector:
+        components: list[str] = []
+        for component in _COMPONENTS[:result_type.component_count]:
+            lhs = left_expr if left.type == ShaderType.FLOAT else f"{left_expr}.{component}"
+            rhs = right_expr if right.type == ShaderType.FLOAT else f"{right_expr}.{component}"
+            components.append(f"{lhs} {operator} {rhs}")
+        return _vector_literal(result_type, components)
+
+    if result_type.is_matrix:
+        size = result_type.matrix_size
+        components = []
+        for column in range(size):
+            for row in range(size):
+                lhs = (
+                    left_expr
+                    if left.type == ShaderType.FLOAT
+                    else _matrix_component_expression(left, left_expr, column, row)
+                )
+                rhs = (
+                    right_expr
+                    if right.type == ShaderType.FLOAT
+                    else _matrix_component_expression(right, right_expr, column, row)
+                )
+                components.append(f"{lhs} {operator} {rhs}")
+        return _matrix_literal(result_type, components)
+
+    raise AssertionError(f"unsupported binary result type {result_type}")
+
+
+def _join_equality(operator: str, comparisons: list[str]) -> str:
+    joiner = " && " if operator == "==" else " || "
+    return "(" + joiner.join(comparisons) + ")"
+
+
+def _emit_matrix_times_vector(left: IRValue, right: IRValue, values: dict[int, str]) -> str:
+    matrix = values[left.id]
+    vector = values[right.id]
+    size = left.type.matrix_size
+    rows = []
+    for row in range(size):
+        terms = [
+            f"{_matrix_component_expression(left, matrix, column, row)} * {vector}.{_COMPONENTS[column]}"
+            for column in range(size)
+        ]
+        rows.append(" + ".join(terms))
+    return _vector_literal(right.type, rows)
+
+
+def _emit_vector_times_matrix(left: IRValue, right: IRValue, values: dict[int, str]) -> str:
+    vector = values[left.id]
+    matrix = values[right.id]
+    size = right.type.matrix_size
+    columns = []
+    for column in range(size):
+        terms = [
+            f"{vector}.{_COMPONENTS[row]} * {_matrix_component_expression(right, matrix, column, row)}"
+            for row in range(size)
+        ]
+        columns.append(" + ".join(terms))
+    return _vector_literal(left.type, columns)
+
+
+def _emit_matrix_times_matrix(left: IRValue, right: IRValue, values: dict[int, str]) -> str:
+    left_expr = values[left.id]
+    right_expr = values[right.id]
+    size = left.type.matrix_size
+    components = []
+    for column in range(size):
+        for row in range(size):
+            terms = [
+                f"{_matrix_component_expression(left, left_expr, inner, row)} * "
+                f"{_matrix_component_expression(right, right_expr, column, inner)}"
+                for inner in range(size)
+            ]
+            components.append(" + ".join(terms))
+    return _matrix_literal(left.type, components)
 
 
 def _emit_constructor(target: ShaderType, arguments: tuple[IRValue, ...], values: dict[int, str]) -> str:
+    if target.is_matrix:
+        return _emit_matrix_constructor(target, arguments, values)
+
     width = target.component_count
     if len(arguments) == 1 and arguments[0].type.is_scalar:
         source = _as_float(arguments[0], values[arguments[0].id])
@@ -605,6 +724,50 @@ def _emit_constructor(target: ShaderType, arguments: tuple[IRValue, ...], values
             if len(components) == width:
                 return _vector_literal(target, components)
     raise AssertionError("validated constructor did not provide enough components")
+
+
+def _emit_matrix_constructor(
+    target: ShaderType,
+    arguments: tuple[IRValue, ...],
+    values: dict[int, str],
+) -> str:
+    size = target.matrix_size
+
+    if len(arguments) == 1 and arguments[0].type.is_numeric_scalar:
+        diagonal = _as_float(arguments[0], values[arguments[0].id])
+        components = [
+            diagonal if column == row else "0.0f"
+            for column in range(size)
+            for row in range(size)
+        ]
+        return _matrix_literal(target, components)
+
+    if len(arguments) == 1 and arguments[0].type.is_matrix:
+        source_value = arguments[0]
+        source = values[source_value.id]
+        source_size = source_value.type.matrix_size
+        components = []
+        for column in range(size):
+            for row in range(size):
+                if column < source_size and row < source_size:
+                    component = _matrix_component_expression(source_value, source, column, row)
+                else:
+                    component = "1.0f" if column == row else "0.0f"
+                components.append(component)
+        return _matrix_literal(target, components)
+
+    components: list[str] = []
+    needed = size * size
+    for argument in arguments:
+        source = values[argument.id]
+        for index in range(argument.type.component_count):
+            component = _component_expression(argument, source, index)
+            if argument.type == ShaderType.INT:
+                component = f"(float)({component})"
+            components.append(component)
+            if len(components) == needed:
+                return _matrix_literal(target, components)
+    raise AssertionError("validated matrix constructor did not provide enough components")
 
 
 def _as_float(value: IRValue, expression: str) -> str:
@@ -633,8 +796,31 @@ def _component_expression(value: IRValue, expression: str, component: int) -> st
         if component != 0:
             raise AssertionError("scalar component out of range")
         return expression
-    return f"{expression}.{_COMPONENTS[component]}"
+    if value.type.is_vector:
+        return f"{expression}.{_COMPONENTS[component]}"
+    if value.type.is_matrix:
+        size = value.type.matrix_size
+        column = component // size
+        row = component % size
+        return _matrix_component_expression(value, expression, column, row)
+    raise AssertionError(f"unsupported component source {value.type}")
+
+
+def _matrix_component_expression(value: IRValue, expression: str, column: int, row: int) -> str:
+    if not value.type.is_matrix:
+        raise AssertionError("expected matrix value")
+    return f"{expression}.c{column}.{_COMPONENTS[row]}"
 
 
 def _vector_literal(shader_type: ShaderType, components: list[str]) -> str:
     return f"({_c_type(shader_type)}){{ {', '.join(components)} }}"
+
+
+def _matrix_literal(shader_type: ShaderType, components: list[str]) -> str:
+    size = shader_type.matrix_size
+    columns = []
+    for column in range(size):
+        start = column * size
+        values = components[start:start + size]
+        columns.append(f".c{column} = {{ {', '.join(values)} }}")
+    return f"({_c_type(shader_type)}){{ {', '.join(columns)} }}"

@@ -199,7 +199,7 @@ static esp_err_t run_shader_demo(grape_context_t *grape)
         return ret;
     }
 
-    ESP_LOGI(TAG, "Shader language v0.4 demo: %ux%u Mandelbrot, 64 max iterations",
+    ESP_LOGI(TAG, "Shader language v0.5 demo: %ux%u Mandelbrot, 64 max iterations",
              SHADER_DEMO_SURFACE_WIDTH, SHADER_DEMO_SURFACE_HEIGHT);
     return grape_present(grape);
 }

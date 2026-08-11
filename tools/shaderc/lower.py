@@ -49,6 +49,7 @@ from .ir import (
     IRParameter,
     IRReturn,
     IRStoreVariable,
+    IRStoreSwizzle,
     IRSwizzle,
     IRUnary,
     IRUniform,
@@ -235,27 +236,21 @@ class Lowerer:
             return result
 
         if isinstance(expression, AssignmentExpression):
-            assert isinstance(expression.target, NameExpression)
-            kind = expression.target.resolved_symbol_kind
-            index = expression.target.resolved_symbol_index
-            assert kind in ("local", "parameter") and index is not None
+            kind, index, components = self._lvalue_info(expression.target)
             if expression.operator == "=":
                 value = self._lower_expression(expression.value)
-                self.instructions.append(IRStoreVariable(None, kind, index, value))
+                self._store_lvalue(kind, index, components, value)
                 return value
 
             current = self._lower_expression(expression.target)
             rhs = self._lower_expression(expression.value)
             result = self._new_value(expression.resolved_type)
             self.instructions.append(IRBinary(result, expression.operator[0], current, rhs))
-            self.instructions.append(IRStoreVariable(None, kind, index, result))
+            self._store_lvalue(kind, index, components, result)
             return result
 
         if isinstance(expression, UpdateExpression):
-            assert isinstance(expression.operand, NameExpression)
-            kind = expression.operand.resolved_symbol_kind
-            index = expression.operand.resolved_symbol_index
-            assert kind in ("local", "parameter") and index is not None
+            kind, index, components = self._lvalue_info(expression.operand)
             old = self._lower_expression(expression.operand)
             one = self._new_value(expression.resolved_type)
             if expression.resolved_type == ShaderType.INT:
@@ -265,7 +260,7 @@ class Lowerer:
             new = self._new_value(expression.resolved_type)
             operator = "+" if expression.operator == "++" else "-"
             self.instructions.append(IRBinary(new, operator, old, one))
-            self.instructions.append(IRStoreVariable(None, kind, index, new))
+            self._store_lvalue(kind, index, components, new)
             return new if expression.prefix else old
 
         if isinstance(expression, TernaryExpression):
@@ -304,6 +299,33 @@ class Lowerer:
             return result
 
         raise AssertionError(f"unhandled expression type: {type(expression).__name__}")
+
+
+    def _lvalue_info(self, expression: Expression) -> tuple[str, int, tuple[int, ...] | None]:
+        if isinstance(expression, NameExpression):
+            kind = expression.resolved_symbol_kind
+            index = expression.resolved_symbol_index
+            assert kind in ("local", "parameter") and index is not None
+            return kind, index, None
+        if isinstance(expression, SwizzleExpression):
+            assert isinstance(expression.base, NameExpression)
+            kind = expression.base.resolved_symbol_kind
+            index = expression.base.resolved_symbol_index
+            assert kind in ("local", "parameter") and index is not None
+            return kind, index, tuple(_SWIZZLE_INDEX[field] for field in expression.fields)
+        raise AssertionError(f"unsupported l-value type: {type(expression).__name__}")
+
+    def _store_lvalue(
+        self,
+        kind: str,
+        index: int,
+        components: tuple[int, ...] | None,
+        value: IRValue,
+    ) -> None:
+        if components is None:
+            self.instructions.append(IRStoreVariable(None, kind, index, value))
+        else:
+            self.instructions.append(IRStoreSwizzle(None, kind, index, components, value))
 
     def _new_value(self, shader_type: ShaderType) -> IRValue:
         value = IRValue(self.next_value_id, shader_type)

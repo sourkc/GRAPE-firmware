@@ -42,6 +42,14 @@ class Symbol:
 
 
 @dataclass(frozen=True)
+class LValue:
+    type: ShaderType
+    kind: str
+    index: int
+    components: tuple[int, ...] | None = None
+
+
+@dataclass(frozen=True)
 class FunctionSymbol:
     id: int
     name: str
@@ -55,6 +63,13 @@ _SWIZZLE_SETS = (
     "rgba",
     "stpq",
 )
+
+_SWIZZLE_INDEX = {
+    "x": 0, "r": 0, "s": 0,
+    "y": 1, "g": 1, "t": 1,
+    "z": 2, "b": 2, "p": 2,
+    "w": 3, "a": 3, "q": 3,
+}
 
 _MAX_STATIC_LOOP_ITERATIONS = 1_000_000
 
@@ -278,7 +293,7 @@ class SemanticAnalyzer:
         if isinstance(expression, UnaryExpression):
             operand_type = self._analyze_expression(expression.operand)
             if expression.operator in ("+", "-"):
-                if not (operand_type.is_numeric_scalar or operand_type.is_vector):
+                if not (operand_type.is_numeric_scalar or operand_type.is_vector or operand_type.is_matrix):
                     fail(self.source, expression.span, f"cannot apply '{expression.operator}' to {operand_type}")
                 expression.resolved_type = operand_type
                 return operand_type
@@ -378,20 +393,35 @@ class SemanticAnalyzer:
 
         raise AssertionError(f"unhandled expression type: {type(expression).__name__}")
 
-    def _analyze_lvalue(self, expression: Expression) -> Symbol:
-        if not isinstance(expression, NameExpression):
-            fail(self.source, expression.span, "shader language 0.4 assignments currently require a named local variable")
-        symbol = self._resolve_symbol(expression.name)
-        if symbol is None:
-            fail(self.source, expression.span, f"undeclared identifier '{expression.name}'")
-        if symbol.kind not in ("local", "parameter"):
-            fail(self.source, expression.span, f"'{expression.name}' is not writable")
-        if symbol.is_const:
-            fail(self.source, expression.span, f"cannot modify const variable '{expression.name}'")
-        expression.resolved_symbol_kind = symbol.kind
-        expression.resolved_symbol_index = symbol.index
-        expression.resolved_type = symbol.type
-        return symbol
+    def _analyze_lvalue(self, expression: Expression) -> LValue:
+        if isinstance(expression, NameExpression):
+            symbol = self._resolve_symbol(expression.name)
+            if symbol is None:
+                fail(self.source, expression.span, f"undeclared identifier '{expression.name}'")
+            if symbol.kind not in ("local", "parameter"):
+                fail(self.source, expression.span, f"'{expression.name}' is not writable")
+            if symbol.is_const:
+                fail(self.source, expression.span, f"cannot modify const variable '{expression.name}'")
+            assert symbol.index is not None
+            expression.resolved_symbol_kind = symbol.kind
+            expression.resolved_symbol_index = symbol.index
+            expression.resolved_type = symbol.type
+            return LValue(symbol.type, symbol.kind, symbol.index)
+
+        if isinstance(expression, SwizzleExpression):
+            if not isinstance(expression.base, NameExpression):
+                fail(self.source, expression.span, "writable component selection must be applied to a named variable")
+            base = self._analyze_lvalue(expression.base)
+            if not base.type.is_vector:
+                fail(self.source, expression.span, f"component selection is not valid on {base.type}")
+            result_type = self._analyze_swizzle(expression, base.type)
+            components = tuple(_SWIZZLE_INDEX[field] for field in expression.fields)
+            if len(set(components)) != len(components):
+                fail(self.source, expression.span, "writable component selection cannot contain duplicate components")
+            expression.resolved_type = result_type
+            return LValue(result_type, base.kind, base.index, components)
+
+        fail(self.source, expression.span, "expression is not a writable l-value")
 
     def _analyze_constructor(self, expression: ConstructorExpression) -> ShaderType:
         target = expression.target_type
@@ -405,14 +435,37 @@ class SemanticAnalyzer:
                 fail(self.source, expression.span, f"{target} constructor requires exactly one scalar argument")
             return target
 
+        if target.is_matrix:
+            if len(argument_types) == 1 and argument_types[0].is_numeric_scalar:
+                return target
+            if len(argument_types) == 1 and argument_types[0].is_matrix:
+                return target
+            if any(argument_type.is_matrix for argument_type in argument_types):
+                fail(self.source, expression.span, "matrix constructor cannot combine a matrix argument with other arguments")
+            self._validate_floating_composite_constructor(expression, target, argument_types)
+            return target
+
         if len(argument_types) == 1 and argument_types[0].is_scalar:
             return target
 
+        self._validate_floating_composite_constructor(expression, target, argument_types)
+        return target
+
+    def _validate_floating_composite_constructor(
+        self,
+        expression: ConstructorExpression,
+        target: ShaderType,
+        argument_types: list[ShaderType],
+    ) -> None:
         needed = target.component_count
         provided = 0
         for index, argument_type in enumerate(argument_types):
             if argument_type == ShaderType.BOOL:
-                fail(self.source, expression.arguments[index].span, "bool cannot provide components to a floating vector constructor")
+                fail(
+                    self.source,
+                    expression.arguments[index].span,
+                    f"bool cannot provide components to a {target} constructor",
+                )
             if provided >= needed:
                 fail(self.source, expression.arguments[index].span, f"too many arguments for {target} constructor")
             provided += argument_type.component_count
@@ -423,7 +476,6 @@ class SemanticAnalyzer:
                 expression.span,
                 f"not enough components for {target} constructor: need {needed}, got {provided}",
             )
-        return target
 
     def _analyze_swizzle(self, expression: SwizzleExpression, base_type: ShaderType) -> ShaderType:
         if not base_type.is_vector:
@@ -596,8 +648,23 @@ class SemanticAnalyzer:
     @staticmethod
     def _binary_result_type(operator: str, left: ShaderType, right: ShaderType) -> ShaderType | None:
         if operator in ("+", "-", "*", "/"):
+            if left.is_matrix or right.is_matrix:
+                if left.is_matrix and right == ShaderType.FLOAT:
+                    return left
+                if right.is_matrix and left == ShaderType.FLOAT:
+                    return right
+                if left.is_matrix and right.is_matrix:
+                    if left != right:
+                        return None
+                    return left
+                if operator == "*" and left.is_matrix and right.is_vector:
+                    return right if left.matrix_size == right.component_count else None
+                if operator == "*" and left.is_vector and right.is_matrix:
+                    return left if right.matrix_size == left.component_count else None
+                return None
+
             if left == right:
-                if left in (ShaderType.BOOL,):
+                if left == ShaderType.BOOL:
                     return None
                 return left
             if left == ShaderType.FLOAT and right.is_vector:

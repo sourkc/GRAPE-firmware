@@ -31,6 +31,8 @@ class TokenKind(Enum):
     KW_VEC2 = auto()
     KW_VEC3 = auto()
     KW_VEC4 = auto()
+    KW_MAT2 = auto()
+    KW_MAT3 = auto()
     KW_RETURN = auto()
     KW_IF = auto()
     KW_ELSE = auto()

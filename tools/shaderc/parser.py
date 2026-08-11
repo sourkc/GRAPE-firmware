@@ -61,6 +61,8 @@ _TYPE_TOKENS = {
     TokenKind.KW_VEC2: ShaderType.VEC2,
     TokenKind.KW_VEC3: ShaderType.VEC3,
     TokenKind.KW_VEC4: ShaderType.VEC4,
+    TokenKind.KW_MAT2: ShaderType.MAT2,
+    TokenKind.KW_MAT3: ShaderType.MAT3,
 }
 
 
@@ -284,7 +286,7 @@ class Parser:
         while True:
             if self._check(TokenKind.LEFT_PAREN):
                 if not isinstance(expression, NameExpression):
-                    fail(self.source, expression.span, "only named functions can be called in shader language 0.4")
+                    fail(self.source, expression.span, "only named functions can be called in shader language 0.5")
                 start = expression.span.start
                 self._advance()
                 arguments = []

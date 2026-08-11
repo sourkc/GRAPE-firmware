@@ -14,6 +14,8 @@ _KEYWORDS = {
     "vec2": TokenKind.KW_VEC2,
     "vec3": TokenKind.KW_VEC3,
     "vec4": TokenKind.KW_VEC4,
+    "mat2": TokenKind.KW_MAT2,
+    "mat3": TokenKind.KW_MAT3,
     "return": TokenKind.KW_RETURN,
     "if": TokenKind.KW_IF,
     "else": TokenKind.KW_ELSE,

@@ -27,6 +27,7 @@ from .ir import (
     IRLogical,
     IRReturn,
     IRStoreVariable,
+    IRStoreSwizzle,
     IRSwizzle,
     IRUnary,
 )
@@ -147,6 +148,12 @@ def _dump_ir_block(block, indent: int) -> list[str]:
         elif isinstance(instruction, IRStoreVariable):
             lines.append(
                 f"{prefix}store {instruction.kind} {instruction.variable_index}, %{instruction.value.id}"
+            )
+        elif isinstance(instruction, IRStoreSwizzle):
+            components = ",".join(str(component) for component in instruction.components)
+            lines.append(
+                f"{prefix}store_swizzle {instruction.kind} {instruction.variable_index} "
+                f"[{components}], %{instruction.value.id}"
             )
         elif isinstance(instruction, IRDeclareLocal):
             init = f" = %{instruction.initializer.id}" if instruction.initializer is not None else ""

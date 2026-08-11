@@ -69,6 +69,14 @@ class IRStoreVariable(IRInstruction):
 
 
 @dataclass(frozen=True)
+class IRStoreSwizzle(IRInstruction):
+    kind: str
+    variable_index: int
+    components: tuple[int, ...]
+    value: IRValue
+
+
+@dataclass(frozen=True)
 class IRDeclareLocal(IRInstruction):
     local_index: int
     name: str
