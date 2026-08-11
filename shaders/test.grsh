@@ -1,0 +1,6 @@
+uniform float brightness;
+
+vec4 main()
+{
+    return source_color * brightness;
+}
