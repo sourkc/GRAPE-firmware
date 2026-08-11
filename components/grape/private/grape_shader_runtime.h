@@ -8,6 +8,8 @@ struct grape_shader_kernel_args {
     uint32_t texture_width;
     uint32_t texture_height;
     grape_pixel_format_t texture_format;
+    uint32_t surface_width;
+    uint32_t surface_height;
     uint8_t *target_pixels;
     size_t target_stride;
     grape_pixel_format_t target_format;

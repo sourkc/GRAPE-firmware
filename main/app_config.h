@@ -8,7 +8,7 @@
 #define GRAPE_APP_BENCHMARK_SUITE_MASK GRAPE_BENCHMARK_SUITE_ALL
 
 
-/* Generated surface shader proof of life. */
+/* Procedural surface shader proof of life. */
 #define GRAPE_APP_RUN_SHADER_DEMO 1
 
 /* First TrueType glyph proof of life. */

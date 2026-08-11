@@ -55,6 +55,8 @@ struct grape_surface {
     struct grape_surface *next;
     grape_texture_t *texture;
     const grape_shader_program_t *shader;
+    uint32_t width;
+    uint32_t height;
     void *shader_uniforms;
     grape_transform_t transform;
     grape_rect_t bounds;

@@ -30,12 +30,12 @@ static void transform_point(const grape_surface_t *surface, float lx, float ly, 
  */
 grape_rect_t grape_surface_calculate_bounds(const grape_surface_t *surface)
 {
-    if (!surface || !surface->texture || !surface->visible) {
+    if (!surface || surface->width == 0U || surface->height == 0U || !surface->visible) {
         return (grape_rect_t){0, 0, 0, 0};
     }
 
-    float width = (float)surface->texture->width;
-    float height = (float)surface->texture->height;
+    float width = (float)surface->width;
+    float height = (float)surface->height;
     float xs[4];
     float ys[4];
 
@@ -196,6 +196,8 @@ esp_err_t grape_surface_create(grape_context_t *context, grape_texture_t *textur
 
     surface->context = context;
     surface->texture = texture;
+    surface->width = texture->width;
+    surface->height = texture->height;
     surface->transform = (grape_transform_t)GRAPE_TRANSFORM_DEFAULT();
     surface->tint = (grape_color_t){255, 255, 255, 255};
     surface->opacity = 255;
@@ -210,6 +212,58 @@ esp_err_t grape_surface_create(grape_context_t *context, grape_texture_t *textur
     if (ret != ESP_OK) {
         grape_surface_remove(context, surface);
         texture->ref_count--;
+        free(surface);
+        return ret;
+    }
+
+    *out_surface = surface;
+    return ESP_OK;
+}
+
+esp_err_t grape_surface_create_procedural(grape_context_t *context,
+                                          uint32_t width,
+                                          uint32_t height,
+                                          const grape_shader_program_t *shader,
+                                          const void *uniforms,
+                                          grape_surface_t **out_surface)
+{
+    if (!context || width == 0U || height == 0U || !shader || !shader->kernel || !out_surface ||
+        (shader->uniform_size > 0U && !uniforms) ||
+        (shader->flags & GRAPE_SHADER_PROGRAM_USES_SOURCE_COLOR) != 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    grape_surface_t *surface = calloc(1, sizeof(*surface));
+    if (!surface) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (shader->uniform_size > 0U) {
+        surface->shader_uniforms = malloc(shader->uniform_size);
+        if (!surface->shader_uniforms) {
+            free(surface);
+            return ESP_ERR_NO_MEM;
+        }
+        memcpy(surface->shader_uniforms, uniforms, shader->uniform_size);
+    }
+
+    surface->context = context;
+    surface->shader = shader;
+    surface->width = width;
+    surface->height = height;
+    surface->transform = (grape_transform_t)GRAPE_TRANSFORM_DEFAULT();
+    surface->tint = (grape_color_t){255, 255, 255, 255};
+    surface->opacity = 255;
+    surface->visible = true;
+    surface->z = 0;
+
+    grape_surface_recache(surface);
+    grape_surface_insert_sorted(context, surface);
+
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        grape_surface_remove(context, surface);
+        free(surface->shader_uniforms);
         free(surface);
         return ret;
     }
@@ -266,6 +320,8 @@ esp_err_t grape_surface_set_texture(grape_surface_t *surface, grape_texture_t *t
         surface->texture->ref_count--;
     }
     surface->texture = texture;
+    surface->width = texture->width;
+    surface->height = texture->height;
     texture->ref_count++;
     grape_surface_recache(surface);
 
@@ -484,7 +540,12 @@ esp_err_t grape_surface_set_visible(grape_surface_t *surface, bool visible)
  */
 esp_err_t grape_surface_set_shader(grape_surface_t *surface, const grape_shader_program_t *shader, const void *uniforms)
 {
-    if (!surface || (shader && (!shader->kernel || (shader->uniform_size > 0U && !uniforms)))) {
+    if (!surface ||
+        (!shader && !surface->texture) ||
+        (shader && (!shader->kernel ||
+                    (shader->uniform_size > 0U && !uniforms) ||
+                    (!surface->texture &&
+                     (shader->flags & GRAPE_SHADER_PROGRAM_USES_SOURCE_COLOR) != 0U)))) {
         return ESP_ERR_INVALID_ARG;
     }
 

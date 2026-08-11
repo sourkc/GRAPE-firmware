@@ -1,0 +1,7 @@
+vec4 main()
+{
+    return vec4(
+        vec3(uv.x, local_position.y / surface_size.y, 0.0),
+        1.0
+    );
+}

@@ -759,8 +759,7 @@ static bool mark_full_surface_quad(uint8_t *bitmap,
 
 esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
 {
-    if (!surface || !surface->context || !surface->texture ||
-        !surface->context->damage.tiles) {
+    if (!surface || !surface->context || !surface->context->damage.tiles) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -770,6 +769,10 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
 
     if (surface->shader) {
         return grape_damage_add(surface->context, surface->bounds);
+    }
+
+    if (!surface->texture) {
+        return ESP_ERR_INVALID_STATE;
     }
 
     if (surface->tint.a == 0) {

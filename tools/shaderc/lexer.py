@@ -6,9 +6,36 @@ from .tokens import SourceLocation, SourceSpan, Token, TokenKind
 
 _KEYWORDS = {
     "uniform": TokenKind.KW_UNIFORM,
+    "const": TokenKind.KW_CONST,
+    "in": TokenKind.KW_IN,
+    "bool": TokenKind.KW_BOOL,
+    "int": TokenKind.KW_INT,
     "float": TokenKind.KW_FLOAT,
+    "vec2": TokenKind.KW_VEC2,
+    "vec3": TokenKind.KW_VEC3,
     "vec4": TokenKind.KW_VEC4,
     "return": TokenKind.KW_RETURN,
+    "if": TokenKind.KW_IF,
+    "else": TokenKind.KW_ELSE,
+    "for": TokenKind.KW_FOR,
+    "break": TokenKind.KW_BREAK,
+    "true": TokenKind.KW_TRUE,
+    "false": TokenKind.KW_FALSE,
+}
+
+_DOUBLE_CHAR_TOKENS = {
+    "++": TokenKind.PLUS_PLUS,
+    "--": TokenKind.MINUS_MINUS,
+    "+=": TokenKind.PLUS_EQUAL,
+    "-=": TokenKind.MINUS_EQUAL,
+    "*=": TokenKind.STAR_EQUAL,
+    "/=": TokenKind.SLASH_EQUAL,
+    "==": TokenKind.EQUAL_EQUAL,
+    "!=": TokenKind.BANG_EQUAL,
+    "<=": TokenKind.LESS_EQUAL,
+    ">=": TokenKind.GREATER_EQUAL,
+    "&&": TokenKind.AND_AND,
+    "||": TokenKind.OR_OR,
 }
 
 _SINGLE_CHAR_TOKENS = {
@@ -17,10 +44,18 @@ _SINGLE_CHAR_TOKENS = {
     "{": TokenKind.LEFT_BRACE,
     "}": TokenKind.RIGHT_BRACE,
     ";": TokenKind.SEMICOLON,
+    ",": TokenKind.COMMA,
+    ".": TokenKind.DOT,
+    "?": TokenKind.QUESTION,
+    ":": TokenKind.COLON,
     "+": TokenKind.PLUS,
     "-": TokenKind.MINUS,
     "*": TokenKind.STAR,
     "/": TokenKind.SLASH,
+    "!": TokenKind.BANG,
+    "=": TokenKind.EQUAL,
+    "<": TokenKind.LESS,
+    ">": TokenKind.GREATER,
 }
 
 
@@ -52,6 +87,14 @@ class Lexer:
             if ch.isdigit() or (ch == "." and self._peek(1).isdigit()):
                 text = self._scan_number(start)
                 tokens.append(Token(TokenKind.NUMBER, text, SourceSpan(start, self._location())))
+                continue
+
+            pair = ch + self._peek(1)
+            kind = _DOUBLE_CHAR_TOKENS.get(pair)
+            if kind is not None:
+                self._advance()
+                self._advance()
+                tokens.append(Token(kind, pair, SourceSpan(start, self._location())))
                 continue
 
             kind = _SINGLE_CHAR_TOKENS.get(ch)

@@ -10,6 +10,7 @@ extern "C" {
 typedef struct grape_surface grape_surface_t;
 
 esp_err_t grape_surface_create(grape_context_t *context, grape_texture_t *texture, grape_surface_t **out_surface);
+esp_err_t grape_surface_create_procedural(grape_context_t *context, uint32_t width, uint32_t height, const grape_shader_program_t *shader, const void *uniforms, grape_surface_t **out_surface);
 esp_err_t grape_surface_destroy(grape_surface_t *surface);
 esp_err_t grape_surface_set_texture(grape_surface_t *surface, grape_texture_t *texture);
 esp_err_t grape_surface_set_transform(grape_surface_t *surface, const grape_transform_t *transform);

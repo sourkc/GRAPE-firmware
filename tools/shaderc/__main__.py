@@ -8,7 +8,28 @@ import sys
 
 from .compiler import compile_project, compile_shader
 from .diagnostics import ShaderCompilerError
-from .ir import IRBinary, IRConstant, IRLoadBuiltin, IRLoadUniform, IRReturn, IRUnary
+from .ir import (
+    IRBinary,
+    IRBoolConstant,
+    IRBreak,
+    IRCall,
+    IRCast,
+    IRConditional,
+    IRConstant,
+    IRConstruct,
+    IRDeclareLocal,
+    IRFor,
+    IRIf,
+    IRIntConstant,
+    IRLoadBuiltin,
+    IRLoadUniform,
+    IRLoadVariable,
+    IRLogical,
+    IRReturn,
+    IRStoreVariable,
+    IRSwizzle,
+    IRUnary,
+)
 
 
 def main() -> int:
@@ -95,24 +116,93 @@ def _dump_ir(module) -> str:
         lines.append(f"uniform {uniform.index}: {uniform.name} : {uniform.type}")
     if lines:
         lines.append("")
-    lines.append(f"function {module.main.name} -> {module.main.return_type}")
+    for function_index, function in enumerate(module.functions):
+        params = ", ".join(f"{parameter.name}: {parameter.type}" for parameter in function.parameters)
+        main_tag = " [main]" if function.id == module.main_function_id else ""
+        lines.append(f"function #{function.id} {function.name}({params}) -> {function.return_type}{main_tag}")
+        lines.extend(_dump_ir_block(function.body, 1))
+        if function_index + 1 != len(module.functions):
+            lines.append("")
+    return "\n".join(lines)
 
-    for instruction in module.main.instructions:
+
+def _dump_ir_block(block, indent: int) -> list[str]:
+    lines = []
+    prefix = "    " * indent
+    for instruction in block.instructions:
         if isinstance(instruction, IRConstant):
-            lines.append(f"    {_value(instruction.result)} = constant {instruction.text}")
+            lines.append(f"{prefix}{_value(instruction.result)} = constant {instruction.text}")
+        elif isinstance(instruction, IRIntConstant):
+            lines.append(f"{prefix}{_value(instruction.result)} = constant {instruction.value}")
+        elif isinstance(instruction, IRBoolConstant):
+            lines.append(f"{prefix}{_value(instruction.result)} = constant {str(instruction.value).lower()}")
         elif isinstance(instruction, IRLoadBuiltin):
-            lines.append(f"    {_value(instruction.result)} = builtin {instruction.name}")
+            lines.append(f"{prefix}{_value(instruction.result)} = builtin {instruction.name}")
         elif isinstance(instruction, IRLoadUniform):
-            lines.append(f"    {_value(instruction.result)} = uniform {instruction.uniform_index}")
+            lines.append(f"{prefix}{_value(instruction.result)} = uniform {instruction.uniform_index}")
+        elif isinstance(instruction, IRLoadVariable):
+            lines.append(
+                f"{prefix}{_value(instruction.result)} = {instruction.kind} {instruction.variable_index}"
+            )
+        elif isinstance(instruction, IRStoreVariable):
+            lines.append(
+                f"{prefix}store {instruction.kind} {instruction.variable_index}, %{instruction.value.id}"
+            )
+        elif isinstance(instruction, IRDeclareLocal):
+            init = f" = %{instruction.initializer.id}" if instruction.initializer is not None else ""
+            const = "const " if instruction.is_const else ""
+            lines.append(
+                f"{prefix}local {instruction.local_index}: {const}{instruction.name} : {instruction.type}{init}"
+            )
         elif isinstance(instruction, IRUnary):
-            lines.append(f"    {_value(instruction.result)} = {instruction.operator} %{instruction.operand.id}")
+            lines.append(f"{prefix}{_value(instruction.result)} = {instruction.operator} %{instruction.operand.id}")
         elif isinstance(instruction, IRBinary):
             lines.append(
-                f"    {_value(instruction.result)} = {instruction.operator} %{instruction.left.id}, %{instruction.right.id}"
+                f"{prefix}{_value(instruction.result)} = {instruction.operator} %{instruction.left.id}, %{instruction.right.id}"
             )
+        elif isinstance(instruction, IRCast):
+            lines.append(f"{prefix}{_value(instruction.result)} = cast %{instruction.operand.id}")
+        elif isinstance(instruction, IRConstruct):
+            operands = ", ".join(f"%{argument.id}" for argument in instruction.arguments)
+            lines.append(f"{prefix}{_value(instruction.result)} = construct {operands}")
+        elif isinstance(instruction, IRSwizzle):
+            components = ",".join(str(component) for component in instruction.components)
+            lines.append(f"{prefix}{_value(instruction.result)} = swizzle %{instruction.base.id} [{components}]")
+        elif isinstance(instruction, IRCall):
+            operands = ", ".join(f"%{argument.id}" for argument in instruction.arguments)
+            lines.append(f"{prefix}{_value(instruction.result)} = call #{instruction.function_id}({operands})")
+        elif isinstance(instruction, IRLogical):
+            lines.append(f"{prefix}{_value(instruction.result)} = logical {instruction.operator} %{instruction.left.id}")
+            lines.extend(_dump_ir_block(instruction.right, indent + 1))
+        elif isinstance(instruction, IRConditional):
+            lines.append(f"{prefix}{_value(instruction.result)} = conditional %{instruction.condition.id}")
+            lines.append(f"{prefix}    true:")
+            lines.extend(_dump_ir_block(instruction.when_true, indent + 2))
+            lines.append(f"{prefix}    false:")
+            lines.extend(_dump_ir_block(instruction.when_false, indent + 2))
+        elif isinstance(instruction, IRIf):
+            lines.append(f"{prefix}if %{instruction.condition.id}")
+            lines.extend(_dump_ir_block(instruction.then_block, indent + 1))
+            if instruction.else_block is not None:
+                lines.append(f"{prefix}else")
+                lines.extend(_dump_ir_block(instruction.else_block, indent + 1))
+        elif isinstance(instruction, IRFor):
+            lines.append(f"{prefix}for [max {instruction.max_iterations}]")
+            lines.append(f"{prefix}    init:")
+            lines.extend(_dump_ir_block(instruction.initializer, indent + 2))
+            lines.append(f"{prefix}    condition:")
+            lines.extend(_dump_ir_block(instruction.condition, indent + 2))
+            lines.append(f"{prefix}    body:")
+            lines.extend(_dump_ir_block(instruction.body, indent + 2))
+            lines.append(f"{prefix}    increment:")
+            lines.extend(_dump_ir_block(instruction.increment, indent + 2))
+        elif isinstance(instruction, IRBreak):
+            lines.append(f"{prefix}break")
         elif isinstance(instruction, IRReturn):
-            lines.append(f"    return %{instruction.value.id}")
-    return "\n".join(lines)
+            lines.append(f"{prefix}return %{instruction.value.id}")
+    if block.result is not None:
+        lines.append(f"{prefix}=> %{block.result.id}")
+    return lines
 
 
 def _value(value) -> str:

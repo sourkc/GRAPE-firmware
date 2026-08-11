@@ -2,5 +2,5 @@ uniform float brightness;
 
 vec4 main()
 {
-    return source_color * brightness;
+    return vec4(source_color.rgb * brightness, source_color.a);
 }

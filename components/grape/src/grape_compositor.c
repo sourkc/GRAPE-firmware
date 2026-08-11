@@ -661,8 +661,8 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
 
         // Check if the surface is even visible
         if (!surface->visible ||
-            !surface->texture ||
-            surface->opacity == 0) {
+            surface->opacity == 0 ||
+            (!surface->texture && !surface->shader)) {
             continue;
         }
 
@@ -679,11 +679,13 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
 
         if (surface->shader) {
             grape_shader_kernel_args_t shader_args = {
-                .texture_pixels = surface->texture->pixels,
-                .texture_stride = surface->texture->stride,
-                .texture_width = surface->texture->width,
-                .texture_height = surface->texture->height,
-                .texture_format = surface->texture->format,
+                .texture_pixels = surface->texture ? surface->texture->pixels : NULL,
+                .texture_stride = surface->texture ? surface->texture->stride : 0U,
+                .texture_width = surface->texture ? surface->texture->width : 0U,
+                .texture_height = surface->texture ? surface->texture->height : 0U,
+                .texture_format = surface->texture ? surface->texture->format : GRAPE_PIXEL_FORMAT_A8,
+                .surface_width = surface->width,
+                .surface_height = surface->height,
                 .target_pixels = context->render_target.pixels,
                 .target_stride = context->render_target.stride,
                 .target_format = context->display_info.format,
