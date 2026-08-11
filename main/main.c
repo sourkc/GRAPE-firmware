@@ -17,7 +17,7 @@
 #include "grape_storage_sd.h"
 
 #include "app_config.h"
-#include "generated_procedural_gradient.h"
+#include "generated_mandelbrot.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -168,7 +168,8 @@ static float noise_to_unit(float value)
 
 
 #if GRAPE_APP_RUN_SHADER_DEMO
-#define SHADER_DEMO_SURFACE_SIZE 512U
+#define SHADER_DEMO_SURFACE_WIDTH 512U
+#define SHADER_DEMO_SURFACE_HEIGHT 320U
 
 static esp_err_t run_shader_demo(grape_context_t *grape)
 {
@@ -180,9 +181,9 @@ static esp_err_t run_shader_demo(grape_context_t *grape)
     grape_surface_t *surface = NULL;
     esp_err_t ret = grape_surface_create_procedural(
         grape,
-        SHADER_DEMO_SURFACE_SIZE,
-        SHADER_DEMO_SURFACE_SIZE,
-        &generated_procedural_gradient_program,
+        SHADER_DEMO_SURFACE_WIDTH,
+        SHADER_DEMO_SURFACE_HEIGHT,
+        &generated_mandelbrot_program,
         NULL,
         &surface
     );
@@ -191,14 +192,15 @@ static esp_err_t run_shader_demo(grape_context_t *grape)
     }
 
     grape_transform_t transform = GRAPE_TRANSFORM_DEFAULT();
-    transform.x = ((float)display->width - (float)SHADER_DEMO_SURFACE_SIZE) * 0.5f;
-    transform.y = ((float)display->height - (float)SHADER_DEMO_SURFACE_SIZE) * 0.5f;
+    transform.x = ((float)display->width - (float)SHADER_DEMO_SURFACE_WIDTH) * 0.5f;
+    transform.y = ((float)display->height - (float)SHADER_DEMO_SURFACE_HEIGHT) * 0.5f;
     ret = grape_surface_set_transform(surface, &transform);
     if (ret != ESP_OK) {
         return ret;
     }
 
-    ESP_LOGI(TAG, "Procedural shader demo: R=uv.x, G=local_position.y/surface_size.y, B=0");
+    ESP_LOGI(TAG, "Shader language v0.4 demo: %ux%u Mandelbrot, 64 max iterations",
+             SHADER_DEMO_SURFACE_WIDTH, SHADER_DEMO_SURFACE_HEIGHT);
     return grape_present(grape);
 }
 #endif

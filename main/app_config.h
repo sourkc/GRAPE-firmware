@@ -8,7 +8,7 @@
 #define GRAPE_APP_BENCHMARK_SUITE_MASK GRAPE_BENCHMARK_SUITE_ALL
 
 
-/* Procedural surface shader proof of life. */
+/* Shader language demo (Mandelbrot). */
 #define GRAPE_APP_RUN_SHADER_DEMO 1
 
 /* First TrueType glyph proof of life. */

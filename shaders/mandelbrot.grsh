@@ -1,0 +1,48 @@
+int mandelbrot(vec2 c)
+{
+    float x = 0.0;
+    float y = 0.0;
+    int iterations = 0;
+
+    for (int i = 0; i < 64; i++) {
+        float x2 = x * x;
+        float y2 = y * y;
+
+        if (x2 + y2 > 4.0)
+            break;
+
+        float xy = x * y;
+        x = x2 - y2 + c.x;
+        y = 2.0 * xy + c.y;
+        iterations += 1;
+    }
+
+    return iterations;
+}
+
+vec3 palette(float t)
+{
+    if (t < 0.25)
+        return vec3(0.0, t * 4.0, 1.0);
+    else if (t < 0.5)
+        return vec3((t - 0.25) * 4.0, 1.0, 1.0 - (t - 0.25) * 4.0);
+    else if (t < 0.75)
+        return vec3(1.0, 1.0 - (t - 0.5) * 4.0, 0.0);
+
+    return vec3(1.0, (t - 0.75) * 4.0, (t - 0.75) * 4.0);
+}
+
+vec4 main()
+{
+    vec2 c = vec2(
+        uv.x * 3.0 - 2.2,
+        uv.y * 1.875 - 0.9375
+    );
+
+    int iterations = mandelbrot(c);
+    bool inside = iterations == 64;
+    float t = float(iterations) / 64.0;
+    vec3 color = inside ? vec3(0.0) : palette(t);
+
+    return vec4(color, 1.0);
+}
