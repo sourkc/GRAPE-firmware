@@ -1,6 +1,7 @@
 #include <math.h>
 
 #include "grape_internal.h"
+#include "grape_shader_runtime.h"
 
 typedef struct {
     uint8_t r;
@@ -673,6 +674,32 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
             );
 
         if (grape_rect_empty(clipped)) {
+            continue;
+        }
+
+        if (surface->shader) {
+            grape_shader_kernel_args_t shader_args = {
+                .texture_pixels = surface->texture->pixels,
+                .texture_stride = surface->texture->stride,
+                .texture_width = surface->texture->width,
+                .texture_height = surface->texture->height,
+                .texture_format = surface->texture->format,
+                .target_pixels = context->render_target.pixels,
+                .target_stride = context->render_target.stride,
+                .target_format = context->display_info.format,
+                .clipped = clipped,
+                .tint = surface->tint,
+                .opacity = surface->opacity,
+                .local_x_from_screen_x = surface->local_x_from_screen_x,
+                .local_x_from_screen_y = surface->local_x_from_screen_y,
+                .local_x_offset = surface->local_x_offset,
+                .local_y_from_screen_x = surface->local_y_from_screen_x,
+                .local_y_from_screen_y = surface->local_y_from_screen_y,
+                .local_y_offset = surface->local_y_offset,
+            };
+            GRAPE_TIME_BLOCK(CPU_SURFACE_RASTER) {
+                surface->shader->kernel(&shader_args, surface->shader_uniforms);
+            }
             continue;
         }
 

@@ -17,6 +17,7 @@
 #include "grape_storage_sd.h"
 
 #include "app_config.h"
+#include "generated_brightness.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -164,6 +165,103 @@ static float noise_to_unit(float value)
 {
     return value * 0.5f + 0.5f;
 }
+
+
+#if GRAPE_APP_RUN_SHADER_DEMO
+#define SHADER_DEMO_TEXTURE_SIZE 256U
+#define SHADER_DEMO_GAP 24.0f
+
+static void fill_shader_demo_gradient(grape_texture_t *texture)
+{
+    uint8_t *pixels = grape_texture_pixels(texture);
+    size_t stride = grape_texture_stride(texture);
+
+    for (uint32_t y = 0; y < SHADER_DEMO_TEXTURE_SIZE; ++y) {
+        uint8_t *row = pixels + (size_t)y * stride;
+        for (uint32_t x = 0; x < SHADER_DEMO_TEXTURE_SIZE; ++x) {
+            uint8_t *pixel = row + (size_t)x * 3U;
+            pixel[0] = (uint8_t)x;
+            pixel[1] = (uint8_t)y;
+            pixel[2] = 0U;
+        }
+    }
+}
+
+static esp_err_t run_shader_demo(grape_context_t *grape)
+{
+    const grape_display_info_t *display = grape_get_display_info(grape);
+    if (!display) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    grape_texture_desc_t texture_desc = {
+        .width = SHADER_DEMO_TEXTURE_SIZE,
+        .height = SHADER_DEMO_TEXTURE_SIZE,
+        .format = GRAPE_PIXEL_FORMAT_RGB888,
+        .memory = GRAPE_MEMORY_DEFAULT,
+    };
+
+    grape_texture_t *texture = NULL;
+    esp_err_t ret = grape_texture_create(grape, &texture_desc, &texture);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    fill_shader_demo_gradient(texture);
+    ret = grape_texture_invalidate(texture);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    const float scale = 1.2f;
+    const float rendered_size = (float)SHADER_DEMO_TEXTURE_SIZE * scale;
+    const float pair_width = rendered_size * 2.0f + SHADER_DEMO_GAP;
+    const float left_x = ((float)display->width - pair_width) * 0.5f;
+    const float top_y = ((float)display->height - rendered_size) * 0.5f;
+
+    grape_surface_t *original = NULL;
+    grape_surface_t *bright = NULL;
+    ret = grape_surface_create(grape, texture, &original);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = grape_surface_create(grape, texture, &bright);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    grape_transform_t transform = GRAPE_TRANSFORM_DEFAULT();
+    transform.x = left_x;
+    transform.y = top_y;
+    transform.scale_x = scale;
+    transform.scale_y = scale;
+    ret = grape_surface_set_transform(original, &transform);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    transform.x = left_x + rendered_size + SHADER_DEMO_GAP;
+    ret = grape_surface_set_transform(bright, &transform);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    generated_brightness_uniforms_t uniforms = {
+        .brightness = 1.6f,
+    };
+    ret = grape_surface_set_shader(
+        bright,
+        &generated_brightness_program,
+        &uniforms
+    );
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "Shader demo: left=original, right=brightness 1.6");
+    return grape_present(grape);
+}
+#endif
 
 #if GRAPE_APP_RUN_FONT_DEMO
 #define FONT_DEMO_DIRECTORY GRAPE_STORAGE_SD_MOUNT_POINT "/fonts"
@@ -752,6 +850,13 @@ void app_main(void)
 
     grape_deinit(grape);
     return;
+#endif
+
+#if GRAPE_APP_RUN_SHADER_DEMO
+    ESP_ERROR_CHECK(run_shader_demo(grape));
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 #endif
 
 #if GRAPE_APP_RUN_FONT_DEMO

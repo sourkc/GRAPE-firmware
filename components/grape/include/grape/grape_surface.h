@@ -1,6 +1,7 @@
 #pragma once
 
 #include "grape/grape_texture.h"
+#include "grape/grape_shader.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,11 +21,14 @@ esp_err_t grape_surface_set_z(grape_surface_t *surface, int32_t z);
 esp_err_t grape_surface_set_opacity(grape_surface_t *surface, uint8_t opacity);
 esp_err_t grape_surface_set_tint(grape_surface_t *surface, grape_color_t tint);
 esp_err_t grape_surface_set_visible(grape_surface_t *surface, bool visible);
+esp_err_t grape_surface_set_shader(grape_surface_t *surface, const grape_shader_program_t *shader, const void *uniforms);
+esp_err_t grape_surface_update_shader_uniforms(grape_surface_t *surface, const void *uniforms);
 const grape_transform_t *grape_surface_transform(const grape_surface_t *surface);
 int32_t grape_surface_z(const grape_surface_t *surface);
 uint8_t grape_surface_opacity(const grape_surface_t *surface);
 grape_color_t grape_surface_tint(const grape_surface_t *surface);
 bool grape_surface_visible(const grape_surface_t *surface);
+const grape_shader_program_t *grape_surface_shader(const grape_surface_t *surface);
 grape_texture_t *grape_surface_texture(grape_surface_t *surface);
 
 #ifdef __cplusplus

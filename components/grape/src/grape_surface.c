@@ -1,5 +1,6 @@
 #include <float.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "grape_internal.h"
 
@@ -238,6 +239,7 @@ esp_err_t grape_surface_destroy(grape_surface_t *surface)
     if (surface->texture && surface->texture->ref_count) {
         surface->texture->ref_count--;
     }
+    free(surface->shader_uniforms);
     free(surface);
     return ESP_OK;
 }
@@ -476,6 +478,72 @@ esp_err_t grape_surface_set_visible(grape_surface_t *surface, bool visible)
     return mark_surface_coverage(surface);
 }
 
+
+/**
+ * Attaches a generated shader program to a surface. Uniform data is copied.
+ */
+esp_err_t grape_surface_set_shader(grape_surface_t *surface, const grape_shader_program_t *shader, const void *uniforms)
+{
+    if (!surface || (shader && (!shader->kernel || (shader->uniform_size > 0U && !uniforms)))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    void *new_uniforms = NULL;
+    if (shader && shader->uniform_size > 0U) {
+        new_uniforms = malloc(shader->uniform_size);
+        if (!new_uniforms) {
+            return ESP_ERR_NO_MEM;
+        }
+        memcpy(new_uniforms, uniforms, shader->uniform_size);
+    }
+
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        free(new_uniforms);
+        return ret;
+    }
+
+    const grape_shader_program_t *old_shader = surface->shader;
+    void *old_uniforms = surface->shader_uniforms;
+    surface->shader = shader;
+    surface->shader_uniforms = new_uniforms;
+
+    ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        surface->shader = old_shader;
+        surface->shader_uniforms = old_uniforms;
+        free(new_uniforms);
+        return ret;
+    }
+
+    free(old_uniforms);
+    return ESP_OK;
+}
+
+/**
+ * Replaces the copied uniform data for the shader attached to a surface.
+ */
+esp_err_t grape_surface_update_shader_uniforms(grape_surface_t *surface, const void *uniforms)
+{
+    if (!surface || !surface->shader) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (surface->shader->uniform_size == 0U) {
+        return ESP_OK;
+    }
+    if (!uniforms || !surface->shader_uniforms) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    memcpy(surface->shader_uniforms, uniforms, surface->shader->uniform_size);
+    return ESP_OK;
+}
+
 /**
  * Gets the transform of a GRAPE surface
  *
@@ -529,6 +597,11 @@ grape_color_t grape_surface_tint(const grape_surface_t *surface)
 bool grape_surface_visible(const grape_surface_t *surface)
 {
     return surface ? surface->visible : false;
+}
+
+const grape_shader_program_t *grape_surface_shader(const grape_surface_t *surface)
+{
+    return surface ? surface->shader : NULL;
 }
 
 /**

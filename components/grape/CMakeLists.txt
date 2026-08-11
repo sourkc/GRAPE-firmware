@@ -15,8 +15,12 @@ idf_component_register(
         "src/grape_compositor.c"
         "src/grape_shear.c"
         "src/grape_ppa.c"
-    INCLUDE_DIRS "include"
+        "../../shaders/generated_shaders.c"
+    INCLUDE_DIRS
+        "include"
+        "../../shaders"
     PRIV_INCLUDE_DIRS "private"
     REQUIRES grape_common grape_display
     PRIV_REQUIRES heap esp_driver_ppa
 )
+

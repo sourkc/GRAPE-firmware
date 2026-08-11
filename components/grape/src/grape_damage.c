@@ -764,7 +764,15 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (!surface->visible || surface->opacity == 0 || surface->tint.a == 0) {
+    if (!surface->visible || surface->opacity == 0) {
+        return ESP_OK;
+    }
+
+    if (surface->shader) {
+        return grape_damage_add(surface->context, surface->bounds);
+    }
+
+    if (surface->tint.a == 0) {
         return ESP_OK;
     }
 
