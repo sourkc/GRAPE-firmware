@@ -1,4 +1,4 @@
-# GRAPE documentation
+# GRAPE firmware
 
 GRAPE (stands for **G**raphics **R**endering & **A**cceleration **P**latform for **E**mbedded systems) is an
 Open Source graphics co-processor unit based on the ESP32-P4 chip by Espressif.
