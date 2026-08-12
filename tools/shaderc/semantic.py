@@ -10,6 +10,7 @@ from .ast_nodes import (
     BreakStatement,
     CallExpression,
     ConstructorExpression,
+    EmptyStatement,
     Expression,
     ExpressionStatement,
     FloatLiteral,
@@ -83,6 +84,7 @@ class SemanticAnalyzer:
             "uv": Symbol("uv", ShaderType.VEC2, "builtin"),
             "local_position": Symbol("local_position", ShaderType.VEC2, "builtin"),
             "surface_size": Symbol("surface_size", ShaderType.VEC2, "builtin"),
+            "__grape_frag_coord": Symbol("__grape_frag_coord", ShaderType.VEC2, "builtin"),
         }
         self.functions: dict[str, list[FunctionSymbol]] = {}
         self.function_by_id: dict[int, FunctionSymbol] = {}
@@ -114,6 +116,10 @@ class SemanticAnalyzer:
 
     def _collect_functions(self, program: Program) -> None:
         for function_id, declaration in enumerate(program.functions):
+            if declaration.return_type == ShaderType.VOID:
+                fail(self.source, declaration.span, "void functions are currently supported only for Shadertoy mainImage")
+            if any(parameter.qualifier != "in" for parameter in declaration.parameters):
+                fail(self.source, declaration.span, "out parameters are currently supported only for Shadertoy mainImage")
             declaration.resolved_id = function_id
             parameter_types = tuple(parameter.type for parameter in declaration.parameters)
             overloads = self.functions.setdefault(declaration.name, [])
@@ -169,6 +175,9 @@ class SemanticAnalyzer:
                 self.scopes.pop()
 
     def _analyze_statement(self, statement: Statement) -> None:
+        if isinstance(statement, EmptyStatement):
+            return
+
         if isinstance(statement, Block):
             self._analyze_block(statement)
             return
@@ -595,15 +604,32 @@ class SemanticAnalyzer:
             return 0 if start < limit else (start - limit) // magnitude + 1
         return None
 
-    @staticmethod
-    def _constant_int(expression: Expression) -> int | None:
+    def _constant_int(self, expression: Expression) -> int | None:
         if isinstance(expression, IntLiteral):
             return expression.value
         if isinstance(expression, UnaryExpression) and expression.operator in ("+", "-"):
-            value = SemanticAnalyzer._constant_int(expression.operand)
+            value = self._constant_int(expression.operand)
             if value is not None:
                 return value if expression.operator == "+" else -value
+        if isinstance(expression, CallExpression) and expression.name == "min" and len(expression.arguments) == 2:
+            left, right = expression.arguments
+            left_value = self._constant_int(left)
+            right_value = self._constant_int(right)
+            if left_value is not None and right_value is not None:
+                return min(left_value, right_value)
+            if self._is_iframe(left) and right_value == 0:
+                return 0
+            if self._is_iframe(right) and left_value == 0:
+                return 0
         return None
+
+    @staticmethod
+    def _is_iframe(expression: Expression) -> bool:
+        return (
+            isinstance(expression, NameExpression)
+            and expression.name == "iFrame"
+            and expression.resolved_symbol_kind == "uniform"
+        )
 
     @staticmethod
     def _is_local_name(expression: Expression, local_index: int) -> bool:
@@ -682,6 +708,9 @@ class SemanticAnalyzer:
             if right == ShaderType.FLOAT and left.is_vector:
                 return left
             return None
+
+        if operator in ("&", "|", "^", "<<", ">>"):
+            return ShaderType.INT if left == ShaderType.INT and right == ShaderType.INT else None
 
         if operator in ("<", "<=", ">", ">="):
             if left == right and left.is_numeric_scalar:

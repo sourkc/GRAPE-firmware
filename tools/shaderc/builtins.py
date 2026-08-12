@@ -42,6 +42,7 @@ BUILTIN_FUNCTION_NAMES = frozenset({
     "mix",
     "normalize",
     "pow",
+    "radians",
     "reflect",
     "sign",
     "sin",
@@ -59,7 +60,7 @@ def resolve_builtin(name: str, arguments: tuple[ShaderType, ...]) -> BuiltinReso
             return BuiltinResolution(name, arguments[0])
         return None
 
-    if name in {"ceil", "cos", "exp", "floor", "fract", "sin", "sqrt"}:
+    if name in {"ceil", "cos", "exp", "floor", "fract", "radians", "sin", "sqrt"}:
         if len(arguments) == 1 and arguments[0] in _FLOAT_OR_VECTOR:
             return BuiltinResolution(name, arguments[0])
         return None

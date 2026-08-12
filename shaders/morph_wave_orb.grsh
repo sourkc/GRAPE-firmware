@@ -1,0 +1,120 @@
+// === ORGANIKUS GÖMB — 3 TENGELYES FORGATÁSSAL ===
+
+float map(vec3 p, float time) {
+    float r = length(p);
+    vec3 q = p / r;
+    float f = 5.0;
+    float freq = 8.0;
+    for (int i = 0; i < 4; i++) {
+        f += sin(dot(q, vec3(1.5, 1.2, 0.8) * freq) + time * 1.5);
+        freq *= 1.0;
+    }
+    f *= 0.02;
+    return r - (1.0 + f);
+}
+
+vec3 getNormal(vec3 p, float time) {
+    vec2 e = vec2(0.007, 0.0);
+    return normalize(vec3(
+        map(p + e.xyy, time) - map(p - e.xyy, time),
+        map(p + e.yxy, time) - map(p - e.yxy, time),
+        map(p + e.yyx, time) - map(p - e.yyx, time)
+    ));
+}
+
+float getSpecular(vec3 n, vec3 lightDir, vec3 viewDir, float shininess) {
+    vec3 halfDir = normalize(lightDir + viewDir);
+    return pow(max(dot(n, halfDir), 0.0), shininess);
+}
+
+// 3D forgatás mátrix (X, Y, Z külön)
+mat3 rotationXYZ(float angleX, float angleY, float angleZ) {
+    float cx = cos(angleX), sx = sin(angleX);
+    float cy = cos(angleY), sy = sin(angleY);
+    float cz = cos(angleZ), sz = sin(angleZ);
+
+    mat3 rotX = mat3(
+        1.0, 0.0, 0.0,
+        0.0, cx, -sx,
+        0.0, sx, cx
+    );
+
+    mat3 rotY = mat3(
+        cy, 0.0, sy,
+        0.0, 1.0, 0.0,
+        -sy, 0.0, cy
+    );
+
+    mat3 rotZ = mat3(
+        cz, -sz, 0.0,
+        sz, cz, 0.0,
+        0.0, 0.0, 1.0
+    );
+
+    return rotZ * rotY * rotX;
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = (fragCoord - 0.5 * iResolution.xy) / iResolution.y;
+    float time = iTime;
+
+    vec3 ro = vec3(0.0, 0.0, 5.5);
+    vec3 rd = normalize(vec3(uv, -2.0));
+
+    // === FORGATÁS BEÁLLÍTÁSOK ===
+    // Manuálisan vagy idő alapján
+    float angleX = radians(90.0);          // kézzel (fix 30°)
+    float angleY = time * 0.5;             // animált forgás Y tengelyen
+    float angleZ = radians(90.0);          // kézzel (fix 20°)
+
+    mat3 rot = rotationXYZ(angleX, angleY, angleZ);
+    ro = rot * ro;
+    rd = rot * rd;
+
+    float t = 0.0;
+    float d;
+    vec3 p;
+    bool hit = false;
+
+    for (int i = 0; i < 128; i++) {
+        p = ro + rd * t;
+        d = map(p, time);
+        if (d < 0.001) { hit = true; break; }
+        t += d * 0.5;
+        if (t > 20.0) break;
+    }
+
+    vec3 col = vec3(0.0);
+    if (hit) {
+        vec3 n = getNormal(p, time);
+        vec3 viewDir = normalize(ro - p);
+
+        // === FÉNYEK ===
+        vec3 lightMain = normalize(vec3(0.0, 0.2, 1.0));
+        vec3 lightWarm = normalize(vec3(-1.0, 0.2, 0.4));
+        vec3 lightCool = normalize(vec3(1.0, 0.4, 0.8));
+
+        float diffM = max(dot(n, lightMain), 0.0);
+        float diffW = max(dot(n, lightWarm), 0.0);
+        float diffC = max(dot(n, lightCool), 0.0);
+
+        float specM = getSpecular(n, lightMain, viewDir, 64.0);
+        float specW = getSpecular(n, lightWarm, viewDir, 32.0);
+        float specC = getSpecular(n, lightCool, viewDir, 16.0);
+
+        float glowLine = sin(dot(p, n) * 12.0 + time * 3.0) * 0.5 + 0.5;
+        vec3 glowColor = mix(vec3(0.0, 0.9, 1.2), vec3(1.0, 0.9, 0.2), glowLine);
+        glowColor *= smoothstep(0.0, 0.5, 1.0 - abs(d) * 10.0);
+
+        vec3 baseColor = vec3(0.05, 0.06, 0.08);
+
+        col = baseColor * (diffM * 0.8 + diffW * 0.5 + diffC * 0.6)
+            + glowColor * 0.6
+            + specM * vec3(1.0)
+            + specW * vec3(1.0, 0.5, 0.2) * 0.7
+            + specC * vec3(0.4, 0.8, 1.0) * 0.6;
+    }
+
+    col = pow(col, vec3(1.4545));
+    fragColor = vec4(col, 1.0);
+}

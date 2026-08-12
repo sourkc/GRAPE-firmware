@@ -8,6 +8,8 @@ _KEYWORDS = {
     "uniform": TokenKind.KW_UNIFORM,
     "const": TokenKind.KW_CONST,
     "in": TokenKind.KW_IN,
+    "out": TokenKind.KW_OUT,
+    "void": TokenKind.KW_VOID,
     "bool": TokenKind.KW_BOOL,
     "int": TokenKind.KW_INT,
     "float": TokenKind.KW_FLOAT,
@@ -38,6 +40,8 @@ _DOUBLE_CHAR_TOKENS = {
     ">=": TokenKind.GREATER_EQUAL,
     "&&": TokenKind.AND_AND,
     "||": TokenKind.OR_OR,
+    "<<": TokenKind.LEFT_SHIFT,
+    ">>": TokenKind.RIGHT_SHIFT,
 }
 
 _SINGLE_CHAR_TOKENS = {
@@ -58,6 +62,9 @@ _SINGLE_CHAR_TOKENS = {
     "=": TokenKind.EQUAL,
     "<": TokenKind.LESS,
     ">": TokenKind.GREATER,
+    "&": TokenKind.AMPERSAND,
+    "|": TokenKind.PIPE,
+    "^": TokenKind.CARET,
 }
 
 

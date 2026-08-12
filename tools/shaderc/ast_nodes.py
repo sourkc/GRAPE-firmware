@@ -64,6 +64,11 @@ class VariableDeclGroup(Statement):
 
 
 @dataclass
+class EmptyStatement(Statement):
+    pass
+
+
+@dataclass
 class ExpressionStatement(Statement):
     expression: Expression
 

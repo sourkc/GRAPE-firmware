@@ -25,6 +25,8 @@ class TokenKind(Enum):
     KW_UNIFORM = auto()
     KW_CONST = auto()
     KW_IN = auto()
+    KW_OUT = auto()
+    KW_VOID = auto()
     KW_BOOL = auto()
     KW_INT = auto()
     KW_FLOAT = auto()
@@ -72,6 +74,11 @@ class TokenKind(Enum):
     GREATER_EQUAL = auto()
     AND_AND = auto()
     OR_OR = auto()
+    AMPERSAND = auto()
+    PIPE = auto()
+    CARET = auto()
+    LEFT_SHIFT = auto()
+    RIGHT_SHIFT = auto()
 
 
 @dataclass(frozen=True)

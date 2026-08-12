@@ -1,6 +1,6 @@
 #pragma once
 
-#include "grape/grape_types.h"
+#include "grape/grape_texture.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -51,6 +51,10 @@ typedef struct {
     size_t uniform_size;
     uint32_t flags;
 } grape_shader_program_t;
+
+esp_err_t grape_shader_render_procedural_to_texture(grape_texture_t *target,
+                                                     const grape_shader_program_t *shader,
+                                                     const void *uniforms);
 
 #ifdef __cplusplus
 }

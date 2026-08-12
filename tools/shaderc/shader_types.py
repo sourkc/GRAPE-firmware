@@ -4,6 +4,7 @@ from enum import Enum
 
 
 class ShaderType(Enum):
+    VOID = "void"
     BOOL = "bool"
     INT = "int"
     FLOAT = "float"

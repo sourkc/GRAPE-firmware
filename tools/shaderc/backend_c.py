@@ -136,6 +136,7 @@ def _emit_functions(module: IRModule, prefix: str) -> list[str]:
         "    grape_shader_vec2_t uv;",
         "    grape_shader_vec2_t local_position;",
         "    grape_shader_vec2_t surface_size;",
+        "    grape_shader_vec2_t frag_coord;",
         f"    const {prefix}_uniforms_t *uniforms;",
         f"}} {prefix}_context_t;",
         "",
@@ -201,10 +202,11 @@ class _FunctionEmitter:
 
         if isinstance(instruction, IRDeclareLocal):
             qualifier = "const " if instruction.is_const else ""
-            text = f"{pad}{qualifier}{_c_type(instruction.type)} _l{instruction.local_index}"
+            name = f"_l{instruction.local_index}"
+            text = f"{pad}{qualifier}{_c_type(instruction.type)} {name}"
             if instruction.initializer is not None:
                 text += f" = {self.values[instruction.initializer.id]}"
-            return [text + ";"]
+            return [text + ";", f"{pad}(void){name};"]
 
         if isinstance(instruction, IRIf):
             lines = [f"{pad}if ({self.values[instruction.condition.id]}) {{"]
@@ -293,6 +295,8 @@ class _FunctionEmitter:
         if isinstance(instruction, IRBoolConstant):
             return "true" if instruction.value else "false"
         if isinstance(instruction, IRLoadBuiltin):
+            if instruction.name == "__grape_frag_coord":
+                return "ctx->frag_coord"
             return f"ctx->{instruction.name}"
         if isinstance(instruction, IRLoadUniform):
             return f"ctx->uniforms->{self.uniforms_by_index[instruction.uniform_index].name}"
@@ -339,6 +343,7 @@ def _emit_eval(module: IRModule, prefix: str) -> list[str]:
         "        .uv = uv,",
         "        .local_position = local_position,",
         "        .surface_size = surface_size,",
+        "        .frag_coord = { local_position.x, surface_size.y - local_position.y },",
         "        .uniforms = uniforms,",
         "    };",
         f"    return {main_name}(&ctx);",
@@ -665,7 +670,7 @@ def _emit_builtin_call(
     arguments: tuple[IRValue, ...],
     values: dict[int, str],
 ) -> str:
-    if name in {"abs", "ceil", "cos", "exp", "floor", "fract", "sign", "sin", "sqrt"}:
+    if name in {"abs", "ceil", "cos", "exp", "floor", "fract", "radians", "sign", "sin", "sqrt"}:
         return _emit_componentwise_builtin(name, result_type, arguments, values)
 
     if name in {"min", "max", "clamp", "mix", "smoothstep", "pow"}:
@@ -767,6 +772,8 @@ def _emit_builtin_scalar(
     if name == "fract":
         x = arg(0)
         return f"(({x}) - floorf({x}))"
+    if name == "radians":
+        return f"(({arg(0)}) * 0.01745329251994329577f)"
     if name == "sign":
         x = arg(0)
         if arguments[0].type == ShaderType.INT:

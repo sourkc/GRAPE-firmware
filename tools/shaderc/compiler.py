@@ -16,7 +16,9 @@ from .lexer import Lexer
 from .lower import Lowerer
 from .optimizer import optimize
 from .parser import Parser
+from .preprocessor import Preprocessor
 from .semantic import SemanticAnalyzer
+from .shadertoy import adapt_shadertoy
 from .tokens import Token
 
 
@@ -135,9 +137,11 @@ def compile_shader(
     except UnicodeDecodeError as error:
         raise RuntimeError(f"{relative_source}: error: shader source must be UTF-8") from error
 
-    source = SourceFile(Path(relative_source), source_text)
+    original_source = SourceFile(Path(relative_source), source_text)
+    source = Preprocessor(original_source).process()
     tokens = Lexer(source).tokenize()
     ast = Parser(source, tokens).parse()
+    ast = adapt_shadertoy(source, ast)
     SemanticAnalyzer(source).analyze(ast)
     ir = optimize(Lowerer(ast).lower())
 

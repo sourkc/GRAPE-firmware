@@ -8,6 +8,7 @@ from .ast_nodes import (
     BreakStatement,
     CallExpression,
     ConstructorExpression,
+    EmptyStatement,
     ExpressionStatement,
     FloatLiteral,
     ForStatement,
@@ -34,12 +35,17 @@ from .tokens import SourceSpan, Token, TokenKind
 _BINARY_PRECEDENCE = {
     TokenKind.OR_OR: 10,
     TokenKind.AND_AND: 20,
+    TokenKind.PIPE: 23,
+    TokenKind.CARET: 24,
+    TokenKind.AMPERSAND: 25,
     TokenKind.EQUAL_EQUAL: 30,
     TokenKind.BANG_EQUAL: 30,
     TokenKind.LESS: 40,
     TokenKind.LESS_EQUAL: 40,
     TokenKind.GREATER: 40,
     TokenKind.GREATER_EQUAL: 40,
+    TokenKind.LEFT_SHIFT: 45,
+    TokenKind.RIGHT_SHIFT: 45,
     TokenKind.PLUS: 50,
     TokenKind.MINUS: 50,
     TokenKind.STAR: 60,
@@ -55,6 +61,7 @@ _ASSIGNMENT_TOKENS = {
 }
 
 _TYPE_TOKENS = {
+    TokenKind.KW_VOID: ShaderType.VOID,
     TokenKind.KW_BOOL: ShaderType.BOOL,
     TokenKind.KW_INT: ShaderType.INT,
     TokenKind.KW_FLOAT: ShaderType.FLOAT,
@@ -101,6 +108,8 @@ class Parser:
     def _parse_uniform(self) -> UniformDecl:
         start = self._expect(TokenKind.KW_UNIFORM, "expected 'uniform'").span.start
         shader_type = self._parse_type()
+        if shader_type == ShaderType.VOID:
+            fail(self.source, self._current().span, "uniform cannot have type void")
         name = self._expect(TokenKind.IDENTIFIER, "expected uniform name")
         end = self._expect(TokenKind.SEMICOLON, "expected ';' after uniform declaration").span.end
         return UniformDecl(SourceSpan(start, end), shader_type, name.text)
@@ -116,9 +125,11 @@ class Parser:
             while True:
                 parameter_start = self._current().span.start
                 qualifier = "in"
-                if self._check(TokenKind.KW_IN):
+                if self._current().kind in (TokenKind.KW_IN, TokenKind.KW_OUT):
                     qualifier = self._advance().text
                 parameter_type = self._parse_type()
+                if parameter_type == ShaderType.VOID:
+                    fail(self.source, self._current().span, "function parameter cannot have type void")
                 parameter_name = self._expect(TokenKind.IDENTIFIER, "expected parameter name")
                 parameters.append(
                     FunctionParameter(
@@ -147,6 +158,9 @@ class Parser:
         return Block(SourceSpan(start, end), statements)
 
     def _parse_statement(self):
+        if self._check(TokenKind.SEMICOLON):
+            token = self._advance()
+            return EmptyStatement(token.span)
         if self._check(TokenKind.LEFT_BRACE):
             return self._parse_block()
         if self._check(TokenKind.KW_RETURN):
@@ -218,6 +232,8 @@ class Parser:
             self._advance()
             is_const = True
         shader_type = self._parse_type()
+        if shader_type == ShaderType.VOID:
+            fail(self.source, self._current().span, "local variable cannot have type void")
         declarations = []
         while True:
             name = self._expect(TokenKind.IDENTIFIER, "expected variable name")
@@ -286,7 +302,7 @@ class Parser:
         while True:
             if self._check(TokenKind.LEFT_PAREN):
                 if not isinstance(expression, NameExpression):
-                    fail(self.source, expression.span, "only named functions can be called in shader language 0.6")
+                    fail(self.source, expression.span, "only named functions can be called in shader language 0.7")
                 start = expression.span.start
                 self._advance()
                 arguments = []
@@ -329,7 +345,7 @@ class Parser:
             TokenKind.MINUS_MINUS,
         ):
             operator = self._advance()
-            operand = self._parse_prefix()
+            operand = self._parse_postfix()
             if operator.kind in (TokenKind.PLUS_PLUS, TokenKind.MINUS_MINUS):
                 return UpdateExpression(SourceSpan(operator.span.start, operand.span.end), operand, operator.text, True)
             return UnaryExpression(SourceSpan(operator.span.start, operand.span.end), operator.text, operand)
@@ -348,7 +364,7 @@ class Parser:
             self._advance()
             return NameExpression(token.span, token.text)
 
-        if token.kind in _TYPE_TOKENS:
+        if token.kind in _TYPE_TOKENS and token.kind != TokenKind.KW_VOID:
             return self._parse_constructor()
 
         if token.kind == TokenKind.LEFT_PAREN:

@@ -8,6 +8,7 @@ from .ast_nodes import (
     BreakStatement,
     CallExpression,
     ConstructorExpression,
+    EmptyStatement,
     Expression,
     ExpressionStatement,
     FloatLiteral,
@@ -64,6 +65,7 @@ _BUILTINS = {
     "uv",
     "local_position",
     "surface_size",
+    "__grape_frag_coord",
 }
 
 _SWIZZLE_INDEX = {
@@ -116,6 +118,9 @@ class Lowerer:
         return block
 
     def _lower_statement(self, statement: Statement) -> None:
+        if isinstance(statement, EmptyStatement):
+            return
+
         if isinstance(statement, Block):
             for child in statement.statements:
                 self._lower_statement(child)
