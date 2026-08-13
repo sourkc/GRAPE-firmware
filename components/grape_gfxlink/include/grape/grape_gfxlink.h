@@ -4,10 +4,6 @@
 #include "freertos/FreeRTOS.h"
 #include "grape/grape.h"
 
-#ifndef TUSB_DESC_CONFIG_ATT_BUS_POWERED
-#define TUSB_DESC_CONFIG_ATT_BUS_POWERED 0
-#endif
-
 #ifdef __cplusplus
 extern "C" {
 #endif

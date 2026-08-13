@@ -81,7 +81,7 @@ static const uint8_t s_fs_configuration_descriptor[] = {
         1,
         0,
         GFXLINK_CONFIG_TOTAL_LEN,
-        TUSB_DESC_CONFIG_ATT_BUS_POWERED,
+        0x00,
         100
     ),
     TUD_VENDOR_DESCRIPTOR(
