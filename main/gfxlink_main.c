@@ -13,7 +13,7 @@ void app_main(void)
 
     grape_gfxlink_t *link = NULL;
     ESP_ERROR_CHECK(grape_gfxlink_start(grape, &link));
-    ESP_LOGI(TAG, "GFXLINK milestone 1 ready");
+    ESP_LOGI(TAG, "GFXLINK M2.0 ready");
 
     for (;;) {
         ESP_ERROR_CHECK(grape_gfxlink_process(link, portMAX_DELAY));
