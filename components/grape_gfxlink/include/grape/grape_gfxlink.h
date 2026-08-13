@@ -2,6 +2,7 @@
 
 #include "esp_err.h"
 #include "grape/grape.h"
+#include "grape/grape_gfxlink_worker.h"
 
 #ifdef __cplusplus
 extern "C" {
