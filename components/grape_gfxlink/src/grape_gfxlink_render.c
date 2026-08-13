@@ -5,8 +5,6 @@
 
 #include "grape/grape_gfxlink_internal.h"
 
-static gfxlink_surface_slot_t_unused;
-
 typedef struct {
     uint32_t handle;
     grape_surface_t *surface;
