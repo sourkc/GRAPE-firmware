@@ -335,6 +335,106 @@ grape_pixel_format_t grape_texture_format(const grape_texture_t *texture)
     return texture ? texture->format : GRAPE_PIXEL_FORMAT_RGB565;
 }
 
+static grape_rect_t texture_rect_surface_bounds(const grape_surface_t *surface,
+                                                uint32_t x,
+                                                uint32_t y,
+                                                uint32_t width,
+                                                uint32_t height)
+{
+    const float m00 = surface->cos_rotation * surface->transform.scale_x;
+    const float m01 = -surface->sin_rotation * surface->transform.scale_y;
+    const float m10 = surface->sin_rotation * surface->transform.scale_x;
+    const float m11 = surface->cos_rotation * surface->transform.scale_y;
+    const float offset_x = surface->transform.x
+                         - m00 * surface->transform.origin_x
+                         - m01 * surface->transform.origin_y;
+    const float offset_y = surface->transform.y
+                         - m10 * surface->transform.origin_x
+                         - m11 * surface->transform.origin_y;
+    const float x0 = (float)x;
+    const float y0 = (float)y;
+    const float x1 = (float)(x + width);
+    const float y1 = (float)(y + height);
+    const float px[4] = {
+        offset_x + m00 * x0 + m01 * y0,
+        offset_x + m00 * x1 + m01 * y0,
+        offset_x + m00 * x0 + m01 * y1,
+        offset_x + m00 * x1 + m01 * y1,
+    };
+    const float py[4] = {
+        offset_y + m10 * x0 + m11 * y0,
+        offset_y + m10 * x1 + m11 * y0,
+        offset_y + m10 * x0 + m11 * y1,
+        offset_y + m10 * x1 + m11 * y1,
+    };
+    float min_x = px[0];
+    float max_x = px[0];
+    float min_y = py[0];
+    float max_y = py[0];
+
+    for (size_t i = 1U; i < 4U; ++i) {
+        if (px[i] < min_x) min_x = px[i];
+        if (px[i] > max_x) max_x = px[i];
+        if (py[i] < min_y) min_y = py[i];
+        if (py[i] > max_y) max_y = py[i];
+    }
+
+    int32_t ix0 = grape_floor_to_i32(min_x);
+    int32_t iy0 = grape_floor_to_i32(min_y);
+    int32_t ix1 = grape_floor_to_i32(max_x);
+    int32_t iy1 = grape_floor_to_i32(max_y);
+    if ((float)ix1 < max_x) ix1++;
+    if ((float)iy1 < max_y) iy1++;
+
+    return (grape_rect_t){
+        .x = ix0,
+        .y = iy0,
+        .width = ix1 - ix0,
+        .height = iy1 - iy0,
+    };
+}
+
+esp_err_t grape_texture_invalidate_rect(grape_texture_t *texture,
+                                        uint32_t x,
+                                        uint32_t y,
+                                        uint32_t width,
+                                        uint32_t height)
+{
+    if (!texture || width == 0U || height == 0U ||
+        x > texture->width || y > texture->height ||
+        width > texture->width - x || height > texture->height - y) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (texture->format == GRAPE_PIXEL_FORMAT_A8) {
+        return grape_texture_invalidate(texture);
+    }
+
+    for (grape_surface_t *surface = texture->context->surfaces;
+         surface;
+         surface = surface->next) {
+        if (surface->texture != texture || !surface->visible ||
+            surface->opacity == 0U || surface->tint.a == 0U) {
+            continue;
+        }
+
+        esp_err_t ret;
+        if (surface->shader) {
+            ret = grape_damage_add_surface_coverage(surface);
+        } else {
+            ret = grape_damage_add(
+                texture->context,
+                texture_rect_surface_bounds(surface, x, y, width, height)
+            );
+        }
+        if (ret != ESP_OK) {
+            return ret;
+        }
+    }
+
+    return ESP_OK;
+}
+
 /**
  * Use this after changing the texture.
  *  1. Marks all surfaces that use this texture as damaged regions

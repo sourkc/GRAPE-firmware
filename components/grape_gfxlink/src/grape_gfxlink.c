@@ -32,6 +32,7 @@
 #define GFXLINK_USB_HS_PACKET_SIZE 512U
 #define GFXLINK_CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN)
 #define GFXLINK_TX_WAIT_MS 1500U
+#define GFXLINK_FAST_DAMAGE_MAX 16U
 
 static const char *TAG = "grape_gfxlink";
 
@@ -76,9 +77,20 @@ typedef struct {
 } gfxlink_resource_slot_t;
 
 typedef struct {
+    uint32_t texture_handle;
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+} gfxlink_texture_damage_t;
+
+typedef struct {
     uint8_t opcode;
+    uint8_t fast_damage_count;
+    uint16_t reserved;
     uint32_t sequence;
     uint32_t payload_size;
+    gfxlink_texture_damage_t fast_damage[GFXLINK_FAST_DAMAGE_MAX];
     uint8_t payload[GFXLINK_RENDERER_MAX_PAYLOAD];
 } gfxlink_renderer_request_t;
 
@@ -102,6 +114,9 @@ struct grape_gfxlink {
     gfxlink_svg_slot_t svg_documents[GFXLINK_MAX_SVG_DOCUMENTS];
     gfxlink_font_slot_t fonts[GFXLINK_MAX_FONTS];
     grape_glyph_cache_t *glyph_cache;
+    gfxlink_texture_damage_t fast_damage[GFXLINK_FAST_DAMAGE_MAX];
+    uint32_t fast_damage_count;
+    gfxlink_status_t fast_write_status;
 };
 
 static grape_gfxlink_t *s_active_link;
@@ -912,6 +927,145 @@ static esp_err_t update_texture(grape_gfxlink_t *link,
     return grape_texture_invalidate(texture_slot->texture);
 }
 
+static bool texture_damage_touches(const gfxlink_texture_damage_t *a,
+                                   const gfxlink_texture_damage_t *b)
+{
+    uint64_t ax2 = (uint64_t)a->x + a->width;
+    uint64_t ay2 = (uint64_t)a->y + a->height;
+    uint64_t bx2 = (uint64_t)b->x + b->width;
+    uint64_t by2 = (uint64_t)b->y + b->height;
+
+    return a->texture_handle == b->texture_handle &&
+           (uint64_t)a->x <= bx2 && (uint64_t)b->x <= ax2 &&
+           (uint64_t)a->y <= by2 && (uint64_t)b->y <= ay2;
+}
+
+static void texture_damage_union(gfxlink_texture_damage_t *dst,
+                                 const gfxlink_texture_damage_t *src)
+{
+    uint32_t x1 = dst->x < src->x ? dst->x : src->x;
+    uint32_t y1 = dst->y < src->y ? dst->y : src->y;
+    uint64_t dst_x2 = (uint64_t)dst->x + dst->width;
+    uint64_t dst_y2 = (uint64_t)dst->y + dst->height;
+    uint64_t src_x2 = (uint64_t)src->x + src->width;
+    uint64_t src_y2 = (uint64_t)src->y + src->height;
+    uint32_t x2 = (uint32_t)(dst_x2 > src_x2 ? dst_x2 : src_x2);
+    uint32_t y2 = (uint32_t)(dst_y2 > src_y2 ? dst_y2 : src_y2);
+
+    dst->x = x1;
+    dst->y = y1;
+    dst->width = x2 - x1;
+    dst->height = y2 - y1;
+}
+
+static gfxlink_status_t record_fast_damage(grape_gfxlink_t *link,
+                                           const gfxlink_texture_damage_t *damage)
+{
+    for (uint32_t i = 0U; i < link->fast_damage_count; ++i) {
+        if (texture_damage_touches(&link->fast_damage[i], damage)) {
+            texture_damage_union(&link->fast_damage[i], damage);
+            return GFXLINK_STATUS_OK;
+        }
+    }
+
+    if (link->fast_damage_count >= GFXLINK_FAST_DAMAGE_MAX) {
+        return GFXLINK_STATUS_BUSY;
+    }
+
+    link->fast_damage[link->fast_damage_count++] = *damage;
+    return GFXLINK_STATUS_OK;
+}
+
+static gfxlink_status_t write_texture_rect(grape_gfxlink_t *link,
+                                           const uint8_t *payload,
+                                           uint32_t payload_size)
+{
+    if (!payload || payload_size <= sizeof(gfxlink_texture_write_rect_request_t)) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+
+    gfxlink_texture_write_rect_request_t request;
+    memcpy(&request, payload, sizeof(request));
+
+    uint32_t texture_handle = from_le32(request.texture_handle);
+    uint32_t x = from_le32(request.x);
+    uint32_t y = from_le32(request.y);
+    uint32_t width = from_le32(request.width);
+    uint32_t height = from_le32(request.height);
+    uint32_t data_offset = from_le32(request.data_offset);
+    uint32_t data_size = from_le32(request.data_size);
+    const uint8_t *data = payload + sizeof(request);
+
+    if (data_size == 0U ||
+        data_size != payload_size - sizeof(request) ||
+        data_size > GFXLINK_TEXTURE_WRITE_RECT_CHUNK_SIZE) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+
+    gfxlink_texture_slot_t *slot = find_texture_slot(link, texture_handle);
+    if (!slot) {
+        return GFXLINK_STATUS_NOT_FOUND;
+    }
+
+    grape_texture_t *texture = slot->texture;
+    uint32_t texture_width = grape_texture_width(texture);
+    uint32_t texture_height = grape_texture_height(texture);
+    size_t bpp = pixel_bytes((uint32_t)grape_texture_format(texture));
+    if (width == 0U || height == 0U || bpp == 0U ||
+        x > texture_width || y > texture_height ||
+        width > texture_width - x || height > texture_height - y ||
+        width > SIZE_MAX / bpp) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+
+    size_t row_bytes = (size_t)width * bpp;
+    if (height > SIZE_MAX / row_bytes) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+    size_t total_size = row_bytes * height;
+    if ((uint64_t)data_offset + data_size > total_size) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+
+    uint8_t *dst = grape_texture_pixels(texture);
+    size_t stride = grape_texture_stride(texture);
+    if (!dst || stride < (size_t)(x + width) * bpp) {
+        return GFXLINK_STATUS_INTERNAL;
+    }
+
+    size_t logical_offset = data_offset;
+    size_t remaining = data_size;
+    size_t source_offset = 0U;
+    while (remaining > 0U) {
+        size_t row = logical_offset / row_bytes;
+        size_t column_bytes = logical_offset % row_bytes;
+        size_t copy_size = row_bytes - column_bytes;
+        if (copy_size > remaining) {
+            copy_size = remaining;
+        }
+
+        memcpy(dst + (size_t)(y + row) * stride + (size_t)x * bpp + column_bytes,
+               data + source_offset,
+               copy_size);
+        logical_offset += copy_size;
+        source_offset += copy_size;
+        remaining -= copy_size;
+    }
+
+    if ((size_t)data_offset + data_size == total_size) {
+        gfxlink_texture_damage_t damage = {
+            .texture_handle = texture_handle,
+            .x = x,
+            .y = y,
+            .width = width,
+            .height = height,
+        };
+        return record_fast_damage(link, &damage);
+    }
+
+    return GFXLINK_STATUS_OK;
+}
+
 static esp_err_t destroy_texture(grape_gfxlink_t *link,
                                  const gfxlink_texture_handle_request_t *request)
 {
@@ -1389,7 +1543,29 @@ static void execute_renderer_request(grape_gfxlink_t *link,
                 set_status_response(response, GFXLINK_STATUS_INVALID_ARGUMENT);
                 return;
             }
-            ret = grape_present(link->grape);
+            ret = ESP_OK;
+            for (uint32_t i = 0U; i < request->fast_damage_count; ++i) {
+                const gfxlink_texture_damage_t *damage = &request->fast_damage[i];
+                gfxlink_texture_slot_t *slot =
+                    find_texture_slot(link, damage->texture_handle);
+                if (!slot) {
+                    ret = ESP_ERR_NOT_FOUND;
+                    break;
+                }
+                ret = grape_texture_invalidate_rect(
+                    slot->texture,
+                    damage->x,
+                    damage->y,
+                    damage->width,
+                    damage->height
+                );
+                if (ret != ESP_OK) {
+                    break;
+                }
+            }
+            if (ret == ESP_OK) {
+                ret = grape_present(link->grape);
+            }
             break;
 
         case GFXLINK_OP_CREATE_SOLID_SURFACE:
@@ -2013,7 +2189,8 @@ static void dispatch_packet(grape_gfxlink_t *link,
                 GFXLINK_CAP_VECTOR_PATHS |
                 GFXLINK_CAP_SVG |
                 GFXLINK_CAP_FONTS |
-                GFXLINK_CAP_TEXT
+                GFXLINK_CAP_TEXT |
+                GFXLINK_CAP_TEXTURE_WRITE_RECT
             ),
             .max_payload = to_le32(GFXLINK_MAX_PAYLOAD),
             .max_resource_size = to_le32(GFXLINK_MAX_RESOURCE_SIZE),
@@ -2112,6 +2289,32 @@ static void dispatch_packet(grape_gfxlink_t *link,
         return;
     }
 
+    if (header->opcode == GFXLINK_OP_TEXTURE_WRITE_RECT) {
+        gfxlink_status_t status = link->fast_write_status;
+        if (status == GFXLINK_STATUS_OK) {
+            status = write_texture_rect(link, payload, payload_size);
+        }
+
+        if ((from_le16(header->flags) & GFXLINK_FLAG_NO_RESPONSE) != 0U) {
+            if (status != GFXLINK_STATUS_OK &&
+                link->fast_write_status == GFXLINK_STATUS_OK) {
+                link->fast_write_status = status;
+            }
+        } else {
+            send_status(header->opcode, sequence, status);
+        }
+        return;
+    }
+
+    if (header->opcode == GFXLINK_OP_PRESENT &&
+        link->fast_write_status != GFXLINK_STATUS_OK) {
+        gfxlink_status_t status = link->fast_write_status;
+        link->fast_write_status = GFXLINK_STATUS_OK;
+        link->fast_damage_count = 0U;
+        send_status(header->opcode, sequence, status);
+        return;
+    }
+
     if (!is_renderer_opcode(header->opcode)) {
         send_status(header->opcode, sequence, GFXLINK_STATUS_UNSUPPORTED);
         return;
@@ -2128,6 +2331,13 @@ static void dispatch_packet(grape_gfxlink_t *link,
     };
     if (payload_size > 0U) {
         memcpy(request.payload, payload, payload_size);
+    }
+    if (header->opcode == GFXLINK_OP_PRESENT && link->fast_damage_count > 0U) {
+        request.fast_damage_count = (uint8_t)link->fast_damage_count;
+        memcpy(request.fast_damage,
+               link->fast_damage,
+               link->fast_damage_count * sizeof(link->fast_damage[0]));
+        link->fast_damage_count = 0U;
     }
 
     if (xQueueSend(link->renderer_requests, &request, pdMS_TO_TICKS(250)) != pdTRUE) {
@@ -2290,7 +2500,7 @@ esp_err_t grape_gfxlink_start(grape_context_t *grape, grape_gfxlink_t **out_link
 
     *out_link = link;
     ESP_LOGI(TAG,
-             "GFXLINK v%u M2.2+M2.3 started on USB HS; max payload=%u, resources=%u",
+             "GFXLINK v%u started on USB HS; max payload=%u, resources=%u, fast texture writes enabled",
              GFXLINK_PROTOCOL_VERSION,
              GFXLINK_MAX_PAYLOAD,
              GFXLINK_MAX_RESOURCES);

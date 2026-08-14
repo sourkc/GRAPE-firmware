@@ -25,6 +25,9 @@ uint32_t grape_texture_width(const grape_texture_t *texture);
 uint32_t grape_texture_height(const grape_texture_t *texture);
 grape_pixel_format_t grape_texture_format(const grape_texture_t *texture);
 esp_err_t grape_texture_invalidate(grape_texture_t *texture);
+esp_err_t grape_texture_invalidate_rect(grape_texture_t *texture,
+                                        uint32_t x, uint32_t y,
+                                        uint32_t width, uint32_t height);
 
 #ifdef __cplusplus
 }

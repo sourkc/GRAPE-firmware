@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #define GFXLINK_MAGIC 0x50415247u
-#define GFXLINK_PROTOCOL_VERSION 5u
+#define GFXLINK_PROTOCOL_VERSION 6u
 #define GFXLINK_MAX_PAYLOAD (16u * 1024u)
 #define GFXLINK_MAX_RESOURCE_SIZE (16u * 1024u * 1024u)
 
@@ -31,12 +31,16 @@
 #define GFXLINK_CAP_SVG (1u << 12)
 #define GFXLINK_CAP_FONTS (1u << 13)
 #define GFXLINK_CAP_TEXT (1u << 14)
+#define GFXLINK_CAP_TEXTURE_WRITE_RECT (1u << 15)
 
 #define GFXLINK_RESOURCE_WRITE_HEADER_SIZE 16u
 #define GFXLINK_RESOURCE_CHUNK_SIZE (GFXLINK_MAX_PAYLOAD - GFXLINK_RESOURCE_WRITE_HEADER_SIZE)
 #define GFXLINK_RESOURCE_MAX_CHUNKS \
     ((GFXLINK_MAX_RESOURCE_SIZE + GFXLINK_RESOURCE_CHUNK_SIZE - 1u) / GFXLINK_RESOURCE_CHUNK_SIZE)
 #define GFXLINK_RESOURCE_BITMAP_BYTES ((GFXLINK_RESOURCE_MAX_CHUNKS + 7u) / 8u)
+#define GFXLINK_TEXTURE_WRITE_RECT_HEADER_SIZE 28u
+#define GFXLINK_TEXTURE_WRITE_RECT_CHUNK_SIZE \
+    (GFXLINK_MAX_PAYLOAD - GFXLINK_TEXTURE_WRITE_RECT_HEADER_SIZE)
 
 typedef enum {
     GFXLINK_OP_HELLO = 0x01,
@@ -65,6 +69,7 @@ typedef enum {
     GFXLINK_OP_TEXTURE_CREATE = 0x30,
     GFXLINK_OP_TEXTURE_UPDATE = 0x31,
     GFXLINK_OP_TEXTURE_DESTROY = 0x32,
+    GFXLINK_OP_TEXTURE_WRITE_RECT = 0x33,
 
     GFXLINK_OP_PATH_CREATE = 0x40,
     GFXLINK_OP_PATH_RASTERIZE = 0x41,
@@ -286,6 +291,16 @@ typedef struct __attribute__((packed)) {
 } gfxlink_texture_update_request_t;
 
 typedef struct __attribute__((packed)) {
+    uint32_t texture_handle;
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t data_offset;
+    uint32_t data_size;
+} gfxlink_texture_write_rect_request_t;
+
+typedef struct __attribute__((packed)) {
     uint32_t handle;
 } gfxlink_texture_handle_request_t;
 
@@ -411,6 +426,11 @@ typedef struct __attribute__((packed)) {
 _Static_assert(sizeof(gfxlink_header_t) == 16, "GFXLINK header must be 16 bytes");
 _Static_assert(sizeof(gfxlink_resource_write_request_t) == GFXLINK_RESOURCE_WRITE_HEADER_SIZE,
                "GFXLINK resource write header must match protocol constant");
+_Static_assert(sizeof(gfxlink_texture_write_rect_request_t) ==
+                   GFXLINK_TEXTURE_WRITE_RECT_HEADER_SIZE,
+               "GFXLINK texture write header must match protocol constant");
 _Static_assert(sizeof(gfxlink_path_command_t) == 28u,
                "GFXLINK path command must remain fixed-size");
 _Static_assert(GFXLINK_RESOURCE_CHUNK_SIZE > 0u, "GFXLINK resource chunk size must be positive");
+_Static_assert(GFXLINK_TEXTURE_WRITE_RECT_CHUNK_SIZE > 0u,
+               "GFXLINK texture write chunk size must be positive");
