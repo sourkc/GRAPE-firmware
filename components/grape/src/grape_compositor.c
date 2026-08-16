@@ -677,6 +677,7 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
             continue;
         }
 
+        // If the shader exists...
         if (surface->shader) {
             grape_shader_kernel_args_t shader_args = {
                 .texture_pixels = surface->texture ? surface->texture->pixels : NULL,
@@ -698,9 +699,9 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
                 .local_y_from_screen_x = surface->local_y_from_screen_x,
                 .local_y_from_screen_y = surface->local_y_from_screen_y,
                 .local_y_offset = surface->local_y_offset,
-            };
+            }; // Set all arguments
             GRAPE_TIME_BLOCK(CPU_SURFACE_RASTER) {
-                surface->shader->kernel(&shader_args, surface->shader_uniforms);
+                surface->shader->kernel(&shader_args, surface->shader_uniforms); // Run shader inside a timing block
             }
             continue;
         }

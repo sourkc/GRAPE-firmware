@@ -220,6 +220,18 @@ esp_err_t grape_surface_create(grape_context_t *context, grape_texture_t *textur
     return ESP_OK;
 }
 
+/**
+ * Creates a procedural GRAPE surface. Procedural
+ * surfaces dont have  textures, they use shaders.
+ *
+ * @param context GRAPE context
+ * @param width Surface width
+ * @param height Surface height
+ * @param shader Surface shader
+ * @param uniforms Shader uniforms
+ * @param out_surface Returns a surface
+ * @return Returns ESP_OK on success or an error code
+ */
 esp_err_t grape_surface_create_procedural(grape_context_t *context,
                                           uint32_t width,
                                           uint32_t height,

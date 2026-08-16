@@ -5,6 +5,12 @@
 #include "grape_internal.h"
 #include "grape/grape_benchmark_hooks.h"
 
+/**
+ * Returns screen bounds as a grape_rect_t
+ *
+ * @param context GRAPE context
+ * @return Rect containing screen bounds
+ */
 static grape_rect_t screen_bounds(const grape_context_t *context)
 {
     return (grape_rect_t){
@@ -15,6 +21,14 @@ static grape_rect_t screen_bounds(const grape_context_t *context)
     };
 }
 
+/**
+ * Converts 2D damage tile coordinates into a linear tile index
+ *
+ * @param damage GRAPE damage state
+ * @param x X coordinate in the damage bitmap
+ * @param y Y coordinate in the damage bitmap
+ * @return Returns the index
+ */
 static inline size_t tile_index(const grape_damage_state_t *damage,
                                 uint32_t x,
                                 uint32_t y)
@@ -22,21 +36,47 @@ static inline size_t tile_index(const grape_damage_state_t *damage,
     return (size_t)y * damage->tile_columns + x;
 }
 
+/**
+ * Gets a bit in the bitmap byte array
+ *
+ * @param bitmap Bitmap byte array
+ * @param index 1D index in the bitmap bits
+ * @return Tile bit
+ */
 static inline bool tile_get(const uint8_t *bitmap, size_t index)
 {
     return (bitmap[index >> 3U] & (uint8_t)(1U << (index & 7U))) != 0;
 }
 
+/**
+ * Sets a bit in the bitmap byte array to 1
+ *
+ * @param bitmap Bitmap byte array
+ * @param index 1D index in the bitmap bits
+ */
 static inline void tile_set(uint8_t *bitmap, size_t index)
 {
     bitmap[index >> 3U] |= (uint8_t)(1U << (index & 7U));
 }
 
+/**
+ * Checks whether a rect is empty
+ *
+ * @param rect Rect to check
+ * @return Whether a rect is empty
+ */
 bool grape_rect_empty(grape_rect_t rect)
 {
     return rect.width <= 0 || rect.height <= 0;
 }
 
+/**
+ * Finds the intersection of two rects
+ *
+ * @param a First rect
+ * @param b Second rect
+ * @return Intersection rect
+ */
 grape_rect_t grape_rect_intersection(grape_rect_t a, grape_rect_t b)
 {
     int32_t x0 = a.x > b.x ? a.x : b.x;
@@ -55,6 +95,13 @@ grape_rect_t grape_rect_intersection(grape_rect_t a, grape_rect_t b)
     return (grape_rect_t){x0, y0, x1 - x0, y1 - y0};
 }
 
+/**
+ * Finds a rect that contains both rects inside of it
+ *
+ * @param a First rect
+ * @param b Second rect
+ * @return Bounds rect
+ */
 grape_rect_t grape_rect_union(grape_rect_t a, grape_rect_t b)
 {
     if (grape_rect_empty(a)) {
@@ -76,6 +123,13 @@ grape_rect_t grape_rect_union(grape_rect_t a, grape_rect_t b)
     return (grape_rect_t){x0, y0, x1 - x0, y1 - y0};
 }
 
+/**
+ * Checks if the rects touch or intersect
+ *
+ * @param a First rect
+ * @param b Second rect
+ * @return Whether the rects touch or intersect
+ */
 bool grape_rect_touches(grape_rect_t a, grape_rect_t b)
 {
     if (grape_rect_empty(a) || grape_rect_empty(b)) {
@@ -90,6 +144,12 @@ bool grape_rect_touches(grape_rect_t a, grape_rect_t b)
     return a.x <= bx1 && b.x <= ax1 && a.y <= by1 && b.y <= ay1;
 }
 
+/**
+ * Finds the area of a rect
+ *
+ * @param rect
+ * @return Area of the rect
+ */
 static int64_t rect_area(grape_rect_t rect)
 {
     if (grape_rect_empty(rect)) {

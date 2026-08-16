@@ -22,13 +22,19 @@ typedef enum {
     GRAPE_FEATURE_SLOT_COUNT,
 } grape_feature_slot_t;
 
+/**
+ * Feature state struct
+ */
 typedef struct {
-    grape_feature_mode_t mode;
-    grape_feature_unavailable_reason_t unavailable_reason;
-    bool available;
-    bool active;
+    grape_feature_mode_t mode; ///< Feature mode (0-2)
+    grape_feature_unavailable_reason_t unavailable_reason; ///< Reason for why the feature is unavailable (if it is)
+    bool available; ///< If the feature is available
+    bool active; ///< If the feature is turned on
 } grape_feature_state_t;
 
+/**
+ * GRAPE texture
+ */
 struct grape_texture {
     grape_context_t *context;
     struct grape_texture *next;
@@ -37,22 +43,25 @@ struct grape_texture {
     size_t size;
     uint32_t width;
     uint32_t height;
-    uint32_t ref_count;
+    uint32_t ref_count; ///< Amount of surfaces using that texture
     grape_pixel_format_t format;
-    grape_memory_t memory;
-    uint8_t *occupancy;
+    grape_memory_t memory; ///< Memory type for memory allocation
+    uint8_t *occupancy; ///< Occupancy bitmap (See /docs/ARCHITECTURE.md#occupancy-map)
     size_t occupancy_bitmap_size;
-    uint32_t occupancy_columns;
-    uint32_t occupancy_rows;
-    size_t occupancy_occupied_count;
-    bool occupancy_all_full;
-    bool occupancy_all_empty;
+    uint32_t occupancy_columns; ///< Amount of columns of in the occupancy bitmap
+    uint32_t occupancy_rows; ///< Amount of rows in the occupancy bitmap
+    size_t occupancy_occupied_count; ///< Amount of occupied cells in the occupancy bitmap
+    bool occupancy_all_full; ///< If the occupancy is all full for a texture. Always true for opaque textures
+    bool occupancy_all_empty; ///< If the occupancy is all empty for a texture (aka an empty transparent texture)
 };
 
+/**
+ * GRAPE surface
+ */
 struct grape_surface {
     grape_context_t *context;
-    struct grape_surface *prev;
-    struct grape_surface *next;
+    struct grape_surface *prev; ///< Pointer to the previous surface in the Z-ordered surface list
+    struct grape_surface *next; ///< Pointer to the next surface in the Z-ordered surface list
     grape_texture_t *texture;
     const grape_shader_program_t *shader;
     uint32_t width;
@@ -61,22 +70,30 @@ struct grape_surface {
     grape_transform_t transform;
     grape_rect_t bounds;
     grape_color_t tint;
-    float cos_rotation;
-    float sin_rotation;
-    float local_x_from_screen_x;
-    float local_x_from_screen_y;
-    float local_x_offset;
-    float local_y_from_screen_x;
-    float local_y_from_screen_y;
-    float local_y_offset;
-    float normalized_rotation;
-    float shear_x_coefficient;
+    float cos_rotation; ///< Cached cos of rotation
+    float sin_rotation; ///< Cached sin of rotation
+    float local_x_from_screen_x; ///< How much the x changes in local texture coordinates if we move by one x
+    float local_x_from_screen_y; ///< How much the x changes in local texture coordinates if we move by one y
+    float local_x_offset; ///< Constant term of the cached screen-to-local X transform
+    float local_y_from_screen_x; ///< How much the y changes in local texture coordinates if we move by one x
+    float local_y_from_screen_y; ///< How much the y changes in local texture coordinates if we move by one y
+    float local_y_offset; ///< Constant term of the cached screen-to-local Y transform
+    float normalized_rotation; ///< Rotation normalized to [-pi, pi]
+    float shear_x_coefficient; ///< Used for three-shear rotation. Equivalent to -tan(normalized_rotation / 2)
     int32_t z;
     uint8_t opacity;
     bool visible;
     bool shear_cache_valid;
 };
 
+/**
+ * A non-owning description of an A8 image generated/used
+ * by the three-shear rotation pipeline, including its
+ * pixel buffer dimensions and its offset relative to
+ * the surface position
+ *
+ * NOTE: I forgot why we need this
+ */
 typedef struct {
     const uint8_t *pixels;
     size_t stride;
@@ -86,6 +103,9 @@ typedef struct {
     uint32_t height;
 } grape_shear_image_t;
 
+/**
+ * Simple rect measured in damage tiles instead of pixels
+ */
 typedef struct {
     uint32_t x0;
     uint32_t y0;
@@ -93,17 +113,32 @@ typedef struct {
     uint32_t y1;
 } grape_damage_tile_region_t;
 
+/**
+ * Stores the bounds of a damaged tile region together with
+ * the best split currently found for it.
+ */
 typedef struct {
-    grape_damage_tile_region_t bounds;
-    grape_damage_tile_region_t split_a;
-    grape_damage_tile_region_t split_b;
-    int64_t split_saving;
+    grape_damage_tile_region_t bounds; ///< Region currently being considered for splitting
+    grape_damage_tile_region_t split_a; ///< First optimal split region
+    grape_damage_tile_region_t split_b; ///< Second optimal split region
+    int64_t split_saving; ///< Measures how much cheaper the split is
 } grape_damage_split_region_t;
 
+/**
+ * Complicated thing T_T
+ *
+ * Maintains bitmaps describing damaged and visible tiles across frames and
+ * combines them to determine which parts of the display needs to be redrawn.
+ * Also owns the temporary workspace used by the damage rectangle planner to
+ * group and split damaged tile regions into efficient render rectangles.
+ *
+ * Previous frame visibility is retained so damage can be propagated between
+ * display backbuffers when necessary.
+ */
 typedef struct {
-    uint8_t *tiles;
-    uint8_t *current_visible_tiles;
-    uint8_t *previous_visible_tiles;
+    uint8_t *tiles; ///< Tiles directly marked as damaged
+    uint8_t *current_visible_tiles; ///< Damage/visibility required for the current frame
+    uint8_t *previous_visible_tiles; ///< Damage/visibility required for that was required for the previous frame
     uint8_t *render_tiles;
     size_t bitmap_size;
     uint32_t tile_columns;
@@ -123,6 +158,9 @@ typedef struct {
 
 #define GRAPE_DEBUG_RENDER_DAMAGE_CAPACITY (CONFIG_GRAPE_MAX_DAMAGE_RECTS * 2U)
 
+/**
+ * State struct for debug layers
+ */
 typedef struct {
     uint32_t enabled_mask;
     grape_rect_t render_damage[GRAPE_DEBUG_RENDER_DAMAGE_CAPACITY];
@@ -133,6 +171,13 @@ typedef struct {
     size_t damage_rects_previous_count;
 } grape_debug_state_t;
 
+/**
+ * Internal state associated with a GRAPE context.
+ *
+ * Contains the display and render target, lists of textures and surfaces,
+ * damage tracking state, hardware accelerator handles, reusable rotation
+ * buffers, feature configuration and debug state used by the renderer.
+ */
 struct grape_context {
     grape_display_t *display;
     grape_display_info_t display_info;

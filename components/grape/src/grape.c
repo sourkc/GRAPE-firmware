@@ -258,7 +258,7 @@ esp_err_t grape_present(grape_context_t *context)
  * of said region next frame
  *
  * @param context GRAPE context
- * @param rect Rectangle to incalidate
+ * @param rect Rectangle to invalidate
  * @return ESP_OK on success or an error code
  */
 esp_err_t grape_invalidate(grape_context_t *context, grape_rect_t rect)
