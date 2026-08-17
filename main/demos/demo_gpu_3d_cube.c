@@ -148,7 +148,8 @@ esp_err_t grape_demo_gpu_3d_cube_run(grape_context_t *grape)
         .width = GPU_3D_CUBE_WIDTH,
         .height = GPU_3D_CUBE_HEIGHT,
         .format = GRAPE_GPU_DEPTH_D16,
-        .memory = GRAPE_MEMORY_INTERNAL,
+        .memory = GRAPE_MEMORY_PSRAM,
+        .sample_count = GRAPE_GPU_SAMPLE_COUNT_4,
     };
     ret = grape_gpu_depth_buffer_create(gpu, &depth_desc, &depth);
     if (ret != ESP_OK) {
@@ -227,6 +228,7 @@ esp_err_t grape_demo_gpu_3d_cube_run(grape_context_t *grape)
             .write_enable = true,
             .compare_op = GRAPE_GPU_COMPARE_LESS,
         },
+        .sample_count = GRAPE_GPU_SAMPLE_COUNT_4,
     };
     ret = grape_gpu_pipeline_create(gpu, &pipeline_desc, &pipeline);
     if (ret != ESP_OK) {
@@ -250,9 +252,9 @@ esp_err_t grape_demo_gpu_3d_cube_run(grape_context_t *grape)
     );
 
     ESP_LOGI(TAG,
-             "GPU 3D M2: indexed rotating cube, D16 depth, homogeneous clipping, backface culling");
+             "GPU 3D M2.5: indexed rotating cube, 4x MSAA, D16 per-sample depth, clipping, culling");
     ESP_LOGI(TAG,
-             "render target=%ux%u near=%.2f far=%.1f; cube periodically intersects near plane",
+             "render target=%ux%u near=%.2f far=%.1f; cube lightly intersects near plane",
              GPU_3D_CUBE_WIDTH,
              GPU_3D_CUBE_HEIGHT,
              GPU_3D_CUBE_NEAR,
@@ -265,7 +267,7 @@ esp_err_t grape_demo_gpu_3d_cube_run(grape_context_t *grape)
     for (;;) {
         const int64_t now_us = esp_timer_get_time();
         const float seconds = (float)(now_us - start_us) / 1000000.0f;
-        const float z = 2.6f + 1.2f * sinf(seconds * 0.35f);
+        const float z = 3.40f + 0.75f * sinf(seconds * 0.35f);
 
         const grape_gpu_mat4_t rotation = mat4_multiply(
             mat4_rotation_y(seconds * 0.70f),
@@ -284,6 +286,7 @@ esp_err_t grape_demo_gpu_3d_cube_run(grape_context_t *grape)
             .depth_attachment = depth,
             .depth_load_op = GRAPE_GPU_LOAD_OP_CLEAR,
             .clear_depth = 1.0f,
+            .sample_count = GRAPE_GPU_SAMPLE_COUNT_4,
         };
         ret = grape_gpu_begin_render_pass(gpu, &pass);
         if (ret != ESP_OK) {
@@ -335,7 +338,7 @@ esp_err_t grape_demo_gpu_3d_cube_run(grape_context_t *grape)
         const int64_t elapsed_us = esp_timer_get_time() - fps_start_us;
         if (elapsed_us >= 1000000) {
             const float elapsed_seconds = (float)elapsed_us / 1000000.0f;
-            printf("GPU 3D M2 cube FPS: %.2f\n", (float)frame_count / elapsed_seconds);
+            printf("GPU 3D M2.5 cube 4x MSAA FPS: %.2f\n", (float)frame_count / elapsed_seconds);
             frame_count = 0U;
             fps_start_us += elapsed_us;
         }

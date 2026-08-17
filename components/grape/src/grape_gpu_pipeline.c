@@ -42,6 +42,7 @@ esp_err_t grape_gpu_pipeline_create(grape_gpu_context_t *context,
         desc->front_face < GRAPE_GPU_FRONT_FACE_CCW || desc->front_face > GRAPE_GPU_FRONT_FACE_CW ||
         desc->depth.compare_op < GRAPE_GPU_COMPARE_LESS ||
         desc->depth.compare_op > GRAPE_GPU_COMPARE_ALWAYS ||
+        !grape_gpu_sample_count_valid(desc->sample_count) ||
         desc->vertex_layout.stride == 0U ||
         desc->vertex_layout.attribute_count == 0U ||
         desc->vertex_layout.attribute_count > GRAPE_GPU_MAX_VERTEX_ATTRIBUTES) {
@@ -75,6 +76,7 @@ esp_err_t grape_gpu_pipeline_create(grape_gpu_context_t *context,
 
     pipeline->context = context;
     pipeline->desc = *desc;
+    pipeline->desc.sample_count = grape_gpu_sample_count_resolve(desc->sample_count);
     pipeline->position_attribute_index = position_index;
     pipeline->next = context->pipelines;
     context->pipelines = pipeline;

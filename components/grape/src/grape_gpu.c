@@ -6,6 +6,20 @@
 #include "grape_gpu_internal.h"
 #include "grape_internal.h"
 
+
+grape_gpu_sample_count_t grape_gpu_sample_count_resolve(grape_gpu_sample_count_t sample_count)
+{
+    return sample_count == 0 ? GRAPE_GPU_SAMPLE_COUNT_1 : sample_count;
+}
+
+bool grape_gpu_sample_count_valid(grape_gpu_sample_count_t sample_count)
+{
+    const grape_gpu_sample_count_t resolved = grape_gpu_sample_count_resolve(sample_count);
+    return resolved == GRAPE_GPU_SAMPLE_COUNT_1 ||
+           resolved == GRAPE_GPU_SAMPLE_COUNT_2 ||
+           resolved == GRAPE_GPU_SAMPLE_COUNT_4;
+}
+
 static bool gpu_viewport_valid(const grape_gpu_viewport_t *viewport)
 {
     return viewport &&
@@ -70,9 +84,10 @@ static void gpu_clear_rgba8888(grape_texture_t *texture, grape_color_t color)
 static void gpu_clear_d16(grape_gpu_depth_buffer_t *buffer, float clear_depth)
 {
     const uint16_t value = gpu_depth_to_d16(clear_depth);
+    const size_t samples_per_row = (size_t)buffer->width * (size_t)buffer->sample_count;
     for (uint32_t y = 0U; y < buffer->height; ++y) {
         uint16_t *row = (uint16_t *)((uint8_t *)buffer->data + (size_t)y * buffer->stride);
-        for (uint32_t x = 0U; x < buffer->width; ++x) {
+        for (size_t x = 0U; x < samples_per_row; ++x) {
             row[x] = value;
         }
     }
@@ -122,6 +137,7 @@ esp_err_t grape_gpu_context_destroy(grape_gpu_context_t *context)
         return ESP_ERR_INVALID_STATE;
     }
 
+    grape_gpu_msaa_release(context);
     free(context);
     return ESP_OK;
 }
@@ -131,7 +147,8 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
 {
     if (!context || !desc || !desc->color_attachment ||
         desc->color_load_op < GRAPE_GPU_LOAD_OP_LOAD ||
-        desc->color_load_op > GRAPE_GPU_LOAD_OP_CLEAR) {
+        desc->color_load_op > GRAPE_GPU_LOAD_OP_CLEAR ||
+        !grape_gpu_sample_count_valid(desc->sample_count)) {
         return ESP_ERR_INVALID_ARG;
     }
     if (context->render_pass_active) {
@@ -146,11 +163,18 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
         return ESP_ERR_NOT_SUPPORTED;
     }
 
+    grape_gpu_sample_count_t sample_count = desc->sample_count;
+    if (sample_count == 0 && desc->depth_attachment) {
+        sample_count = desc->depth_attachment->sample_count;
+    }
+    sample_count = grape_gpu_sample_count_resolve(sample_count);
+
     if (desc->depth_attachment) {
         if (desc->depth_attachment->context != context ||
             desc->depth_attachment->width != desc->color_attachment->width ||
             desc->depth_attachment->height != desc->color_attachment->height ||
             desc->depth_attachment->format != GRAPE_GPU_DEPTH_D16 ||
+            desc->depth_attachment->sample_count != sample_count ||
             desc->depth_load_op < GRAPE_GPU_LOAD_OP_LOAD ||
             desc->depth_load_op > GRAPE_GPU_LOAD_OP_CLEAR) {
             return ESP_ERR_INVALID_ARG;
@@ -164,6 +188,7 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
 
     context->color_attachment = desc->color_attachment;
     context->depth_attachment = desc->depth_attachment;
+    context->sample_count = sample_count;
     context->bound_pipeline = NULL;
     context->bound_vertex_buffer = NULL;
     context->bound_index_buffer = NULL;
@@ -178,14 +203,34 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
     };
     context->render_pass_active = true;
 
-    if (desc->color_load_op == GRAPE_GPU_LOAD_OP_CLEAR) {
-        gpu_clear_rgba8888(desc->color_attachment, desc->clear_color);
-        grape_gpu_dirty_add(context, (grape_rect_t) {
-            .x = 0,
-            .y = 0,
-            .width = (int32_t)desc->color_attachment->width,
-            .height = (int32_t)desc->color_attachment->height,
-        });
+    esp_err_t ret = ESP_OK;
+    if (sample_count == GRAPE_GPU_SAMPLE_COUNT_1) {
+        if (desc->color_load_op == GRAPE_GPU_LOAD_OP_CLEAR) {
+            gpu_clear_rgba8888(desc->color_attachment, desc->clear_color);
+            grape_gpu_dirty_add(context, (grape_rect_t) {
+                .x = 0,
+                .y = 0,
+                .width = (int32_t)desc->color_attachment->width,
+                .height = (int32_t)desc->color_attachment->height,
+            });
+        }
+    } else {
+        ret = grape_gpu_msaa_begin(context, desc->color_load_op, desc->clear_color);
+        if (ret != ESP_OK) {
+            context->render_pass_active = false;
+            context->color_attachment = NULL;
+            context->depth_attachment = NULL;
+            context->sample_count = GRAPE_GPU_SAMPLE_COUNT_1;
+            return ret;
+        }
+        if (desc->color_load_op == GRAPE_GPU_LOAD_OP_CLEAR) {
+            grape_gpu_dirty_add(context, (grape_rect_t) {
+                .x = 0,
+                .y = 0,
+                .width = (int32_t)desc->color_attachment->width,
+                .height = (int32_t)desc->color_attachment->height,
+            });
+        }
     }
 
     if (desc->depth_attachment && desc->depth_load_op == GRAPE_GPU_LOAD_OP_CLEAR) {
@@ -202,7 +247,11 @@ esp_err_t grape_gpu_end_render_pass(grape_gpu_context_t *context)
     }
 
     esp_err_t ret = ESP_OK;
-    if (context->dirty_valid) {
+    if (context->sample_count != GRAPE_GPU_SAMPLE_COUNT_1) {
+        ret = grape_gpu_msaa_resolve(context);
+    }
+
+    if (ret == ESP_OK && context->dirty_valid) {
         grape_rect_t dirty = context->dirty_rect;
         ret = grape_texture_invalidate_rect(
             context->color_attachment,
@@ -216,6 +265,7 @@ esp_err_t grape_gpu_end_render_pass(grape_gpu_context_t *context)
     context->render_pass_active = false;
     context->color_attachment = NULL;
     context->depth_attachment = NULL;
+    context->sample_count = GRAPE_GPU_SAMPLE_COUNT_1;
     context->bound_pipeline = NULL;
     context->bound_vertex_buffer = NULL;
     context->bound_index_buffer = NULL;
@@ -267,6 +317,9 @@ esp_err_t grape_gpu_bind_pipeline(grape_gpu_context_t *context,
     }
     if (pipeline->context != context) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (pipeline->desc.sample_count != context->sample_count) {
+        return ESP_ERR_INVALID_STATE;
     }
 
     context->bound_pipeline = pipeline;

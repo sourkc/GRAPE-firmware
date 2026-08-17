@@ -23,7 +23,7 @@
  *   6 - aa
  *   7 - screenshot (AA scene + PNG/JPEG to SD)
  *   8 - aa_rotate_checker
- *   9 - gpu_3d_cube
+ *   9 - gpu_3d_cube (4x MSAA)
  */
 #define GRAPE_APP_DEMO 9U
 

@@ -28,12 +28,18 @@ esp_err_t grape_gpu_depth_buffer_create(grape_gpu_context_t *context,
 {
     if (!context || !desc || !out_buffer || desc->width == 0U || desc->height == 0U ||
         desc->format != GRAPE_GPU_DEPTH_D16 ||
+        !grape_gpu_sample_count_valid(desc->sample_count) ||
         desc->memory < GRAPE_MEMORY_DEFAULT || desc->memory > GRAPE_MEMORY_PSRAM) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    size_t stride = (size_t)desc->width * sizeof(uint16_t);
-    if (stride / sizeof(uint16_t) != desc->width) {
+    const grape_gpu_sample_count_t sample_count = grape_gpu_sample_count_resolve(desc->sample_count);
+    size_t samples_per_row = (size_t)desc->width * (size_t)sample_count;
+    if (samples_per_row / (size_t)sample_count != desc->width) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    size_t stride = samples_per_row * sizeof(uint16_t);
+    if (stride / sizeof(uint16_t) != samples_per_row) {
         return ESP_ERR_INVALID_SIZE;
     }
     size_t size = stride * (size_t)desc->height;
@@ -58,6 +64,7 @@ esp_err_t grape_gpu_depth_buffer_create(grape_gpu_context_t *context,
     buffer->width = desc->width;
     buffer->height = desc->height;
     buffer->format = desc->format;
+    buffer->sample_count = sample_count;
     buffer->memory = desc->memory;
     buffer->next = context->depth_buffers;
     context->depth_buffers = buffer;
@@ -102,4 +109,10 @@ uint32_t grape_gpu_depth_buffer_width(const grape_gpu_depth_buffer_t *buffer)
 uint32_t grape_gpu_depth_buffer_height(const grape_gpu_depth_buffer_t *buffer)
 {
     return buffer ? buffer->height : 0U;
+}
+
+
+grape_gpu_sample_count_t grape_gpu_depth_buffer_sample_count(const grape_gpu_depth_buffer_t *buffer)
+{
+    return buffer ? buffer->sample_count : GRAPE_GPU_SAMPLE_COUNT_1;
 }

@@ -29,6 +29,7 @@ struct grape_gpu_depth_buffer {
     uint32_t width;
     uint32_t height;
     grape_gpu_depth_format_t format;
+    grape_gpu_sample_count_t sample_count;
     grape_memory_t memory;
 };
 
@@ -52,6 +53,9 @@ struct grape_gpu_context {
     grape_gpu_index_type_t bound_index_type;
     grape_gpu_viewport_t viewport;
     uint8_t push_constants[GRAPE_GPU_MAX_PUSH_CONSTANT_BYTES];
+    uint8_t *msaa_color;
+    size_t msaa_color_size;
+    grape_gpu_sample_count_t sample_count;
     grape_rect_t dirty_rect;
     bool render_pass_active;
     bool dirty_valid;
@@ -59,7 +63,15 @@ struct grape_gpu_context {
 
 size_t grape_gpu_vertex_format_size_internal(grape_gpu_vertex_format_t format);
 size_t grape_gpu_index_type_size_internal(grape_gpu_index_type_t type);
+grape_gpu_sample_count_t grape_gpu_sample_count_resolve(grape_gpu_sample_count_t sample_count);
+bool grape_gpu_sample_count_valid(grape_gpu_sample_count_t sample_count);
 void grape_gpu_dirty_add(grape_gpu_context_t *context, grape_rect_t rect);
+
+esp_err_t grape_gpu_msaa_begin(grape_gpu_context_t *context,
+                               grape_gpu_load_op_t load_op,
+                               grape_color_t clear_color);
+esp_err_t grape_gpu_msaa_resolve(grape_gpu_context_t *context);
+void grape_gpu_msaa_release(grape_gpu_context_t *context);
 
 esp_err_t grape_gpu_vertex_fetch_transform(const grape_gpu_context_t *context,
                                            uint32_t vertex_index,

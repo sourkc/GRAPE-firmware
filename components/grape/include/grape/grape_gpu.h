@@ -75,6 +75,12 @@ typedef enum {
 } grape_gpu_depth_format_t;
 
 typedef enum {
+    GRAPE_GPU_SAMPLE_COUNT_1 = 1,
+    GRAPE_GPU_SAMPLE_COUNT_2 = 2,
+    GRAPE_GPU_SAMPLE_COUNT_4 = 4,
+} grape_gpu_sample_count_t;
+
+typedef enum {
     GRAPE_GPU_LOAD_OP_LOAD = 0,
     GRAPE_GPU_LOAD_OP_CLEAR,
 } grape_gpu_load_op_t;
@@ -120,6 +126,8 @@ typedef struct {
     uint32_t height;
     grape_gpu_depth_format_t format;
     grape_memory_t memory;
+    /* 0 is accepted as GRAPE_GPU_SAMPLE_COUNT_1 for backwards compatibility. */
+    grape_gpu_sample_count_t sample_count;
 } grape_gpu_depth_buffer_desc_t;
 
 typedef struct {
@@ -137,6 +145,8 @@ typedef struct {
     grape_gpu_cull_mode_t cull_mode;
     grape_gpu_front_face_t front_face;
     grape_gpu_depth_state_t depth;
+    /* 0 is accepted as GRAPE_GPU_SAMPLE_COUNT_1 for backwards compatibility. */
+    grape_gpu_sample_count_t sample_count;
 } grape_gpu_pipeline_desc_t;
 
 typedef struct {
@@ -146,6 +156,12 @@ typedef struct {
     grape_gpu_depth_buffer_t *depth_attachment;
     grape_gpu_load_op_t depth_load_op;
     float clear_depth;
+    /*
+     * Raster sample count. A multisampled pass resolves into color_attachment
+     * when grape_gpu_end_render_pass() is called. 0 defaults to the depth
+     * attachment sample count when present, otherwise 1x.
+     */
+    grape_gpu_sample_count_t sample_count;
 } grape_gpu_render_pass_desc_t;
 
 typedef struct {
@@ -176,6 +192,7 @@ esp_err_t grape_gpu_depth_buffer_create(grape_gpu_context_t *context,
 esp_err_t grape_gpu_depth_buffer_destroy(grape_gpu_depth_buffer_t *buffer);
 uint32_t grape_gpu_depth_buffer_width(const grape_gpu_depth_buffer_t *buffer);
 uint32_t grape_gpu_depth_buffer_height(const grape_gpu_depth_buffer_t *buffer);
+grape_gpu_sample_count_t grape_gpu_depth_buffer_sample_count(const grape_gpu_depth_buffer_t *buffer);
 
 esp_err_t grape_gpu_pipeline_create(grape_gpu_context_t *context,
                                     const grape_gpu_pipeline_desc_t *desc,
