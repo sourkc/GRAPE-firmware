@@ -54,10 +54,28 @@ static esp_err_t gpu_msaa_ensure_storage(grape_gpu_context_t *context)
     return ESP_OK;
 }
 
+static void gpu_msaa_fill_color(uint8_t *dst, size_t sample_pixels, grape_color_t color)
+{
+    if (color.r == color.g && color.r == color.b && color.r == color.a) {
+        memset(dst, color.r, sample_pixels * 4U);
+        return;
+    }
+
+    const uint8_t rgba[4] = { color.r, color.g, color.b, color.a };
+    uint32_t packed;
+    memcpy(&packed, rgba, sizeof(packed));
+    uint32_t *dst32 = (uint32_t *)dst;
+    for (size_t i = 0U; i < sample_pixels; ++i) {
+        dst32[i] = packed;
+    }
+}
+
 esp_err_t grape_gpu_msaa_begin(grape_gpu_context_t *context,
                                grape_gpu_load_op_t load_op,
                                grape_color_t clear_color)
 {
+    GRAPE_TIME_SCOPE(GPU_MSAA_PREPARE);
+
     if (!context || !context->color_attachment ||
         context->sample_count == GRAPE_GPU_SAMPLE_COUNT_1) {
         return ESP_ERR_INVALID_STATE;
@@ -74,11 +92,8 @@ esp_err_t grape_gpu_msaa_begin(grape_gpu_context_t *context,
     uint8_t *dst = context->msaa_color;
 
     if (load_op == GRAPE_GPU_LOAD_OP_CLEAR) {
-        const uint8_t rgba[4] = { clear_color.r, clear_color.g, clear_color.b, clear_color.a };
         const size_t sample_pixels = (size_t)width * height * samples;
-        for (size_t i = 0U; i < sample_pixels; ++i) {
-            memcpy(dst + i * 4U, rgba, sizeof(rgba));
-        }
+        gpu_msaa_fill_color(dst, sample_pixels, clear_color);
         return ESP_OK;
     }
 
@@ -97,8 +112,122 @@ esp_err_t grape_gpu_msaa_begin(grape_gpu_context_t *context,
     return ESP_OK;
 }
 
+static inline void gpu_msaa_resolve_mixed(const uint8_t *sample_base,
+                                           uint32_t samples,
+                                           uint8_t *dst)
+{
+    uint32_t alpha_sum = 0U;
+    uint32_t premul_r_sum = 0U;
+    uint32_t premul_g_sum = 0U;
+    uint32_t premul_b_sum = 0U;
+    uint32_t opaque_r_sum = 0U;
+    uint32_t opaque_g_sum = 0U;
+    uint32_t opaque_b_sum = 0U;
+    uint32_t opaque_samples = 0U;
+    bool binary_alpha = true;
+
+    for (uint32_t sample = 0U; sample < samples; ++sample) {
+        const uint8_t *rgba = sample_base + (size_t)sample * 4U;
+        const uint32_t alpha = rgba[3];
+        alpha_sum += alpha;
+        premul_r_sum += (uint32_t)rgba[0] * alpha;
+        premul_g_sum += (uint32_t)rgba[1] * alpha;
+        premul_b_sum += (uint32_t)rgba[2] * alpha;
+        if (alpha == 255U) {
+            ++opaque_samples;
+            opaque_r_sum += rgba[0];
+            opaque_g_sum += rgba[1];
+            opaque_b_sum += rgba[2];
+        } else if (alpha != 0U) {
+            binary_alpha = false;
+        }
+    }
+
+    if (alpha_sum == 0U) {
+        memset(dst, 0, 4U);
+        return;
+    }
+
+    if (binary_alpha) {
+        dst[0] = (uint8_t)((opaque_r_sum + opaque_samples / 2U) / opaque_samples);
+        dst[1] = (uint8_t)((opaque_g_sum + opaque_samples / 2U) / opaque_samples);
+        dst[2] = (uint8_t)((opaque_b_sum + opaque_samples / 2U) / opaque_samples);
+        dst[3] = (uint8_t)((opaque_samples * 255U + samples / 2U) / samples);
+        return;
+    }
+
+    dst[0] = (uint8_t)((premul_r_sum + alpha_sum / 2U) / alpha_sum);
+    dst[1] = (uint8_t)((premul_g_sum + alpha_sum / 2U) / alpha_sum);
+    dst[2] = (uint8_t)((premul_b_sum + alpha_sum / 2U) / alpha_sum);
+    dst[3] = (uint8_t)((alpha_sum + samples / 2U) / samples);
+}
+
+static void gpu_msaa_resolve_2x(grape_gpu_context_t *context,
+                                grape_texture_t *target,
+                                grape_rect_t dirty)
+{
+    const uint32_t width = target->width;
+    const int32_t end_x = dirty.x + dirty.width;
+    const int32_t end_y = dirty.y + dirty.height;
+
+    for (int32_t y = dirty.y; y < end_y; ++y) {
+        uint8_t *dst_row = target->pixels + (size_t)y * target->stride;
+        for (int32_t x = dirty.x; x < end_x; ++x) {
+            const uint8_t *sample_base = context->msaa_color +
+                (((size_t)y * width + (uint32_t)x) * 2U) * 4U;
+            uint8_t *dst = dst_row + (size_t)x * 4U;
+
+            uint32_t s0;
+            uint32_t s1;
+            memcpy(&s0, sample_base, sizeof(s0));
+            memcpy(&s1, sample_base + 4U, sizeof(s1));
+            if (s0 == s1) {
+                memcpy(dst, &s0, sizeof(s0));
+                continue;
+            }
+
+            gpu_msaa_resolve_mixed(sample_base, 2U, dst);
+        }
+    }
+}
+
+static void gpu_msaa_resolve_4x(grape_gpu_context_t *context,
+                                grape_texture_t *target,
+                                grape_rect_t dirty)
+{
+    const uint32_t width = target->width;
+    const int32_t end_x = dirty.x + dirty.width;
+    const int32_t end_y = dirty.y + dirty.height;
+
+    for (int32_t y = dirty.y; y < end_y; ++y) {
+        uint8_t *dst_row = target->pixels + (size_t)y * target->stride;
+        for (int32_t x = dirty.x; x < end_x; ++x) {
+            const uint8_t *sample_base = context->msaa_color +
+                (((size_t)y * width + (uint32_t)x) * 4U) * 4U;
+            uint8_t *dst = dst_row + (size_t)x * 4U;
+
+            uint32_t s0;
+            uint32_t s1;
+            uint32_t s2;
+            uint32_t s3;
+            memcpy(&s0, sample_base, sizeof(s0));
+            memcpy(&s1, sample_base + 4U, sizeof(s1));
+            memcpy(&s2, sample_base + 8U, sizeof(s2));
+            memcpy(&s3, sample_base + 12U, sizeof(s3));
+            if (s0 == s1 && s0 == s2 && s0 == s3) {
+                memcpy(dst, &s0, sizeof(s0));
+                continue;
+            }
+
+            gpu_msaa_resolve_mixed(sample_base, 4U, dst);
+        }
+    }
+}
+
 esp_err_t grape_gpu_msaa_resolve(grape_gpu_context_t *context)
 {
+    GRAPE_TIME_SCOPE(GPU_MSAA_RESOLVE);
+
     if (!context || !context->color_attachment || !context->msaa_color ||
         context->sample_count == GRAPE_GPU_SAMPLE_COUNT_1) {
         return ESP_ERR_INVALID_STATE;
@@ -108,69 +237,18 @@ esp_err_t grape_gpu_msaa_resolve(grape_gpu_context_t *context)
     }
 
     grape_texture_t *target = context->color_attachment;
-    const uint32_t samples = (uint32_t)context->sample_count;
-    const uint32_t width = target->width;
     const grape_rect_t dirty = context->dirty_rect;
-    const int32_t end_x = dirty.x + dirty.width;
-    const int32_t end_y = dirty.y + dirty.height;
 
-    for (int32_t y = dirty.y; y < end_y; ++y) {
-        uint8_t *dst_row = target->pixels + (size_t)y * target->stride;
-        for (int32_t x = dirty.x; x < end_x; ++x) {
-            const uint8_t *sample_base = context->msaa_color +
-                (((size_t)y * width + (uint32_t)x) * samples) * 4U;
-
-            uint32_t alpha_sum = 0U;
-            uint32_t premul_r_sum = 0U;
-            uint32_t premul_g_sum = 0U;
-            uint32_t premul_b_sum = 0U;
-            uint32_t opaque_r_sum = 0U;
-            uint32_t opaque_g_sum = 0U;
-            uint32_t opaque_b_sum = 0U;
-            uint32_t opaque_samples = 0U;
-            bool binary_alpha = true;
-            for (uint32_t sample = 0U; sample < samples; ++sample) {
-                const uint8_t *rgba = sample_base + (size_t)sample * 4U;
-                const uint32_t alpha = rgba[3];
-                alpha_sum += alpha;
-                premul_r_sum += (uint32_t)rgba[0] * alpha;
-                premul_g_sum += (uint32_t)rgba[1] * alpha;
-                premul_b_sum += (uint32_t)rgba[2] * alpha;
-                if (alpha == 255U) {
-                    ++opaque_samples;
-                    opaque_r_sum += rgba[0];
-                    opaque_g_sum += rgba[1];
-                    opaque_b_sum += rgba[2];
-                } else if (alpha != 0U) {
-                    binary_alpha = false;
-                }
-            }
-
-            uint8_t *dst = dst_row + (size_t)x * 4U;
-            if (alpha_sum == 0U) {
-                dst[0] = 0U;
-                dst[1] = 0U;
-                dst[2] = 0U;
-                dst[3] = 0U;
-                continue;
-            }
-
-            if (binary_alpha) {
-                dst[0] = (uint8_t)((opaque_r_sum + opaque_samples / 2U) / opaque_samples);
-                dst[1] = (uint8_t)((opaque_g_sum + opaque_samples / 2U) / opaque_samples);
-                dst[2] = (uint8_t)((opaque_b_sum + opaque_samples / 2U) / opaque_samples);
-                dst[3] = (uint8_t)((opaque_samples * 255U + samples / 2U) / samples);
-                continue;
-            }
-
-            dst[0] = (uint8_t)((premul_r_sum + alpha_sum / 2U) / alpha_sum);
-            dst[1] = (uint8_t)((premul_g_sum + alpha_sum / 2U) / alpha_sum);
-            dst[2] = (uint8_t)((premul_b_sum + alpha_sum / 2U) / alpha_sum);
-            dst[3] = (uint8_t)((alpha_sum + samples / 2U) / samples);
-        }
+    if (context->sample_count == GRAPE_GPU_SAMPLE_COUNT_2) {
+        gpu_msaa_resolve_2x(context, target, dirty);
+        return ESP_OK;
+    }
+    if (context->sample_count == GRAPE_GPU_SAMPLE_COUNT_4) {
+        gpu_msaa_resolve_4x(context, target, dirty);
+        return ESP_OK;
     }
 
-    return ESP_OK;
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 void grape_gpu_msaa_release(grape_gpu_context_t *context)

@@ -577,6 +577,7 @@ static esp_err_t gpu_rasterize_msaa_color_only(grape_gpu_context_t *context,
     const int64_t e1_step_y = setup->e1_step_y;
     const int64_t e2_step_y = setup->e2_step_y;
     const uint8_t rgba[4] = { color.r, color.g, color.b, color.a };
+    const size_t sample_pixel_bytes = (size_t)samples * 4U;
     gpu_msaa_sample_bias_t bias;
     gpu_msaa_build_biases(setup, context->sample_count, &bias);
 
@@ -590,9 +591,9 @@ static esp_err_t gpu_rasterize_msaa_color_only(grape_gpu_context_t *context,
         int64_t e1 = row_e1;
         int64_t e2 = row_e2;
 
+        uint8_t *sample_base = context->msaa_color +
+            (((size_t)y * width + (uint32_t)min_x) * samples) * 4U;
         for (int32_t x = min_x; x <= max_x; ++x) {
-            uint8_t *sample_base = context->msaa_color +
-                (((size_t)y * width + (uint32_t)x) * samples) * 4U;
             for (uint32_t sample = 0U; sample < samples; ++sample) {
                 if (e0 + bias.e0[sample] >= 0 &&
                     e1 + bias.e1[sample] >= 0 &&
@@ -601,6 +602,7 @@ static esp_err_t gpu_rasterize_msaa_color_only(grape_gpu_context_t *context,
                     wrote_sample = true;
                 }
             }
+            sample_base += sample_pixel_bytes;
             e0 += e0_step_x;
             e1 += e1_step_x;
             e2 += e2_step_x;
@@ -645,6 +647,7 @@ static esp_err_t gpu_rasterize_msaa_depth_generic(grape_gpu_context_t *context,
     const float depth_step_y = setup->depth_step_y;
     const size_t depth_stride = depth_target->stride;
     const uint8_t rgba[4] = { color.r, color.g, color.b, color.a };
+    const size_t sample_pixel_bytes = (size_t)samples * 4U;
     gpu_msaa_sample_bias_t bias;
     gpu_msaa_build_biases(setup, context->sample_count, &bias);
 
@@ -661,11 +664,10 @@ static esp_err_t gpu_rasterize_msaa_depth_generic(grape_gpu_context_t *context,
         float depth_f = row_depth;
         uint16_t *depth_row = (uint16_t *)((uint8_t *)depth_target->data + (size_t)y * depth_stride);
 
+        uint8_t *sample_base = context->msaa_color +
+            (((size_t)y * width + (uint32_t)min_x) * samples) * 4U;
+        uint16_t *depth_base = depth_row + (size_t)min_x * samples;
         for (int32_t x = min_x; x <= max_x; ++x) {
-            uint8_t *sample_base = context->msaa_color +
-                (((size_t)y * width + (uint32_t)x) * samples) * 4U;
-            uint16_t *depth_base = depth_row + (size_t)x * samples;
-
             for (uint32_t sample = 0U; sample < samples; ++sample) {
                 if (e0 + bias.e0[sample] >= 0 &&
                     e1 + bias.e1[sample] >= 0 &&
@@ -687,6 +689,8 @@ static esp_err_t gpu_rasterize_msaa_depth_generic(grape_gpu_context_t *context,
                 }
             }
 
+            sample_base += sample_pixel_bytes;
+            depth_base += samples;
             e0 += e0_step_x;
             e1 += e1_step_x;
             e2 += e2_step_x;
@@ -732,6 +736,7 @@ static esp_err_t gpu_rasterize_msaa_depth_less_write(grape_gpu_context_t *contex
     const float depth_step_y = setup->depth_step_y;
     const size_t depth_stride = depth_target->stride;
     const uint8_t rgba[4] = { color.r, color.g, color.b, color.a };
+    const size_t sample_pixel_bytes = (size_t)samples * 4U;
     gpu_msaa_sample_bias_t bias;
     gpu_msaa_build_biases(setup, context->sample_count, &bias);
 
@@ -748,11 +753,10 @@ static esp_err_t gpu_rasterize_msaa_depth_less_write(grape_gpu_context_t *contex
         float depth_f = row_depth;
         uint16_t *depth_row = (uint16_t *)((uint8_t *)depth_target->data + (size_t)y * depth_stride);
 
+        uint8_t *sample_base = context->msaa_color +
+            (((size_t)y * width + (uint32_t)min_x) * samples) * 4U;
+        uint16_t *depth_base = depth_row + (size_t)min_x * samples;
         for (int32_t x = min_x; x <= max_x; ++x) {
-            uint8_t *sample_base = context->msaa_color +
-                (((size_t)y * width + (uint32_t)x) * samples) * 4U;
-            uint16_t *depth_base = depth_row + (size_t)x * samples;
-
             for (uint32_t sample = 0U; sample < samples; ++sample) {
                 if (e0 + bias.e0[sample] >= 0 &&
                     e1 + bias.e1[sample] >= 0 &&
@@ -768,6 +772,8 @@ static esp_err_t gpu_rasterize_msaa_depth_less_write(grape_gpu_context_t *contex
                 }
             }
 
+            sample_base += sample_pixel_bytes;
+            depth_base += samples;
             e0 += e0_step_x;
             e1 += e1_step_x;
             e2 += e2_step_x;
@@ -795,6 +801,7 @@ static esp_err_t gpu_rasterize_msaa_depth_less_write(grape_gpu_context_t *contex
 esp_err_t grape_gpu_raster_triangle(grape_gpu_context_t *context,
                                     const grape_gpu_clip_vertex_t triangle[3])
 {
+    GRAPE_TIME_SCOPE(GPU_RASTER);
     if (grape_gpu_triangle_culled(context->bound_pipeline, triangle)) {
         return ESP_OK;
     }
@@ -834,15 +841,20 @@ static esp_err_t gpu_process_triangle(grape_gpu_context_t *context,
                                       const uint32_t indices[3])
 {
     grape_gpu_clip_vertex_t input[3];
-    for (uint32_t i = 0U; i < 3U; ++i) {
-        esp_err_t ret = grape_gpu_vertex_fetch_transform(context, indices[i], &input[i]);
-        if (ret != ESP_OK) {
-            return ret;
+    GRAPE_TIME_BLOCK(GPU_VERTEX_TRANSFORM) {
+        for (uint32_t i = 0U; i < 3U; ++i) {
+            esp_err_t ret = grape_gpu_vertex_fetch_transform(context, indices[i], &input[i]);
+            if (ret != ESP_OK) {
+                return ret;
+            }
         }
     }
 
     grape_gpu_clip_vertex_t clipped[GRAPE_GPU_MAX_CLIPPED_VERTICES];
-    const uint32_t clipped_count = grape_gpu_clip_triangle(input, clipped);
+    uint32_t clipped_count = 0;
+    GRAPE_TIME_BLOCK(GPU_CLIP) {
+        clipped_count = grape_gpu_clip_triangle(input, clipped);
+    }
     if (clipped_count < 3U) {
         return ESP_OK;
     }

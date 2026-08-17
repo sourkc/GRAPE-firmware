@@ -40,7 +40,17 @@ extern "C" {
     X(SVG_DOCUMENT_CREATE,  2, "svg.document_create",       "svg_document_create") \
     X(GLYPH_CACHE_SCALE,    2, "text.glyph_cache_scale",    "glyph_cache_scale") \
     X(TEXT_RASTERIZE,       2, "text.rasterize",            "text_rasterize") \
-    X(TEXT_COMPOSE,         2, "text.compose",              "text_compose")
+    X(TEXT_COMPOSE,         2, "text.compose",              "text_compose") \
+    X(GPU_PASS_BEGIN,       2, "gpu.pass_begin",            "gpu_pass_begin") \
+    X(GPU_PASS_END,         2, "gpu.pass_end",              "gpu_pass_end") \
+    X(GPU_COLOR_CLEAR,      2, "gpu.color_clear",           "gpu_color_clear") \
+    X(GPU_DEPTH_CLEAR,      2, "gpu.depth_clear",           "gpu_depth_clear") \
+    X(GPU_DRAW,             2, "gpu.draw",                  "gpu_draw") \
+    X(GPU_VERTEX_TRANSFORM, 2, "gpu.vertex_transform",      "gpu_vertex_transform") \
+    X(GPU_CLIP,             2, "gpu.clip",                  "gpu_clip") \
+    X(GPU_RASTER,           2, "gpu.raster",                "gpu_raster") \
+    X(GPU_MSAA_PREPARE,     2, "gpu.msaa_prepare",          "gpu_msaa_prepare") \
+    X(GPU_MSAA_RESOLVE,     2, "gpu.msaa_resolve",          "gpu_msaa_resolve")
 
 typedef enum {
 #define GRAPE_TELEMETRY_ENUM(name, level, label, csv) GRAPE_TELEMETRY_TIMER_##name,
