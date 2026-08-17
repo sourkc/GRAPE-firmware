@@ -68,3 +68,16 @@ format-specific rasterizer once instead of checking A8/RGB565/RGB888 for
 every pixel.
 
 The duplicated raster loops are intentional.
+
+### Some functions might require forced inline
+By inspecting the disassembly, that can be generated using
+```bash
+riscv32-esp-elf-objdump -d -S build\grape.elf > dissasembly.txt
+```
+it was discovered that the compiler might not inline some functions 
+that are supposed to be inlined. The fix is to add the flag `__attribute__((always_inline)`
+which has a downside of making the compiled image larger, but might significantly
+improve performance in hot paths. 
+
+**NOTICE: Please always run the benchmark before committing this change, there is 
+no guarantee that this fix works**

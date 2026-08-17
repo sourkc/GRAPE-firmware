@@ -138,6 +138,7 @@ struct grape_benchmark_runtime {
     grape_benchmark_text_buffer_t summary_buffer;
     grape_benchmark_text_buffer_t samples_buffer;
     grape_benchmark_text_buffer_t metadata_buffer;
+    grape_benchmark_text_buffer_t function_profile_buffer;
     esp_err_t report_error;
     uint32_t stack_min_free_bytes;
 };
@@ -166,6 +167,11 @@ void grape_benchmark_report_case(
     const grape_benchmark_case_t *bench_case,
     const grape_benchmark_result_t *result,
     const grape_benchmark_sample_t *samples
+);
+void grape_benchmark_report_function_profile(
+    grape_benchmark_runtime_t *runtime,
+    const grape_benchmark_case_t *bench_case,
+    uint32_t measured_iterations
 );
 void grape_benchmark_report_skip(
     grape_benchmark_runtime_t *runtime,

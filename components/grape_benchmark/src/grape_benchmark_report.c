@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_chip_info.h"
@@ -25,6 +26,20 @@ static const char *kind_name(grape_benchmark_kind_t kind)
         case GRAPE_BENCHMARK_KIND_LIFECYCLE: return "lifecycle";
         default: return "unknown";
     }
+}
+
+static int compare_function_profile_entries(const void *a, const void *b)
+{
+    const grape_benchmark_function_profile_entry_t *lhs = a;
+    const grape_benchmark_function_profile_entry_t *rhs = b;
+    if (lhs->calls < rhs->calls) {
+        return 1;
+    }
+    if (lhs->calls > rhs->calls) {
+        return -1;
+    }
+    return (lhs->function_address > rhs->function_address) -
+           (lhs->function_address < rhs->function_address);
 }
 
 static bool make_path(char *out, size_t capacity,
@@ -250,9 +265,23 @@ esp_err_t grape_benchmark_report_open(grape_benchmark_runtime_t *runtime)
         grape_benchmark_report_close(runtime);
         return ret;
     }
+    ret = buffer_init(
+        &runtime->function_profile_buffer,
+        grape_benchmark_function_profile_enabled(),
+        128U * 1024U
+    );
+    if (ret != ESP_OK) {
+        grape_benchmark_report_close(runtime);
+        return ret;
+    }
 
     write_summary_header(runtime);
     write_samples_header(runtime);
+    report_printf(
+        runtime,
+        &runtime->function_profile_buffer,
+        "kind,group,name,iterations,address,calls,calls_per_iteration,table_overflow\n"
+    );
     grape_benchmark_report_metadata(runtime);
     if (runtime->report_error != ESP_OK) {
         ret = runtime->report_error;
@@ -272,6 +301,7 @@ void grape_benchmark_report_close(grape_benchmark_runtime_t *runtime)
     buffer_free(&runtime->summary_buffer);
     buffer_free(&runtime->samples_buffer);
     buffer_free(&runtime->metadata_buffer);
+    buffer_free(&runtime->function_profile_buffer);
 }
 
 void grape_benchmark_report_metadata(grape_benchmark_runtime_t *runtime)
@@ -306,6 +336,10 @@ void grape_benchmark_report_metadata(grape_benchmark_runtime_t *runtime)
     }
 
     report_printf(runtime, buffer, "telemetry_level=%d\n", GRAPE_TELEMETRY_LEVEL);
+    report_printf(runtime, buffer, "function_profiling=%d\n",
+                  grape_benchmark_function_profile_enabled() ? 1 : 0);
+    report_printf(runtime, buffer, "function_profile_capacity=%u\n",
+                  (unsigned)grape_benchmark_function_profile_capacity());
     report_printf(runtime, buffer, "warmup_iterations=%" PRIu32 "\n",
                   runtime->config.warmup_iterations);
     report_printf(runtime, buffer, "measured_iterations=%" PRIu32 "\n",
@@ -313,6 +347,75 @@ void grape_benchmark_report_metadata(grape_benchmark_runtime_t *runtime)
     report_printf(runtime, buffer, "fixed_dt_us=%" PRIu32 "\n", runtime->config.fixed_dt_us);
     report_printf(runtime, buffer, "seed=0x%08" PRIx32 "\n", runtime->config.seed);
     report_printf(runtime, buffer, "suite_mask=0x%08" PRIx32 "\n", runtime->config.suite_mask);
+}
+
+void grape_benchmark_report_function_profile(
+    grape_benchmark_runtime_t *runtime,
+    const grape_benchmark_case_t *bench_case,
+    uint32_t measured_iterations
+)
+{
+    if (!runtime || !bench_case ||
+        !runtime->function_profile_buffer.enabled) {
+        return;
+    }
+
+    size_t capacity = grape_benchmark_function_profile_capacity();
+    if (capacity == 0U) {
+        return;
+    }
+
+    grape_benchmark_function_profile_entry_t *entries = heap_caps_malloc(
+        capacity * sizeof(*entries),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (!entries) {
+        report_set_error(runtime, ESP_ERR_NO_MEM);
+        return;
+    }
+
+    bool overflow = false;
+    size_t count = grape_benchmark_function_profile_snapshot(
+        entries,
+        capacity,
+        &overflow
+    );
+    if (count > capacity) {
+        count = capacity;
+        overflow = true;
+    }
+
+    qsort(entries, count, sizeof(*entries), compare_function_profile_entries);
+
+    for (size_t i = 0; i < count; ++i) {
+        double calls_per_iteration = measured_iterations > 0U
+            ? (double)entries[i].calls / (double)measured_iterations
+            : 0.0;
+        report_printf(
+            runtime,
+            &runtime->function_profile_buffer,
+            "%s,%s,%s,%" PRIu32 ",0x%" PRIxPTR ",%" PRIu64 ",%.6f,%u\n",
+            kind_name(bench_case->kind),
+            bench_case->group,
+            bench_case->name,
+            measured_iterations,
+            entries[i].function_address,
+            entries[i].calls,
+            calls_per_iteration,
+            overflow ? 1U : 0U
+        );
+    }
+
+    if (overflow) {
+        ESP_LOGW(
+            TAG,
+            "Function profile table overflowed for %s/%s; increase CONFIG_GRAPE_FUNCTION_PROFILE_MAX_FUNCTIONS",
+            bench_case->group,
+            bench_case->name
+        );
+    }
+
+    heap_caps_free(entries);
 }
 
 void grape_benchmark_report_skip(
@@ -530,6 +633,13 @@ static esp_err_t write_all_reports(grape_benchmark_runtime_t *runtime)
             &runtime->samples_buffer
         );
     }
+    if (ret == ESP_OK) {
+        ret = write_buffer_file(
+            runtime->config.output_directory,
+            "grape_function_profile.csv",
+            &runtime->function_profile_buffer
+        );
+    }
     return ret;
 }
 
@@ -552,7 +662,8 @@ esp_err_t grape_benchmark_report_save_wait(grape_benchmark_runtime_t *runtime)
              "Benchmark complete; %u bytes of report data retained in PSRAM",
              (unsigned)(runtime->metadata_buffer.size +
                         runtime->summary_buffer.size +
-                        runtime->samples_buffer.size));
+                        runtime->samples_buffer.size +
+                        runtime->function_profile_buffer.size));
 
     if (!uses_sd) {
         return write_all_reports(runtime);

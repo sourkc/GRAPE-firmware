@@ -46,6 +46,11 @@ typedef struct {
     bool all_empty;
 } grape_benchmark_occupancy_info_t;
 
+typedef struct {
+    uintptr_t function_address;
+    uint64_t calls;
+} grape_benchmark_function_profile_entry_t;
+
 esp_err_t grape_benchmark_damage_grid_info(
     const grape_context_t *context,
     grape_benchmark_damage_grid_info_t *out_info
@@ -73,6 +78,17 @@ esp_err_t grape_benchmark_render_rects(
 );
 
 size_t grape_benchmark_shear_scratch_bytes(const grape_context_t *context);
+
+bool grape_benchmark_function_profile_enabled(void);
+size_t grape_benchmark_function_profile_capacity(void);
+void grape_benchmark_function_profile_reset(void);
+void grape_benchmark_function_profile_start(void);
+void grape_benchmark_function_profile_stop(void);
+size_t grape_benchmark_function_profile_snapshot(
+    grape_benchmark_function_profile_entry_t *entries,
+    size_t capacity,
+    bool *out_overflow
+);
 
 #ifdef __cplusplus
 }

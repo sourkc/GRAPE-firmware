@@ -20,6 +20,8 @@
   - Anti-aliasing
   - Brightness
   - Color filter thingies (sepia, something like that)
+- [ ] Unify demos, benchmark runner 
+- [ ] Join main.c and gfxlink_main.c
 
 ## Chip revision overlays
 

@@ -50,7 +50,7 @@ static inline uint8_t mul8(uint8_t a, uint8_t b)
  * @param src Color getting blended over the background color
  * @return Blended color
  */
-static inline rgba8_t blend_over(rgba8_t dst, rgba8_t src)
+static __attribute__((always_inline)) inline rgba8_t blend_over(rgba8_t dst, rgba8_t src)
 {
     if (src.a == 0) {
         return dst;
@@ -103,7 +103,7 @@ static inline void write_rgb888(uint8_t *dst, rgba8_t color)
  * @param src Raw color bytes
  * @return RGB565 color
  */
-static inline rgba8_t read_rgb565(const uint8_t *src)
+static __attribute__((always_inline)) inline rgba8_t read_rgb565(const uint8_t *src)
 {
     uint16_t pixel =
         (uint16_t)src[0] |
@@ -144,7 +144,7 @@ static inline rgba8_t read_rgb888(const uint8_t *src)
  * @param output_format Output color format
  * @param source Source pixel to composite
  */
-static inline void composite_source_pixel(uint8_t *dst, grape_pixel_format_t output_format, rgba8_t source)
+static __attribute__((always_inline)) inline void composite_source_pixel(uint8_t *dst, grape_pixel_format_t output_format, rgba8_t source)
 {
     if (source.a == 0) {
         return;
@@ -188,7 +188,7 @@ static inline void composite_source_pixel(uint8_t *dst, grape_pixel_format_t out
  * @param local_x Returned local texture X coordinate
  * @param local_y Returned local texture Y coordinate
  */
-static inline void affine_row_start(const grape_surface_t *surface, int32_t x, int32_t y,
+static __attribute__((always_inline)) inline void affine_row_start(const grape_surface_t *surface, int32_t x, int32_t y,
                                     float *local_x, float *local_y)
 {
     float screen_x = (float)x + 0.5f;

@@ -347,6 +347,10 @@ static esp_err_t execute_iteration(
         )
         : 0;
 
+    if (measured) {
+        grape_benchmark_function_profile_start();
+    }
+
     int64_t total_start = measured ? esp_timer_get_time() : 0;
     int64_t work_start = total_start;
 
@@ -356,6 +360,9 @@ static esp_err_t execute_iteration(
 
     int64_t work_end = measured ? esp_timer_get_time() : 0;
     if (ret != ESP_OK) {
+        if (measured) {
+            grape_benchmark_function_profile_stop();
+        }
         return ret;
     }
 
@@ -365,6 +372,9 @@ static esp_err_t execute_iteration(
         ret = grape_present(runtime->grape);
         int64_t present_end = measured ? esp_timer_get_time() : 0;
         if (ret != ESP_OK) {
+            if (measured) {
+                grape_benchmark_function_profile_stop();
+            }
             return ret;
         }
         if (measured) {
@@ -378,6 +388,10 @@ static esp_err_t execute_iteration(
             GRAPE_TELEMETRY_TIMER_DISPLAY_REFRESH_WAIT
         )
         : refresh_before;
+
+    if (measured) {
+        grape_benchmark_function_profile_stop();
+    }
 
     if (bench_case->after_iteration) {
         bench_case->after_iteration(
@@ -439,6 +453,7 @@ static esp_err_t run_measured(
 {
     memset(result, 0, sizeof(*result));
     grape_telemetry_reset();
+    grape_benchmark_function_profile_reset();
 
     uint64_t measured_elapsed_us = 0;
     for (uint32_t i = 0; i < measured_iterations; ++i) {
@@ -591,6 +606,11 @@ static esp_err_t run_case(
         grape_benchmark_report_skip(runtime, bench_case, ret);
         ret = ESP_OK;
     } else if (ret == ESP_OK) {
+        grape_benchmark_report_function_profile(
+            runtime,
+            bench_case,
+            result->iterations
+        );
         grape_benchmark_report_case(runtime, bench_case, result, samples);
     } else {
         ESP_LOGE(TAG, "Measurement failed for %s/%s: %s",
@@ -696,6 +716,11 @@ esp_err_t grape_benchmark_run(
              "Telemetry level %d: detailed backend timing columns will be zero",
              GRAPE_TELEMETRY_LEVEL);
 #endif
+
+    if (grape_benchmark_function_profile_enabled()) {
+        ESP_LOGW(TAG,
+                 "Function profiling enabled: benchmark timing results are instrumented and not comparable to normal runs");
+    }
 
     size_t global_case_index = 0;
     for (size_t suite_index = 0; suite_index < suite_count; ++suite_index) {

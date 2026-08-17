@@ -15,6 +15,24 @@ menu "GRAPE"
         range 0 65536
         default 1024
 
+    config GRAPE_FUNCTION_PROFILING
+        bool "Enable automatic function call profiling"
+        default n
+        help
+            Instrument GRAPE functions and count calls during benchmark
+            measurement passes. This significantly changes benchmark timing,
+            so timing results from profiling builds should not be compared with
+            normal benchmark results.
+
+    config GRAPE_FUNCTION_PROFILE_MAX_FUNCTIONS
+        int "Maximum simultaneously profiled GRAPE functions"
+        depends on GRAPE_FUNCTION_PROFILING
+        range 64 4096
+        default 1024
+        help
+            Number of unique function addresses the fixed profiling table can
+            retain during one benchmark case.
+
     config GRAPE_TEXTURE_OCCUPANCY_CELL_SIZE
         int "Texture occupancy cell size (texels)"
         range 2 64

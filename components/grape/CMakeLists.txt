@@ -3,6 +3,7 @@ idf_component_register(
         "src/grape.c"
         "src/grape_feature.c"
         "src/grape_benchmark_hooks.c"
+        "src/grape_function_profile.c"
         "src/grape_texture.c"
         "src/grape_shader.c"
         "src/grape_path.c"
@@ -25,3 +26,12 @@ idf_component_register(
     PRIV_REQUIRES heap esp_driver_ppa freertos
 )
 
+
+if(CONFIG_GRAPE_FUNCTION_PROFILING)
+    target_compile_options(${COMPONENT_LIB} PRIVATE -finstrument-functions)
+    set_source_files_properties(
+        "src/grape_function_profile.c"
+        "src/grape_benchmark_hooks.c"
+        PROPERTIES COMPILE_OPTIONS "-fno-instrument-functions"
+    )
+endif()
