@@ -8,7 +8,7 @@ idf_component_register(
         "src/grape_gpu.c"
         "src/grape_gpu_buffer.c"
         "src/grape_gpu_depth.c"
-        "src/grape_gpu_msaa.c"
+        "src/grape_gpu_tile.c"
         "src/grape_gpu_pipeline.c"
         "src/grape_gpu_vertex.c"
         "src/grape_gpu_raster.c"

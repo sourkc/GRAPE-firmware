@@ -157,7 +157,7 @@ esp_err_t grape_gpu_context_destroy(grape_gpu_context_t *context)
         return ESP_ERR_INVALID_STATE;
     }
 
-    grape_gpu_msaa_release(context);
+    grape_gpu_tile_release(context);
     free(context);
     return ESP_OK;
 }
@@ -236,7 +236,7 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
             });
         }
     } else {
-        ret = grape_gpu_msaa_begin(context, desc->color_load_op, desc->clear_color);
+        ret = grape_gpu_tile_begin(context, desc->color_load_op, desc->clear_color);
         if (ret != ESP_OK) {
             context->render_pass_active = false;
             context->color_attachment = NULL;
@@ -245,6 +245,7 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
             return ret;
         }
         if (desc->color_load_op == GRAPE_GPU_LOAD_OP_CLEAR) {
+            gpu_clear_rgba8888(desc->color_attachment, desc->clear_color);
             grape_gpu_dirty_add(context, (grape_rect_t) {
                 .x = 0,
                 .y = 0,
@@ -254,8 +255,25 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
         }
     }
 
-    if (desc->depth_attachment && desc->depth_load_op == GRAPE_GPU_LOAD_OP_CLEAR) {
-        gpu_clear_d16(desc->depth_attachment, desc->clear_depth);
+    if (desc->depth_attachment) {
+        if (sample_count == GRAPE_GPU_SAMPLE_COUNT_1) {
+            if (desc->depth_load_op == GRAPE_GPU_LOAD_OP_CLEAR) {
+                gpu_clear_d16(desc->depth_attachment, desc->clear_depth);
+            }
+        } else {
+            ret = grape_gpu_depth_begin_pass(
+                desc->depth_attachment,
+                desc->depth_load_op,
+                desc->clear_depth
+            );
+            if (ret != ESP_OK) {
+                context->render_pass_active = false;
+                context->color_attachment = NULL;
+                context->depth_attachment = NULL;
+                context->sample_count = GRAPE_GPU_SAMPLE_COUNT_1;
+                return ret;
+            }
+        }
     }
 
     return ESP_OK;
@@ -270,7 +288,7 @@ esp_err_t grape_gpu_end_render_pass(grape_gpu_context_t *context)
 
     esp_err_t ret = ESP_OK;
     if (context->sample_count != GRAPE_GPU_SAMPLE_COUNT_1) {
-        ret = grape_gpu_msaa_resolve(context);
+        ret = grape_gpu_tile_execute(context);
     }
 
     if (ret == ESP_OK && context->dirty_valid) {
