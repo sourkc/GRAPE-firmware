@@ -55,6 +55,30 @@ static inline void occupancy_set(uint8_t *bitmap, size_t index)
 }
 
 /**
+ * Returns whether a texture format has per-pixel alpha that can change
+ * surface coverage.
+ */
+static inline bool texture_format_has_alpha(grape_pixel_format_t format)
+{
+    return format == GRAPE_PIXEL_FORMAT_A8 ||
+           format == GRAPE_PIXEL_FORMAT_RGBA8888;
+}
+
+/**
+ * Returns the alpha value of one texel in a format known to carry alpha.
+ */
+static inline uint8_t texture_alpha_at(const grape_texture_t *texture,
+                                       const uint8_t *row,
+                                       uint32_t x)
+{
+    if (texture->format == GRAPE_PIXEL_FORMAT_A8) {
+        return row[x];
+    }
+
+    return row[(size_t)x * 4U + 3U];
+}
+
+/**
  * Initializes occupancy information for a texture
  *
  * @param texture Texture to initialize occupancy for
@@ -76,7 +100,7 @@ static esp_err_t texture_init_occupancy(grape_texture_t *texture)
     texture->occupancy_rows = (uint32_t)rows;
 
     size_t cell_count = (size_t)columns * (size_t)rows;
-    if (texture->format != GRAPE_PIXEL_FORMAT_A8) {
+    if (!texture_format_has_alpha(texture->format)) {
         texture->occupancy_occupied_count = cell_count;
         texture->occupancy_all_full = true;
         texture->occupancy_all_empty = false;
@@ -124,7 +148,7 @@ esp_err_t grape_texture_rebuild_occupancy(grape_texture_t *texture)
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (texture->format != GRAPE_PIXEL_FORMAT_A8) {
+    if (!texture_format_has_alpha(texture->format)) {
         texture->occupancy_occupied_count =
             (size_t)texture->occupancy_columns * texture->occupancy_rows;
         texture->occupancy_all_full = true;
@@ -160,7 +184,7 @@ esp_err_t grape_texture_rebuild_occupancy(grape_texture_t *texture)
             for (uint32_t y = y0; y < y1 && !occupied; ++y) {
                 const uint8_t *row = texture->pixels + (size_t)y * texture->stride;
                 for (uint32_t x = x0; x < x1; ++x) {
-                    if (row[x] != 0) {
+                    if (texture_alpha_at(texture, row, x) != 0U) {
                         occupied = true;
                         break;
                     }
@@ -406,7 +430,7 @@ esp_err_t grape_texture_invalidate_rect(grape_texture_t *texture,
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (texture->format == GRAPE_PIXEL_FORMAT_A8) {
+    if (texture_format_has_alpha(texture->format)) {
         return grape_texture_invalidate(texture);
     }
 
@@ -451,8 +475,10 @@ esp_err_t grape_texture_invalidate(grape_texture_t *texture)
 
     grape_context_t *context = texture->context;
 
-    if (texture->format == GRAPE_PIXEL_FORMAT_A8) {
-        // WARNING: Both damage passes are required for A8 textures
+    if (texture_format_has_alpha(texture->format)) {
+        // WARNING: Both damage passes are required for alpha-bearing textures.
+        // The old coverage must be damaged before rebuilding occupancy, then
+        // the new coverage must be damaged after the rebuild.
 
         // Invalidate once for the OLD occupancy map
         for (grape_surface_t *surface = context->surfaces; surface; surface = surface->next) {

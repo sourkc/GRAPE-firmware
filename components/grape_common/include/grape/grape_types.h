@@ -10,6 +10,7 @@ typedef enum {
     GRAPE_PIXEL_FORMAT_RGB565 = 0,
     GRAPE_PIXEL_FORMAT_RGB888,
     GRAPE_PIXEL_FORMAT_A8,
+    GRAPE_PIXEL_FORMAT_RGBA8888, ///< Byte order R, G, B, A; straight (non-premultiplied) alpha.
 } grape_pixel_format_t;
 
 typedef enum {

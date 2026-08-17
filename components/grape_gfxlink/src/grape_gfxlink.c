@@ -40,6 +40,15 @@
 
 static const char *TAG = "grape_gfxlink";
 
+_Static_assert((int)GFXLINK_PIXEL_FORMAT_RGB565 == (int)GRAPE_PIXEL_FORMAT_RGB565,
+               "GFXLINK/core RGB565 pixel formats must stay numerically aligned");
+_Static_assert((int)GFXLINK_PIXEL_FORMAT_RGB888 == (int)GRAPE_PIXEL_FORMAT_RGB888,
+               "GFXLINK/core RGB888 pixel formats must stay numerically aligned");
+_Static_assert((int)GFXLINK_PIXEL_FORMAT_A8 == (int)GRAPE_PIXEL_FORMAT_A8,
+               "GFXLINK/core A8 pixel formats must stay numerically aligned");
+_Static_assert((int)GFXLINK_PIXEL_FORMAT_RGBA8888 == (int)GRAPE_PIXEL_FORMAT_RGBA8888,
+               "GFXLINK/core RGBA8888 pixel formats must stay numerically aligned");
+
 typedef struct {
     uint32_t handle;
     grape_surface_t *surface;
@@ -594,6 +603,7 @@ static size_t pixel_bytes(uint32_t format)
         case GFXLINK_PIXEL_FORMAT_RGB565: return 2U;
         case GFXLINK_PIXEL_FORMAT_RGB888: return 3U;
         case GFXLINK_PIXEL_FORMAT_A8: return 1U;
+        case GFXLINK_PIXEL_FORMAT_RGBA8888: return 4U;
         default: return 0U;
     }
 }
@@ -3125,7 +3135,8 @@ static void dispatch_packet(grape_gfxlink_t *link,
                 GFXLINK_CAP_TEXTURE_WRITE_RECT |
                 GFXLINK_CAP_GPU_SUBMIT |
                 GFXLINK_CAP_GPU_IMAGES |
-                GFXLINK_CAP_GPU_DRAW_IMAGE
+                GFXLINK_CAP_GPU_DRAW_IMAGE |
+                GFXLINK_CAP_RGBA8888
             ),
             .max_payload = to_le32(GFXLINK_MAX_PAYLOAD),
             .max_resource_size = to_le32(GFXLINK_MAX_RESOURCE_SIZE),
@@ -3492,7 +3503,7 @@ esp_err_t grape_gfxlink_start(grape_context_t *grape, grape_gfxlink_t **out_link
 
     *out_link = link;
     ESP_LOGI(TAG,
-             "GFXLINK v%u started on USB HS; max payload=%u, resources=%u, fast texture writes + M4.1 GPU images/draw enabled",
+             "GFXLINK v%u started on USB HS; max payload=%u, resources=%u, fast texture writes + M4.1 GPU images/draw + RGBA8888 enabled",
              GFXLINK_PROTOCOL_VERSION,
              GFXLINK_MAX_PAYLOAD,
              GFXLINK_MAX_RESOURCES);

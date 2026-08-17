@@ -426,6 +426,70 @@ static void raster_surface_rgb888(grape_context_t *context, const grape_surface_
 }
 
 /**
+ * Rasters an RGBA8888 surface using Inverse Affine Transform
+ * (see /docs/MATH.md#affine-rotation).
+ *
+ * RGBA8888 textures store straight (non-premultiplied) alpha. Texture alpha,
+ * tint alpha and surface opacity are multiplied together before the source is
+ * composited over the opaque display render target.
+ */
+static void raster_surface_rgba8888(grape_context_t *context, const grape_surface_t *surface,
+                                    grape_rect_t damage_rect, grape_rect_t clipped, size_t bpp)
+{
+    const grape_texture_t *texture = surface->texture;
+    const float texture_width = (float)texture->width;
+    const float texture_height = (float)texture->height;
+    const int32_t raster_width = clipped.width;
+    const float local_x_step = surface->local_x_from_screen_x;
+    const float local_y_step = surface->local_y_from_screen_x;
+    const uint8_t *texture_pixels = texture->pixels;
+    const size_t texture_stride = texture->stride;
+    const uint8_t tint_r = surface->tint.r;
+    const uint8_t tint_g = surface->tint.g;
+    const uint8_t tint_b = surface->tint.b;
+    const uint8_t surface_alpha = mul8(surface->opacity, surface->tint.a);
+    const grape_pixel_format_t output_format = context->display_info.format;
+    (void)damage_rect;
+
+    if (surface_alpha == 0U) {
+        return;
+    }
+
+    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
+        float local_x;
+        float local_y;
+        affine_row_start(surface, clipped.x, y, &local_x, &local_y);
+
+        uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp);
+
+        for (int32_t x = 0; x < raster_width; ++x) {
+            if (local_x >= 0.0f && local_y >= 0.0f &&
+                local_x < texture_width && local_y < texture_height) {
+                int32_t tx = (int32_t)local_x;
+                int32_t ty = (int32_t)local_y;
+                const uint8_t *row = texture_pixels + (size_t)ty * texture_stride;
+                const uint8_t *pixel = row + (size_t)tx * 4U;
+                uint8_t alpha = mul8(pixel[3], surface_alpha);
+
+                if (alpha != 0U) {
+                    rgba8_t source = {
+                        .r = mul8(pixel[0], tint_r),
+                        .g = mul8(pixel[1], tint_g),
+                        .b = mul8(pixel[2], tint_b),
+                        .a = alpha,
+                    };
+                    composite_source_pixel(dst, output_format, source);
+                }
+            }
+
+            local_x += local_x_step;
+            local_y += local_y_step;
+            dst += bpp;
+        }
+    }
+}
+
+/**
  * Rasters any given surface using Inverse Affine Transform (see /docs/MATH.md#affine-rotation)
  *
  * @param context GRAPE context
@@ -446,6 +510,9 @@ static void raster_surface_cpu(grape_context_t *context, const grape_surface_t *
             break;
         case GRAPE_PIXEL_FORMAT_RGB888:
             raster_surface_rgb888(context, surface, damage_rect, clipped, bpp);
+            break;
+        case GRAPE_PIXEL_FORMAT_RGBA8888:
+            raster_surface_rgba8888(context, surface, damage_rect, clipped, bpp);
             break;
         default:
             break;

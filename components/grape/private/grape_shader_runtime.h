@@ -170,6 +170,22 @@ static inline grape_shader_vec4_t grape_shader_source_rgb888(
     };
 }
 
+static inline grape_shader_vec4_t grape_shader_source_rgba8888(
+    const grape_shader_kernel_args_t *args,
+    int32_t tx,
+    int32_t ty
+)
+{
+    const uint8_t *row = args->texture_pixels + (size_t)ty * args->texture_stride;
+    const uint8_t *pixel = row + (size_t)tx * 4U;
+    return (grape_shader_vec4_t) {
+        .x = (float)grape_shader_mul8(pixel[0], args->tint.r) / 255.0f,
+        .y = (float)grape_shader_mul8(pixel[1], args->tint.g) / 255.0f,
+        .z = (float)grape_shader_mul8(pixel[2], args->tint.b) / 255.0f,
+        .w = (float)grape_shader_mul8(pixel[3], args->tint.a) / 255.0f,
+    };
+}
+
 static inline void grape_shader_composite_rgb565(
     const grape_shader_kernel_args_t *args,
     uint8_t *dst,
@@ -230,4 +246,57 @@ static inline void grape_shader_composite_rgb888(
     dst[0] = src_r;
     dst[1] = src_g;
     dst[2] = src_b;
+}
+
+static inline void grape_shader_composite_rgba8888(
+    const grape_shader_kernel_args_t *args,
+    uint8_t *dst,
+    grape_shader_vec4_t color
+)
+{
+    uint8_t src_r = grape_shader_float_to_u8(color.x);
+    uint8_t src_g = grape_shader_float_to_u8(color.y);
+    uint8_t src_b = grape_shader_float_to_u8(color.z);
+    uint8_t src_a = grape_shader_mul8(grape_shader_float_to_u8(color.w), args->opacity);
+
+    if (src_a == 0U) {
+        return;
+    }
+
+    if (src_a == 255U) {
+        dst[0] = src_r;
+        dst[1] = src_g;
+        dst[2] = src_b;
+        dst[3] = 255U;
+        return;
+    }
+
+    const uint8_t dst_a = dst[3];
+    const uint32_t inv = 255U - src_a;
+    /* Keep enough precision for straight-alpha source-over blending. The
+     * shared alpha numerator is scaled by 255; using it directly avoids
+     * prematurely rounding the destination contribution before RGB is
+     * un-premultiplied again. */
+    const uint32_t alpha_numerator =
+        (uint32_t)src_a * 255U + (uint32_t)dst_a * inv;
+
+    if (alpha_numerator == 0U) {
+        dst[0] = 0U;
+        dst[1] = 0U;
+        dst[2] = 0U;
+        dst[3] = 0U;
+        return;
+    }
+
+    uint32_t r = (uint32_t)src_r * src_a * 255U +
+                 (uint32_t)dst[0] * dst_a * inv;
+    uint32_t g = (uint32_t)src_g * src_a * 255U +
+                 (uint32_t)dst[1] * dst_a * inv;
+    uint32_t b = (uint32_t)src_b * src_a * 255U +
+                 (uint32_t)dst[2] * dst_a * inv;
+
+    dst[0] = (uint8_t)((r + alpha_numerator / 2U) / alpha_numerator);
+    dst[1] = (uint8_t)((g + alpha_numerator / 2U) / alpha_numerator);
+    dst[2] = (uint8_t)((b + alpha_numerator / 2U) / alpha_numerator);
+    dst[3] = (uint8_t)((alpha_numerator + 127U) / 255U);
 }

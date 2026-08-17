@@ -22,6 +22,8 @@ size_t grape_bytes_per_pixel(grape_pixel_format_t format)
             return 3;
         case GRAPE_PIXEL_FORMAT_A8:
             return 1;
+        case GRAPE_PIXEL_FORMAT_RGBA8888:
+            return 4;
         default:
             return 0;
     }

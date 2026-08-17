@@ -97,10 +97,16 @@ def generate_c(module: IRModule, shader_name: str, banner: str) -> tuple[str, st
     routes = [
         ("a8", "rgb565", "grape_shader_source_a8", "grape_shader_composite_rgb565", 2),
         ("a8", "rgb888", "grape_shader_source_a8", "grape_shader_composite_rgb888", 3),
+        ("a8", "rgba8888", "grape_shader_source_a8", "grape_shader_composite_rgba8888", 4),
         ("rgb565", "rgb565", "grape_shader_source_rgb565", "grape_shader_composite_rgb565", 2),
         ("rgb565", "rgb888", "grape_shader_source_rgb565", "grape_shader_composite_rgb888", 3),
+        ("rgb565", "rgba8888", "grape_shader_source_rgb565", "grape_shader_composite_rgba8888", 4),
         ("rgb888", "rgb565", "grape_shader_source_rgb888", "grape_shader_composite_rgb565", 2),
         ("rgb888", "rgb888", "grape_shader_source_rgb888", "grape_shader_composite_rgb888", 3),
+        ("rgb888", "rgba8888", "grape_shader_source_rgb888", "grape_shader_composite_rgba8888", 4),
+        ("rgba8888", "rgb565", "grape_shader_source_rgba8888", "grape_shader_composite_rgb565", 2),
+        ("rgba8888", "rgb888", "grape_shader_source_rgba8888", "grape_shader_composite_rgb888", 3),
+        ("rgba8888", "rgba8888", "grape_shader_source_rgba8888", "grape_shader_composite_rgba8888", 4),
     ]
     for source_name, target_name, source_fn, composite_fn, bpp in routes:
         c_lines.extend(_emit_raster_route(prefix, source_name, target_name, source_fn, composite_fn, bpp))
@@ -110,6 +116,8 @@ def generate_c(module: IRModule, shader_name: str, banner: str) -> tuple[str, st
         c_lines.extend(_emit_procedural_route(prefix, "rgb565", "grape_shader_composite_rgb565", 2))
         c_lines.append("")
         c_lines.extend(_emit_procedural_route(prefix, "rgb888", "grape_shader_composite_rgb888", 3))
+        c_lines.append("")
+        c_lines.extend(_emit_procedural_route(prefix, "rgba8888", "grape_shader_composite_rgba8888", 4))
         c_lines.append("")
 
     c_lines.extend(_emit_kernel_dispatch(prefix, bool(module.uniforms), uses_source_color))
@@ -481,6 +489,8 @@ def _emit_kernel_dispatch(prefix: str, has_uniforms: bool, uses_source_color: bo
                 f"            {prefix}_raster_procedural_to_rgb565(args, uniforms);",
                 "        } else if (args->target_format == GRAPE_PIXEL_FORMAT_RGB888) {",
                 f"            {prefix}_raster_procedural_to_rgb888(args, uniforms);",
+            "        } else if (args->target_format == GRAPE_PIXEL_FORMAT_RGBA8888) {",
+            f"            {prefix}_raster_procedural_to_rgba8888(args, uniforms);",
                 "        }",
                 "        return;",
             ]
@@ -495,6 +505,8 @@ def _emit_kernel_dispatch(prefix: str, has_uniforms: bool, uses_source_color: bo
             f"                {prefix}_raster_a8_to_rgb565(args, uniforms);",
             "            } else if (args->target_format == GRAPE_PIXEL_FORMAT_RGB888) {",
             f"                {prefix}_raster_a8_to_rgb888(args, uniforms);",
+            "            } else if (args->target_format == GRAPE_PIXEL_FORMAT_RGBA8888) {",
+            f"                {prefix}_raster_a8_to_rgba8888(args, uniforms);",
             "            }",
             "            break;",
             "        case GRAPE_PIXEL_FORMAT_RGB565:",
@@ -502,6 +514,8 @@ def _emit_kernel_dispatch(prefix: str, has_uniforms: bool, uses_source_color: bo
             f"                {prefix}_raster_rgb565_to_rgb565(args, uniforms);",
             "            } else if (args->target_format == GRAPE_PIXEL_FORMAT_RGB888) {",
             f"                {prefix}_raster_rgb565_to_rgb888(args, uniforms);",
+            "            } else if (args->target_format == GRAPE_PIXEL_FORMAT_RGBA8888) {",
+            f"                {prefix}_raster_rgb565_to_rgba8888(args, uniforms);",
             "            }",
             "            break;",
             "        case GRAPE_PIXEL_FORMAT_RGB888:",
@@ -509,6 +523,17 @@ def _emit_kernel_dispatch(prefix: str, has_uniforms: bool, uses_source_color: bo
             f"                {prefix}_raster_rgb888_to_rgb565(args, uniforms);",
             "            } else if (args->target_format == GRAPE_PIXEL_FORMAT_RGB888) {",
             f"                {prefix}_raster_rgb888_to_rgb888(args, uniforms);",
+            "            } else if (args->target_format == GRAPE_PIXEL_FORMAT_RGBA8888) {",
+            f"                {prefix}_raster_rgb888_to_rgba8888(args, uniforms);",
+            "            }",
+            "            break;",
+            "        case GRAPE_PIXEL_FORMAT_RGBA8888:",
+            "            if (args->target_format == GRAPE_PIXEL_FORMAT_RGB565) {",
+            f"                {prefix}_raster_rgba8888_to_rgb565(args, uniforms);",
+            "            } else if (args->target_format == GRAPE_PIXEL_FORMAT_RGB888) {",
+            f"                {prefix}_raster_rgba8888_to_rgb888(args, uniforms);",
+            "            } else if (args->target_format == GRAPE_PIXEL_FORMAT_RGBA8888) {",
+            f"                {prefix}_raster_rgba8888_to_rgba8888(args, uniforms);",
             "            }",
             "            break;",
             "        default:",

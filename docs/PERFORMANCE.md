@@ -64,7 +64,7 @@ when their possible range already fits comfortably inside `int32_t`.
 ### Do not put invariant format checks inside per-pixel loops
 
 If the texture format is known before rasterization begins, dispatch to a
-format-specific rasterizer once instead of checking A8/RGB565/RGB888 for
+format-specific rasterizer once instead of checking A8/RGB565/RGB888/RGBA8888 for
 every pixel.
 
 The duplicated raster loops are intentional.

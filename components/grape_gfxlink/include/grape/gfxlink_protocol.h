@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #define GFXLINK_MAGIC 0x50415247u
-#define GFXLINK_PROTOCOL_VERSION 8u
+#define GFXLINK_PROTOCOL_VERSION 9u
 #define GFXLINK_MAX_PAYLOAD (16u * 1024u)
 #define GFXLINK_MAX_RESOURCE_SIZE (16u * 1024u * 1024u)
 
@@ -35,6 +35,7 @@
 #define GFXLINK_CAP_GPU_SUBMIT (1u << 16)
 #define GFXLINK_CAP_GPU_IMAGES (1u << 17)
 #define GFXLINK_CAP_GPU_DRAW_IMAGE (1u << 18)
+#define GFXLINK_CAP_RGBA8888 (1u << 19)
 
 #define GFXLINK_RESOURCE_WRITE_HEADER_SIZE 16u
 #define GFXLINK_RESOURCE_CHUNK_SIZE (GFXLINK_MAX_PAYLOAD - GFXLINK_RESOURCE_WRITE_HEADER_SIZE)
@@ -125,6 +126,7 @@ typedef enum {
     GFXLINK_PIXEL_FORMAT_RGB565 = 0,
     GFXLINK_PIXEL_FORMAT_RGB888 = 1,
     GFXLINK_PIXEL_FORMAT_A8 = 2,
+    GFXLINK_PIXEL_FORMAT_RGBA8888 = 3, /* Byte order R, G, B, A; straight alpha. */
 } gfxlink_pixel_format_t;
 
 typedef struct __attribute__((packed)) {
