@@ -443,7 +443,15 @@ esp_err_t grape_texture_invalidate_rect(grape_texture_t *texture,
         }
 
         esp_err_t ret;
-        if (surface->shader_count > 0U || !surface->texture_mapping_identity) {
+        if (surface->shader_count > 0U ||
+            !surface->texture_mapping_identity ||
+            surface->texture_filter == GRAPE_TEXTURE_FILTER_LINEAR) {
+            /*
+             * Linear sampling gives each texel a one-texel neighbourhood of
+             * influence. Until partial invalidation understands that footprint,
+             * conservatively damage the surface instead of leaving stale edge
+             * pixels around an updated rectangle.
+             */
             ret = grape_damage_add_surface_coverage(surface);
         } else {
             ret = grape_damage_add(

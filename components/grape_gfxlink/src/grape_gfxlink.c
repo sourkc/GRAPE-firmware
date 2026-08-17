@@ -48,6 +48,14 @@ _Static_assert((int)GFXLINK_PIXEL_FORMAT_A8 == (int)GRAPE_PIXEL_FORMAT_A8,
                "GFXLINK/core A8 pixel formats must stay numerically aligned");
 _Static_assert((int)GFXLINK_PIXEL_FORMAT_RGBA8888 == (int)GRAPE_PIXEL_FORMAT_RGBA8888,
                "GFXLINK/core RGBA8888 pixel formats must stay numerically aligned");
+_Static_assert((int)GFXLINK_TEXTURE_FILTER_NEAREST == (int)GRAPE_TEXTURE_FILTER_NEAREST,
+               "GFXLINK/core nearest texture filters must stay numerically aligned");
+_Static_assert((int)GFXLINK_TEXTURE_FILTER_LINEAR == (int)GRAPE_TEXTURE_FILTER_LINEAR,
+               "GFXLINK/core linear texture filters must stay numerically aligned");
+_Static_assert((int)GFXLINK_SURFACE_AA_NONE == (int)GRAPE_SURFACE_AA_NONE,
+               "GFXLINK/core AA none values must stay numerically aligned");
+_Static_assert((int)GFXLINK_SURFACE_AA_COVERAGE_4X == (int)GRAPE_SURFACE_AA_COVERAGE_4X,
+               "GFXLINK/core AA 4x values must stay numerically aligned");
 
 typedef struct {
     uint32_t handle;
@@ -1654,6 +1662,37 @@ static esp_err_t set_surface_visible(grape_gfxlink_t *link,
     return grape_surface_set_visible(slot->surface, request->visible != 0U);
 }
 
+static esp_err_t set_surface_texture_filter(
+    grape_gfxlink_t *link,
+    const gfxlink_set_surface_texture_filter_request_t *request)
+{
+    gfxlink_surface_slot_t *slot = find_surface_slot(link, from_le32(request->handle));
+    if (!slot) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    uint32_t filter = from_le32(request->filter);
+    if (filter > (uint32_t)GFXLINK_TEXTURE_FILTER_LINEAR) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return grape_surface_set_texture_filter(slot->surface, (grape_texture_filter_t)filter);
+}
+
+static esp_err_t set_surface_aa(grape_gfxlink_t *link,
+                                const gfxlink_set_surface_aa_request_t *request)
+{
+    gfxlink_surface_slot_t *slot = find_surface_slot(link, from_le32(request->handle));
+    if (!slot) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    uint32_t aa = from_le32(request->aa);
+    if (aa > (uint32_t)GFXLINK_SURFACE_AA_COVERAGE_4X) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return grape_surface_set_aa(slot->surface, (grape_surface_aa_t)aa);
+}
+
 static esp_err_t create_texture(grape_gfxlink_t *link,
                                 const gfxlink_texture_create_request_t *request,
                                 uint32_t *out_handle,
@@ -2634,6 +2673,28 @@ static void execute_renderer_request(grape_gfxlink_t *link,
             }
             break;
 
+        case GFXLINK_OP_SET_SURFACE_TEXTURE_FILTER:
+            if (request->payload_size != sizeof(gfxlink_set_surface_texture_filter_request_t)) {
+                set_status_response(response, GFXLINK_STATUS_INVALID_ARGUMENT);
+                return;
+            } else {
+                gfxlink_set_surface_texture_filter_request_t payload;
+                memcpy(&payload, request->payload, sizeof(payload));
+                ret = set_surface_texture_filter(link, &payload);
+            }
+            break;
+
+        case GFXLINK_OP_SET_SURFACE_AA:
+            if (request->payload_size != sizeof(gfxlink_set_surface_aa_request_t)) {
+                set_status_response(response, GFXLINK_STATUS_INVALID_ARGUMENT);
+                return;
+            } else {
+                gfxlink_set_surface_aa_request_t payload;
+                memcpy(&payload, request->payload, sizeof(payload));
+                ret = set_surface_aa(link, &payload);
+            }
+            break;
+
         case GFXLINK_OP_TEXTURE_CREATE:
             if (request->payload_size != sizeof(gfxlink_texture_create_request_t)) {
                 set_status_response(response, GFXLINK_STATUS_INVALID_ARGUMENT);
@@ -3067,6 +3128,8 @@ static bool is_renderer_opcode(uint8_t opcode)
         case GFXLINK_OP_SET_SURFACE_Z:
         case GFXLINK_OP_SET_SURFACE_OPACITY:
         case GFXLINK_OP_SET_SURFACE_VISIBLE:
+        case GFXLINK_OP_SET_SURFACE_TEXTURE_FILTER:
+        case GFXLINK_OP_SET_SURFACE_AA:
         case GFXLINK_OP_TEXTURE_CREATE:
         case GFXLINK_OP_TEXTURE_UPDATE:
         case GFXLINK_OP_TEXTURE_DESTROY:
@@ -3150,7 +3213,9 @@ static void dispatch_packet(grape_gfxlink_t *link,
                 GFXLINK_CAP_GPU_SUBMIT |
                 GFXLINK_CAP_GPU_IMAGES |
                 GFXLINK_CAP_GPU_DRAW_IMAGE |
-                GFXLINK_CAP_RGBA8888
+                GFXLINK_CAP_RGBA8888 |
+                GFXLINK_CAP_SURFACE_TEXTURE_FILTER |
+                GFXLINK_CAP_SURFACE_AA
             ),
             .max_payload = to_le32(GFXLINK_MAX_PAYLOAD),
             .max_resource_size = to_le32(GFXLINK_MAX_RESOURCE_SIZE),

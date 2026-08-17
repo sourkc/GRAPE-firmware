@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #define GFXLINK_MAGIC 0x50415247u
-#define GFXLINK_PROTOCOL_VERSION 9u
+#define GFXLINK_PROTOCOL_VERSION 10u
 #define GFXLINK_MAX_PAYLOAD (16u * 1024u)
 #define GFXLINK_MAX_RESOURCE_SIZE (16u * 1024u * 1024u)
 
@@ -36,6 +36,8 @@
 #define GFXLINK_CAP_GPU_IMAGES (1u << 17)
 #define GFXLINK_CAP_GPU_DRAW_IMAGE (1u << 18)
 #define GFXLINK_CAP_RGBA8888 (1u << 19)
+#define GFXLINK_CAP_SURFACE_TEXTURE_FILTER (1u << 20)
+#define GFXLINK_CAP_SURFACE_AA (1u << 21)
 
 #define GFXLINK_RESOURCE_WRITE_HEADER_SIZE 16u
 #define GFXLINK_RESOURCE_CHUNK_SIZE (GFXLINK_MAX_PAYLOAD - GFXLINK_RESOURCE_WRITE_HEADER_SIZE)
@@ -70,6 +72,8 @@ typedef enum {
     GFXLINK_OP_SET_SURFACE_Z = 0x1A,
     GFXLINK_OP_SET_SURFACE_OPACITY = 0x1B,
     GFXLINK_OP_SET_SURFACE_VISIBLE = 0x1C,
+    GFXLINK_OP_SET_SURFACE_TEXTURE_FILTER = 0x1D,
+    GFXLINK_OP_SET_SURFACE_AA = 0x1E,
 
     GFXLINK_OP_RESOURCE_CREATE = 0x20,
     GFXLINK_OP_RESOURCE_WRITE = 0x21,
@@ -128,6 +132,16 @@ typedef enum {
     GFXLINK_PIXEL_FORMAT_A8 = 2,
     GFXLINK_PIXEL_FORMAT_RGBA8888 = 3, /* Byte order R, G, B, A; straight alpha. */
 } gfxlink_pixel_format_t;
+
+typedef enum {
+    GFXLINK_TEXTURE_FILTER_NEAREST = 0,
+    GFXLINK_TEXTURE_FILTER_LINEAR = 1,
+} gfxlink_texture_filter_t;
+
+typedef enum {
+    GFXLINK_SURFACE_AA_NONE = 0,
+    GFXLINK_SURFACE_AA_COVERAGE_4X = 1,
+} gfxlink_surface_aa_t;
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
@@ -235,6 +249,16 @@ typedef struct __attribute__((packed)) {
     uint8_t visible;
     uint8_t reserved[3];
 } gfxlink_set_surface_visible_request_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t handle;
+    uint32_t filter;
+} gfxlink_set_surface_texture_filter_request_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t handle;
+    uint32_t aa;
+} gfxlink_set_surface_aa_request_t;
 
 typedef struct __attribute__((packed)) {
     uint32_t handle;

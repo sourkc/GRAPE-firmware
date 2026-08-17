@@ -43,6 +43,12 @@ static const grape_demo_t s_demos[] = {
         .configure = NULL,
         .run = grape_demo_surface_features_run,
     },
+    {
+        .id = GRAPE_DEMO_AA,
+        .name = "aa",
+        .configure = NULL,
+        .run = grape_demo_aa_run,
+    },
 };
 
 size_t grape_demo_count(void)

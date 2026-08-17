@@ -1,5 +1,6 @@
 #include "grape_benchmark_internal.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,6 +11,7 @@ typedef enum {
     PIXEL_OP_CPU_A8,
     PIXEL_OP_CPU_RGB565,
     PIXEL_OP_CPU_RGB888,
+    PIXEL_OP_CPU_RGBA8888,
 } pixel_operation_t;
 
 typedef struct {
@@ -17,6 +19,9 @@ typedef struct {
     uint32_t size;
     uint8_t alpha;
     grape_memory_t memory;
+    grape_texture_filter_t filter;
+    grape_surface_aa_t aa;
+    float rotation;
 } pixel_case_config_t;
 
 typedef struct {
@@ -48,6 +53,12 @@ static void fill_texture(grape_texture_t *texture)
                     ((x + y) * 31U / ((width + height) ? width + height : 1U)) & 31U
                 );
                 ((uint16_t *)row)[x] = (uint16_t)((r << 11) | (g << 5) | b);
+            } else if (format == GRAPE_PIXEL_FORMAT_RGBA8888) {
+                uint8_t *pixel = row + (size_t)x * 4U;
+                pixel[0] = (uint8_t)x;
+                pixel[1] = (uint8_t)y;
+                pixel[2] = (uint8_t)(x + y);
+                pixel[3] = (uint8_t)(96U + ((x ^ y) & 159U));
             } else {
                 row[x * 3U + 0U] = (uint8_t)x;
                 row[x * 3U + 1U] = (uint8_t)y;
@@ -67,6 +78,8 @@ static grape_pixel_format_t operation_format(pixel_operation_t operation)
             return GRAPE_PIXEL_FORMAT_RGB565;
         case PIXEL_OP_CPU_RGB888:
             return GRAPE_PIXEL_FORMAT_RGB888;
+        case PIXEL_OP_CPU_RGBA8888:
+            return GRAPE_PIXEL_FORMAT_RGBA8888;
         default:
             return GRAPE_PIXEL_FORMAT_A8;
     }
@@ -177,18 +190,43 @@ static esp_err_t setup(grape_benchmark_runtime_t *runtime,
         fill_texture(state->texture);
         ret = grape_texture_invalidate(state->texture);
         if (ret == ESP_OK) {
-            ret = grape_surface_create(
-                runtime->grape,
-                &GRAPE_SURFACE_DESC_TEXTURE(state->texture),
-                &state->surface
-            );
+            grape_surface_desc_t surface_desc = GRAPE_SURFACE_DESC_TEXTURE(state->texture);
+            surface_desc.texture_filter = config->filter;
+            surface_desc.aa = config->aa;
+            ret = grape_surface_create(runtime->grape, &surface_desc, &state->surface);
         }
-        if (ret == ESP_OK) {
+        if (ret == ESP_OK && config->rotation == 0.0f) {
             ret = grape_surface_set_position(
                 state->surface,
                 (float)state->rect.x,
                 (float)state->rect.y
             );
+        } else if (ret == ESP_OK) {
+            grape_transform_t transform = GRAPE_TRANSFORM_DEFAULT();
+            transform.origin_x = (float)width * 0.5f;
+            transform.origin_y = (float)height * 0.5f;
+            transform.x = (float)display->width * 0.5f;
+            transform.y = (float)display->height * 0.5f;
+            transform.rotation = config->rotation;
+            ret = grape_surface_set_transform(state->surface, &transform);
+
+            const float abs_cos = fabsf(cosf(config->rotation));
+            const float abs_sin = fabsf(sinf(config->rotation));
+            uint32_t bound_width = (uint32_t)ceilf(abs_cos * (float)width + abs_sin * (float)height);
+            uint32_t bound_height = (uint32_t)ceilf(abs_sin * (float)width + abs_cos * (float)height);
+            if (config->aa == GRAPE_SURFACE_AA_COVERAGE_4X) {
+                /* Surface bounds conservatively pad each AA edge by half a pixel. */
+                bound_width += 2U;
+                bound_height += 2U;
+            }
+            if (bound_width > display->width) bound_width = display->width;
+            if (bound_height > display->height) bound_height = display->height;
+            state->rect = (grape_rect_t){
+                .x = (int32_t)((display->width - bound_width) / 2U),
+                .y = (int32_t)((display->height - bound_height) / 2U),
+                .width = (int32_t)bound_width,
+                .height = (int32_t)bound_height,
+            };
         }
         if (ret == ESP_OK) {
             ret = grape_surface_set_opacity(state->surface, config->alpha);
@@ -300,7 +338,7 @@ static void teardown(grape_benchmark_runtime_t *runtime,
     destroy_state(state);
 }
 
-#define PIXEL_CASE_CAPACITY 96
+#define PIXEL_CASE_CAPACITY 128
 
 static grape_benchmark_case_t s_cases[PIXEL_CASE_CAPACITY];
 static pixel_case_config_t s_configs[PIXEL_CASE_CAPACITY];
@@ -317,6 +355,7 @@ static const char *operation_name(pixel_operation_t operation)
         case PIXEL_OP_CPU_A8: return "cpu_a8";
         case PIXEL_OP_CPU_RGB565: return "cpu_rgb565";
         case PIXEL_OP_CPU_RGB888: return "cpu_rgb888";
+        case PIXEL_OP_CPU_RGBA8888: return "cpu_rgba8888";
         default: return "unknown";
     }
 }
@@ -345,6 +384,9 @@ static void add_case(pixel_operation_t operation,
         .size = size,
         .alpha = alpha,
         .memory = memory,
+        .filter = GRAPE_TEXTURE_FILTER_NEAREST,
+        .aa = GRAPE_SURFACE_AA_NONE,
+        .rotation = 0.0f,
     };
 
     snprintf(
@@ -384,8 +426,32 @@ static void add_case(pixel_operation_t operation,
             { "size", size },
             { "alpha", alpha },
             { "memory", memory },
+            { "filter", GRAPE_TEXTURE_FILTER_NEAREST },
+            { "aa", GRAPE_SURFACE_AA_NONE },
         },
     };
+}
+
+static void add_quality_case(pixel_operation_t operation,
+                             grape_texture_filter_t filter,
+                             grape_surface_aa_t aa)
+{
+    size_t index = s_case_count;
+    add_case(operation, 256U, 255U, GRAPE_MEMORY_PSRAM);
+    if (s_case_count == index) {
+        return;
+    }
+
+    s_configs[index].filter = filter;
+    s_configs[index].aa = aa;
+    s_configs[index].rotation = 0.31f;
+    snprintf(s_names[index], sizeof(s_names[index]),
+             "%s_rot_quality_%s_%s",
+             operation_name(operation),
+             filter == GRAPE_TEXTURE_FILTER_LINEAR ? "linear" : "nearest",
+             aa == GRAPE_SURFACE_AA_COVERAGE_4X ? "aa4" : "noaa");
+    s_cases[index].params[4] = (grape_benchmark_param_t){"filter", filter};
+    s_cases[index].params[5] = (grape_benchmark_param_t){"aa", aa};
 }
 
 const grape_benchmark_case_t *grape_benchmark_pixel_backend_cases(size_t *out_count)
@@ -422,6 +488,23 @@ const grape_benchmark_case_t *grape_benchmark_pixel_backend_cases(size_t *out_co
 
         add_case(PIXEL_OP_PPA_A8, 256, 255, GRAPE_MEMORY_INTERNAL);
         add_case(PIXEL_OP_CPU_A8, 256, 255, GRAPE_MEMORY_INTERNAL);
+
+        add_quality_case(PIXEL_OP_CPU_A8, GRAPE_TEXTURE_FILTER_NEAREST, GRAPE_SURFACE_AA_NONE);
+        add_quality_case(PIXEL_OP_CPU_A8, GRAPE_TEXTURE_FILTER_NEAREST, GRAPE_SURFACE_AA_COVERAGE_4X);
+        add_quality_case(PIXEL_OP_CPU_A8, GRAPE_TEXTURE_FILTER_LINEAR, GRAPE_SURFACE_AA_NONE);
+        add_quality_case(PIXEL_OP_CPU_A8, GRAPE_TEXTURE_FILTER_LINEAR, GRAPE_SURFACE_AA_COVERAGE_4X);
+        add_quality_case(PIXEL_OP_CPU_RGB565, GRAPE_TEXTURE_FILTER_NEAREST, GRAPE_SURFACE_AA_NONE);
+        add_quality_case(PIXEL_OP_CPU_RGB565, GRAPE_TEXTURE_FILTER_NEAREST, GRAPE_SURFACE_AA_COVERAGE_4X);
+        add_quality_case(PIXEL_OP_CPU_RGB565, GRAPE_TEXTURE_FILTER_LINEAR, GRAPE_SURFACE_AA_NONE);
+        add_quality_case(PIXEL_OP_CPU_RGB565, GRAPE_TEXTURE_FILTER_LINEAR, GRAPE_SURFACE_AA_COVERAGE_4X);
+        add_quality_case(PIXEL_OP_CPU_RGB888, GRAPE_TEXTURE_FILTER_NEAREST, GRAPE_SURFACE_AA_NONE);
+        add_quality_case(PIXEL_OP_CPU_RGB888, GRAPE_TEXTURE_FILTER_NEAREST, GRAPE_SURFACE_AA_COVERAGE_4X);
+        add_quality_case(PIXEL_OP_CPU_RGB888, GRAPE_TEXTURE_FILTER_LINEAR, GRAPE_SURFACE_AA_NONE);
+        add_quality_case(PIXEL_OP_CPU_RGB888, GRAPE_TEXTURE_FILTER_LINEAR, GRAPE_SURFACE_AA_COVERAGE_4X);
+        add_quality_case(PIXEL_OP_CPU_RGBA8888, GRAPE_TEXTURE_FILTER_NEAREST, GRAPE_SURFACE_AA_NONE);
+        add_quality_case(PIXEL_OP_CPU_RGBA8888, GRAPE_TEXTURE_FILTER_NEAREST, GRAPE_SURFACE_AA_COVERAGE_4X);
+        add_quality_case(PIXEL_OP_CPU_RGBA8888, GRAPE_TEXTURE_FILTER_LINEAR, GRAPE_SURFACE_AA_NONE);
+        add_quality_case(PIXEL_OP_CPU_RGBA8888, GRAPE_TEXTURE_FILTER_LINEAR, GRAPE_SURFACE_AA_COVERAGE_4X);
         s_initialized = true;
     }
 

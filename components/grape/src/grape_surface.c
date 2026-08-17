@@ -10,6 +10,18 @@ static bool surface_texture_mode_valid(grape_surface_texture_mode_t mode)
            mode <= GRAPE_SURFACE_TEXTURE_CENTER;
 }
 
+static bool surface_texture_filter_valid(grape_texture_filter_t filter)
+{
+    return filter >= GRAPE_TEXTURE_FILTER_NEAREST &&
+           filter <= GRAPE_TEXTURE_FILTER_LINEAR;
+}
+
+static bool surface_aa_valid(grape_surface_aa_t aa)
+{
+    return aa >= GRAPE_SURFACE_AA_NONE &&
+           aa <= GRAPE_SURFACE_AA_COVERAGE_4X;
+}
+
 static void surface_free_shaders(grape_surface_shader_instance_t *shaders, size_t shader_count)
 {
     if (!shaders) {
@@ -255,10 +267,20 @@ grape_rect_t grape_surface_calculate_bounds(const grape_surface_t *surface)
         if (ys[i] > max_y) max_y = ys[i];
     }
 
-    int32_t x0 = (int32_t)floorf(min_x);
-    int32_t y0 = (int32_t)floorf(min_y);
-    int32_t x1 = (int32_t)ceilf(max_x);
-    int32_t y1 = (int32_t)ceilf(max_y);
+    /*
+     * Coverage AA can shade a pixel whose centre is just outside the exact
+     * transformed quad because one of its subpixel samples is still inside.
+     * Pad the candidate bounds by half a screen pixel so those edge pixels
+     * reach the coverage test. The rasterizer still rejects zero-coverage
+     * pixels, so this is conservative rather than changing the primitive.
+     */
+    const float aa_pad = surface->aa == GRAPE_SURFACE_AA_COVERAGE_4X
+        ? 0.5f
+        : 0.0f;
+    int32_t x0 = (int32_t)floorf(min_x - aa_pad);
+    int32_t y0 = (int32_t)floorf(min_y - aa_pad);
+    int32_t x1 = (int32_t)ceilf(max_x + aa_pad);
+    int32_t y1 = (int32_t)ceilf(max_y + aa_pad);
 
     return (grape_rect_t){x0, y0, x1 - x0, y1 - y0};
 }
@@ -305,6 +327,33 @@ void grape_surface_recache(grape_surface_t *surface)
     surface->local_y_offset = surface->transform.origin_y
                        - surface->local_y_from_screen_x * surface->transform.x
                        - surface->local_y_from_screen_y * surface->transform.y;
+
+    /*
+     * D3D-style rotated-grid 4x sample pattern, expressed relative to the
+     * pixel centre. Convert the fixed screen-space offsets to local-space once
+     * here so boundary coverage never needs matrix math inside the hot loop.
+     */
+    static const float sample_dx[4] = {-0.125f, 0.375f, -0.375f, 0.125f};
+    static const float sample_dy[4] = {-0.375f, -0.125f, 0.125f, 0.375f};
+    for (size_t i = 0U; i < 4U; ++i) {
+        surface->aa_local_dx[i] =
+            surface->local_x_from_screen_x * sample_dx[i] +
+            surface->local_x_from_screen_y * sample_dy[i];
+        surface->aa_local_dy[i] =
+            surface->local_y_from_screen_x * sample_dx[i] +
+            surface->local_y_from_screen_y * sample_dy[i];
+    }
+
+    surface->aa_local_min_dx = surface->aa_local_dx[0];
+    surface->aa_local_max_dx = surface->aa_local_dx[0];
+    surface->aa_local_min_dy = surface->aa_local_dy[0];
+    surface->aa_local_max_dy = surface->aa_local_dy[0];
+    for (size_t i = 1U; i < 4U; ++i) {
+        surface->aa_local_min_dx = fminf(surface->aa_local_min_dx, surface->aa_local_dx[i]);
+        surface->aa_local_max_dx = fmaxf(surface->aa_local_max_dx, surface->aa_local_dx[i]);
+        surface->aa_local_min_dy = fminf(surface->aa_local_min_dy, surface->aa_local_dy[i]);
+        surface->aa_local_max_dy = fmaxf(surface->aa_local_max_dy, surface->aa_local_dy[i]);
+    }
 
     surface->bounds = grape_surface_calculate_bounds(surface);
     surface_recache_texture_mapping(surface);
@@ -388,6 +437,8 @@ esp_err_t grape_surface_create(grape_context_t *context,
 {
     if (!context || !desc || !out_surface ||
         !surface_texture_mode_valid(desc->texture_mode) ||
+        !surface_texture_filter_valid(desc->texture_filter) ||
+        !surface_aa_valid(desc->aa) ||
         (desc->texture && desc->texture->context != context) ||
         (desc->shader_count > 0U && !desc->shaders) ||
         fabsf(desc->transform.scale_x) < FLT_EPSILON ||
@@ -436,6 +487,8 @@ esp_err_t grape_surface_create(grape_context_t *context,
     surface->width = width;
     surface->height = height;
     surface->texture_mode = desc->texture_mode;
+    surface->texture_filter = desc->texture_filter;
+    surface->aa = desc->aa;
     surface->transform = desc->transform;
     surface->tint = desc->tint;
     surface->opacity = desc->opacity;
@@ -585,6 +638,49 @@ esp_err_t grape_surface_set_texture_mode(grape_surface_t *surface, grape_surface
     ret = mark_surface_coverage(surface);
     if (ret != ESP_OK) {
         surface->texture_mode = old_mode;
+        grape_surface_recache(surface);
+        (void)mark_surface_coverage(surface);
+    }
+    return ret;
+}
+
+esp_err_t grape_surface_set_texture_filter(grape_surface_t *surface, grape_texture_filter_t filter)
+{
+    if (!surface || !surface_texture_filter_valid(filter)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (surface->texture_filter == filter) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    surface->texture_filter = filter;
+    return mark_surface_coverage(surface);
+}
+
+esp_err_t grape_surface_set_aa(grape_surface_t *surface, grape_surface_aa_t aa)
+{
+    if (!surface || !surface_aa_valid(aa)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (surface->aa == aa) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    grape_surface_aa_t old_aa = surface->aa;
+    surface->aa = aa;
+    grape_surface_recache(surface);
+    ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        surface->aa = old_aa;
         grape_surface_recache(surface);
         (void)mark_surface_coverage(surface);
     }
@@ -893,6 +989,16 @@ uint32_t grape_surface_height(const grape_surface_t *surface)
 grape_surface_texture_mode_t grape_surface_texture_mode(const grape_surface_t *surface)
 {
     return surface ? surface->texture_mode : GRAPE_SURFACE_TEXTURE_STRETCH;
+}
+
+grape_texture_filter_t grape_surface_texture_filter(const grape_surface_t *surface)
+{
+    return surface ? surface->texture_filter : GRAPE_TEXTURE_FILTER_NEAREST;
+}
+
+grape_surface_aa_t grape_surface_aa(const grape_surface_t *surface)
+{
+    return surface ? surface->aa : GRAPE_SURFACE_AA_NONE;
 }
 
 /**

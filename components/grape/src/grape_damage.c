@@ -845,10 +845,13 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
     }
 
     /* Occupancy cells are stored in texture space. Until the occupancy
-     * planner learns arbitrary surface texture mappings, use the surface
-     * bounds for stretched/tiled/fitted textures. The 1:1 path keeps the
-     * existing fine-grained occupancy optimization. */
-    if (!surface->texture_mapping_identity) {
+     * planner learns arbitrary surface mappings, bilinear's half-texel
+     * footprint, and AA's subpixel fringe, use conservative surface bounds for
+     * those cases. Plain nearest/no-AA 1:1 sampling keeps the existing
+     * fine-grained occupancy optimization. */
+    if (!surface->texture_mapping_identity ||
+        surface->texture_filter == GRAPE_TEXTURE_FILTER_LINEAR ||
+        surface->aa == GRAPE_SURFACE_AA_COVERAGE_4X) {
         return grape_damage_add(surface->context, surface->bounds);
     }
 

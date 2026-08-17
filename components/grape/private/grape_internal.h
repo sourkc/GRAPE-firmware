@@ -73,6 +73,8 @@ struct grape_surface {
     uint32_t width;
     uint32_t height;
     grape_surface_texture_mode_t texture_mode;
+    grape_texture_filter_t texture_filter;
+    grape_surface_aa_t aa;
     float texture_from_local_x_scale;
     float texture_from_local_y_scale;
     float texture_from_local_x_offset;
@@ -94,6 +96,12 @@ struct grape_surface {
     float local_y_from_screen_x; ///< How much the y changes in local texture coordinates if we move by one x
     float local_y_from_screen_y; ///< How much the y changes in local texture coordinates if we move by one y
     float local_y_offset; ///< Constant term of the cached screen-to-local Y transform
+    float aa_local_dx[4]; ///< Local-space X offsets for the 4x coverage sample pattern
+    float aa_local_dy[4]; ///< Local-space Y offsets for the 4x coverage sample pattern
+    float aa_local_min_dx; ///< Minimum local-space X sample offset
+    float aa_local_max_dx; ///< Maximum local-space X sample offset
+    float aa_local_min_dy; ///< Minimum local-space Y sample offset
+    float aa_local_max_dy; ///< Maximum local-space Y sample offset
     float normalized_rotation; ///< Rotation normalized to [-pi, pi]
     float shear_x_coefficient; ///< Used for three-shear rotation. Equivalent to -tan(normalized_rotation / 2)
     int32_t z;

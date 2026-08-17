@@ -17,6 +17,7 @@ typedef enum {
     GRAPE_DEMO_VECTOR_SVG = 3,
     GRAPE_DEMO_GPU_3D_TRIANGLE = 4,
     GRAPE_DEMO_SURFACE_FEATURES = 5,
+    GRAPE_DEMO_AA = 6,
 } grape_demo_id_t;
 
 typedef void (*grape_demo_configure_fn)(grape_config_t *config);

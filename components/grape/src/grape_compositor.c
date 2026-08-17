@@ -153,81 +153,526 @@ static inline rgba8_t read_rgba8888(const uint8_t *src)
     };
 }
 
-static __attribute__((always_inline)) inline rgba8_t sample_surface_texture(
-    const grape_surface_t *surface,
-    int32_t tx,
-    int32_t ty)
+static inline uint8_t coverage_mul4(uint8_t alpha,
+                                                                    uint8_t covered_samples)
 {
-    const grape_texture_t *texture = surface->texture;
-    const uint8_t *row = texture->pixels + (size_t)ty * texture->stride;
-    rgba8_t color;
+    return (uint8_t)(((uint16_t)alpha * covered_samples + 2U) >> 2);
+}
 
-    switch (texture->format) {
-        case GRAPE_PIXEL_FORMAT_A8:
-            color = (rgba8_t) {
-                .r = surface->tint.r,
-                .g = surface->tint.g,
-                .b = surface->tint.b,
-                .a = mul8(row[tx], surface->tint.a),
-            };
-            break;
-        case GRAPE_PIXEL_FORMAT_RGB565:
-            color = read_rgb565(row + (size_t)tx * 2U);
-            color.r = mul8(color.r, surface->tint.r);
-            color.g = mul8(color.g, surface->tint.g);
-            color.b = mul8(color.b, surface->tint.b);
-            color.a = surface->tint.a;
-            break;
-        case GRAPE_PIXEL_FORMAT_RGB888:
-            color = read_rgb888(row + (size_t)tx * 3U);
-            color.r = mul8(color.r, surface->tint.r);
-            color.g = mul8(color.g, surface->tint.g);
-            color.b = mul8(color.b, surface->tint.b);
-            color.a = surface->tint.a;
-            break;
-        case GRAPE_PIXEL_FORMAT_RGBA8888:
-            color = read_rgba8888(row + (size_t)tx * 4U);
-            color.r = mul8(color.r, surface->tint.r);
-            color.g = mul8(color.g, surface->tint.g);
-            color.b = mul8(color.b, surface->tint.b);
-            color.a = mul8(color.a, surface->tint.a);
-            break;
-        default:
-            color = (rgba8_t){0};
-            break;
+/**
+ * Computes 4x rotated-grid coverage for the transformed surface rectangle.
+ *
+ * The common interior case exits after the cached min/max sample extents. Only
+ * boundary pixels evaluate all four sample positions. For partial pixels the
+ * returned shade point is the centroid of the covered samples, which keeps the
+ * single texture/shader evaluation inside the primitive even when the pixel
+ * centre itself is outside.
+ */
+static inline uint8_t surface_coverage_4x(
+    const grape_surface_t *surface,
+    float center_x,
+    float center_y,
+    float *shade_x,
+    float *shade_y)
+{
+    const float width = (float)surface->width;
+    const float height = (float)surface->height;
+    const float min_x = center_x + surface->aa_local_min_dx;
+    const float max_x = center_x + surface->aa_local_max_dx;
+    const float min_y = center_y + surface->aa_local_min_dy;
+    const float max_y = center_y + surface->aa_local_max_dy;
+
+    if (min_x >= 0.0f && max_x < width &&
+        min_y >= 0.0f && max_y < height) {
+        *shade_x = center_x;
+        *shade_y = center_y;
+        return 4U;
     }
 
+    if (max_x < 0.0f || min_x >= width ||
+        max_y < 0.0f || min_y >= height) {
+        return 0U;
+    }
+
+    float sum_x = 0.0f;
+    float sum_y = 0.0f;
+    uint8_t count = 0U;
+    for (size_t i = 0U; i < 4U; ++i) {
+        const float sample_x = center_x + surface->aa_local_dx[i];
+        const float sample_y = center_y + surface->aa_local_dy[i];
+        if (sample_x >= 0.0f && sample_y >= 0.0f &&
+            sample_x < width && sample_y < height) {
+            sum_x += sample_x;
+            sum_y += sample_y;
+            count++;
+        }
+    }
+
+    if (count == 0U) {
+        return 0U;
+    }
+
+    static const float reciprocal[5] = {0.0f, 1.0f, 0.5f, 1.0f / 3.0f, 0.25f};
+    *shade_x = sum_x * reciprocal[count];
+    *shade_y = sum_y * reciprocal[count];
+    return count;
+}
+
+static inline void surface_map_texture_float(
+    const grape_surface_t *surface,
+    float local_x,
+    float local_y,
+    float *texture_x,
+    float *texture_y)
+{
+    *texture_x = local_x * surface->texture_from_local_x_scale +
+                 surface->texture_from_local_x_offset;
+    *texture_y = local_y * surface->texture_from_local_y_scale +
+                 surface->texture_from_local_y_offset;
+}
+
+static inline int32_t clamp_texture_index(int32_t value,
+                                                                         int32_t limit)
+{
+    if (value < 0) {
+        return 0;
+    }
+    if (value >= limit) {
+        return limit - 1;
+    }
+    return value;
+}
+
+static inline int32_t wrap_texture_index(int32_t value,
+                                                                        int32_t limit)
+{
+    int32_t wrapped = value % limit;
+    return wrapped < 0 ? wrapped + limit : wrapped;
+}
+
+typedef struct {
+    int32_t x0;
+    int32_t x1;
+    int32_t y0;
+    int32_t y1;
+    uint8_t valid_mask;
+    uint32_t w00;
+    uint32_t w10;
+    uint32_t w01;
+    uint32_t w11;
+} bilinear_sample_t;
+
+#define BILINEAR_VALID_00 0x01U
+#define BILINEAR_VALID_10 0x02U
+#define BILINEAR_VALID_01 0x04U
+#define BILINEAR_VALID_11 0x08U
+
+/**
+ * Builds integer bilinear weights and resolves address semantics once per
+ * destination pixel. STRETCH/COVER clamp, TILE wraps, and FIT/CENTER use a
+ * transparent border so the contained/native image fades into its letterbox.
+ */
+static inline void build_bilinear_sample(
+    const grape_surface_t *surface,
+    float texture_x,
+    float texture_y,
+    bilinear_sample_t *sample)
+{
+    const float centered_x = texture_x - 0.5f;
+    const float centered_y = texture_y - 0.5f;
+    const int32_t source_x0 = grape_floor_to_i32(centered_x);
+    const int32_t source_y0 = grape_floor_to_i32(centered_y);
+    const int32_t source_x1 = source_x0 + 1;
+    const int32_t source_y1 = source_y0 + 1;
+    const float frac_x = centered_x - (float)source_x0;
+    const float frac_y = centered_y - (float)source_y0;
+
+    uint32_t fx = (uint32_t)(frac_x * 256.0f + 0.5f);
+    uint32_t fy = (uint32_t)(frac_y * 256.0f + 0.5f);
+    if (fx > 256U) fx = 256U;
+    if (fy > 256U) fy = 256U;
+    const uint32_t inv_x = 256U - fx;
+    const uint32_t inv_y = 256U - fy;
+    sample->w00 = inv_x * inv_y;
+    sample->w10 = fx * inv_y;
+    sample->w01 = inv_x * fy;
+    sample->w11 = fx * fy;
+
+    const int32_t width = (int32_t)surface->texture->width;
+    const int32_t height = (int32_t)surface->texture->height;
+
+    if (surface->texture_mode == GRAPE_SURFACE_TEXTURE_TILE) {
+        sample->x0 = wrap_texture_index(source_x0, width);
+        sample->x1 = wrap_texture_index(source_x1, width);
+        sample->y0 = wrap_texture_index(source_y0, height);
+        sample->y1 = wrap_texture_index(source_y1, height);
+        sample->valid_mask = 0x0FU;
+        return;
+    }
+
+    if (surface->texture_mode == GRAPE_SURFACE_TEXTURE_FIT ||
+        surface->texture_mode == GRAPE_SURFACE_TEXTURE_CENTER) {
+        const bool x0_valid = source_x0 >= 0 && source_x0 < width;
+        const bool x1_valid = source_x1 >= 0 && source_x1 < width;
+        const bool y0_valid = source_y0 >= 0 && source_y0 < height;
+        const bool y1_valid = source_y1 >= 0 && source_y1 < height;
+        sample->x0 = clamp_texture_index(source_x0, width);
+        sample->x1 = clamp_texture_index(source_x1, width);
+        sample->y0 = clamp_texture_index(source_y0, height);
+        sample->y1 = clamp_texture_index(source_y1, height);
+        sample->valid_mask =
+            (uint8_t)((x0_valid && y0_valid ? BILINEAR_VALID_00 : 0U) |
+                      (x1_valid && y0_valid ? BILINEAR_VALID_10 : 0U) |
+                      (x0_valid && y1_valid ? BILINEAR_VALID_01 : 0U) |
+                      (x1_valid && y1_valid ? BILINEAR_VALID_11 : 0U));
+        return;
+    }
+
+    sample->x0 = clamp_texture_index(source_x0, width);
+    sample->x1 = clamp_texture_index(source_x1, width);
+    sample->y0 = clamp_texture_index(source_y0, height);
+    sample->y1 = clamp_texture_index(source_y1, height);
+    sample->valid_mask = 0x0FU;
+}
+
+static inline rgba8_t bilinear_mix_rgba(
+    rgba8_t c00,
+    rgba8_t c10,
+    rgba8_t c01,
+    rgba8_t c11,
+    const bilinear_sample_t *sample)
+{
+    /*
+     * Interpolate premultiplied channels even though GRAPE stores straight
+     * alpha. This prevents dark fringes around transparent A8/RGBA edges and
+     * around FIT/CENTER's transparent border. Convert back to straight alpha
+     * once because the shader/compositor ABI is straight RGBA.
+     */
+    const uint8_t p00r = mul8(c00.r, c00.a);
+    const uint8_t p00g = mul8(c00.g, c00.a);
+    const uint8_t p00b = mul8(c00.b, c00.a);
+    const uint8_t p10r = mul8(c10.r, c10.a);
+    const uint8_t p10g = mul8(c10.g, c10.a);
+    const uint8_t p10b = mul8(c10.b, c10.a);
+    const uint8_t p01r = mul8(c01.r, c01.a);
+    const uint8_t p01g = mul8(c01.g, c01.a);
+    const uint8_t p01b = mul8(c01.b, c01.a);
+    const uint8_t p11r = mul8(c11.r, c11.a);
+    const uint8_t p11g = mul8(c11.g, c11.a);
+    const uint8_t p11b = mul8(c11.b, c11.a);
+
+#define BILINEAR_MIX_CHANNEL(a, b, c, d) \
+    (uint8_t)(((uint32_t)(a) * sample->w00 + \
+               (uint32_t)(b) * sample->w10 + \
+               (uint32_t)(c) * sample->w01 + \
+               (uint32_t)(d) * sample->w11 + 32768U) >> 16)
+
+    const uint8_t alpha = BILINEAR_MIX_CHANNEL(c00.a, c10.a, c01.a, c11.a);
+    if (alpha == 0U) {
+        return (rgba8_t){0};
+    }
+
+    const uint8_t premul_r = BILINEAR_MIX_CHANNEL(p00r, p10r, p01r, p11r);
+    const uint8_t premul_g = BILINEAR_MIX_CHANNEL(p00g, p10g, p01g, p11g);
+    const uint8_t premul_b = BILINEAR_MIX_CHANNEL(p00b, p10b, p01b, p11b);
+#undef BILINEAR_MIX_CHANNEL
+
+    if (alpha == 255U) {
+        return (rgba8_t){premul_r, premul_g, premul_b, 255U};
+    }
+
+    const uint32_t half_alpha = (uint32_t)alpha / 2U;
+    uint32_t red = ((uint32_t)premul_r * 255U + half_alpha) / alpha;
+    uint32_t green = ((uint32_t)premul_g * 255U + half_alpha) / alpha;
+    uint32_t blue = ((uint32_t)premul_b * 255U + half_alpha) / alpha;
+    if (red > 255U) red = 255U;
+    if (green > 255U) green = 255U;
+    if (blue > 255U) blue = 255U;
+    return (rgba8_t){(uint8_t)red, (uint8_t)green, (uint8_t)blue, alpha};
+}
+
+static inline rgba8_t sample_raw_a8(
+    const grape_surface_t *surface,
+    int32_t x,
+    int32_t y)
+{
+    const uint8_t *row = surface->texture->pixels + (size_t)y * surface->texture->stride;
+    return (rgba8_t){
+        surface->tint.r,
+        surface->tint.g,
+        surface->tint.b,
+        mul8(row[x], surface->tint.a),
+    };
+}
+
+static inline rgba8_t sample_raw_rgb565(
+    const grape_surface_t *surface,
+    int32_t x,
+    int32_t y)
+{
+    const uint8_t *row = surface->texture->pixels + (size_t)y * surface->texture->stride;
+    rgba8_t color = read_rgb565(row + (size_t)x * 2U);
+    color.r = mul8(color.r, surface->tint.r);
+    color.g = mul8(color.g, surface->tint.g);
+    color.b = mul8(color.b, surface->tint.b);
+    color.a = surface->tint.a;
     return color;
 }
 
-static void raster_surface_mapped_cpu(grape_context_t *context,
-                                      const grape_surface_t *surface,
-                                      grape_rect_t clipped,
-                                      size_t bpp)
+static inline rgba8_t sample_raw_rgb888(
+    const grape_surface_t *surface,
+    int32_t x,
+    int32_t y)
 {
-    const int32_t raster_width = clipped.width;
-    const float local_x_step = surface->local_x_from_screen_x;
-    const float local_y_step = surface->local_y_from_screen_x;
+    const uint8_t *row = surface->texture->pixels + (size_t)y * surface->texture->stride;
+    rgba8_t color = read_rgb888(row + (size_t)x * 3U);
+    color.r = mul8(color.r, surface->tint.r);
+    color.g = mul8(color.g, surface->tint.g);
+    color.b = mul8(color.b, surface->tint.b);
+    color.a = surface->tint.a;
+    return color;
+}
 
-    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
-        float local_x;
-        float local_y;
-        affine_row_start(surface, clipped.x, y, &local_x, &local_y);
-        uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp);
+static inline rgba8_t sample_raw_rgba8888(
+    const grape_surface_t *surface,
+    int32_t x,
+    int32_t y)
+{
+    const uint8_t *row = surface->texture->pixels + (size_t)y * surface->texture->stride;
+    rgba8_t color = read_rgba8888(row + (size_t)x * 4U);
+    color.r = mul8(color.r, surface->tint.r);
+    color.g = mul8(color.g, surface->tint.g);
+    color.b = mul8(color.b, surface->tint.b);
+    color.a = mul8(color.a, surface->tint.a);
+    return color;
+}
 
-        for (int32_t x = 0; x < raster_width; ++x) {
-            int32_t tx;
-            int32_t ty;
-            if (grape_surface_map_texture_point(surface, local_x, local_y, &tx, &ty)) {
-                rgba8_t source = sample_surface_texture(surface, tx, ty);
-                source.a = mul8(source.a, surface->opacity);
-                composite_source_pixel(dst, context->display_info.format, source);
-            }
-            local_x += local_x_step;
-            local_y += local_y_step;
-            dst += bpp;
-        }
+#define DEFINE_NEAREST_SAMPLER(name, raw_sampler) \
+    static inline bool name( \
+        const grape_surface_t *surface, float local_x, float local_y, rgba8_t *out) \
+    { \
+        int32_t tx; \
+        int32_t ty; \
+        if (surface->texture_mapping_identity) { \
+            if (local_x < 0.0f || local_y < 0.0f || \
+                local_x >= (float)surface->texture->width || \
+                local_y >= (float)surface->texture->height) { \
+                return false; \
+            } \
+            tx = (int32_t)local_x; \
+            ty = (int32_t)local_y; \
+        } else { \
+            if (!grape_surface_map_texture_point(surface, local_x, local_y, &tx, &ty)) { \
+                return false; \
+            } \
+        } \
+        *out = raw_sampler(surface, tx, ty); \
+        return true; \
     }
+
+DEFINE_NEAREST_SAMPLER(sample_nearest_a8, sample_raw_a8)
+DEFINE_NEAREST_SAMPLER(sample_nearest_rgb565, sample_raw_rgb565)
+DEFINE_NEAREST_SAMPLER(sample_nearest_rgb888, sample_raw_rgb888)
+DEFINE_NEAREST_SAMPLER(sample_nearest_rgba8888, sample_raw_rgba8888)
+#undef DEFINE_NEAREST_SAMPLER
+
+#define DEFINE_LINEAR_SAMPLER(name, raw_sampler) \
+    static inline bool name( \
+        const grape_surface_t *surface, float local_x, float local_y, rgba8_t *out) \
+    { \
+        float texture_x; \
+        float texture_y; \
+        surface_map_texture_float(surface, local_x, local_y, &texture_x, &texture_y); \
+        bilinear_sample_t sample; \
+        build_bilinear_sample(surface, texture_x, texture_y, &sample); \
+        rgba8_t c00 = (sample.valid_mask & BILINEAR_VALID_00) \
+            ? raw_sampler(surface, sample.x0, sample.y0) : (rgba8_t){0}; \
+        rgba8_t c10 = (sample.valid_mask & BILINEAR_VALID_10) \
+            ? raw_sampler(surface, sample.x1, sample.y0) : (rgba8_t){0}; \
+        rgba8_t c01 = (sample.valid_mask & BILINEAR_VALID_01) \
+            ? raw_sampler(surface, sample.x0, sample.y1) : (rgba8_t){0}; \
+        rgba8_t c11 = (sample.valid_mask & BILINEAR_VALID_11) \
+            ? raw_sampler(surface, sample.x1, sample.y1) : (rgba8_t){0}; \
+        *out = bilinear_mix_rgba(c00, c10, c01, c11, &sample); \
+        return out->a != 0U; \
+    }
+
+DEFINE_LINEAR_SAMPLER(sample_linear_a8, sample_raw_a8)
+DEFINE_LINEAR_SAMPLER(sample_linear_rgb565, sample_raw_rgb565)
+DEFINE_LINEAR_SAMPLER(sample_linear_rgb888, sample_raw_rgb888)
+DEFINE_LINEAR_SAMPLER(sample_linear_rgba8888, sample_raw_rgba8888)
+#undef DEFINE_LINEAR_SAMPLER
+
+typedef bool (*surface_sample_fn_t)(const grape_surface_t *surface,
+                                    float local_x,
+                                    float local_y,
+                                    rgba8_t *out);
+
+static surface_sample_fn_t surface_select_sampler(const grape_surface_t *surface)
+{
+    if (!surface || !surface->texture) {
+        return NULL;
+    }
+
+    const bool linear = surface->texture_filter == GRAPE_TEXTURE_FILTER_LINEAR;
+    switch (surface->texture->format) {
+        case GRAPE_PIXEL_FORMAT_A8:
+            return linear ? sample_linear_a8 : sample_nearest_a8;
+        case GRAPE_PIXEL_FORMAT_RGB565:
+            return linear ? sample_linear_rgb565 : sample_nearest_rgb565;
+        case GRAPE_PIXEL_FORMAT_RGB888:
+            return linear ? sample_linear_rgb888 : sample_nearest_rgb888;
+        case GRAPE_PIXEL_FORMAT_RGBA8888:
+            return linear ? sample_linear_rgba8888 : sample_nearest_rgba8888;
+        default:
+            return NULL;
+    }
+}
+
+#define DEFINE_TEXTURED_RASTER(name, sampler, use_aa) \
+    static void name(grape_context_t *context, const grape_surface_t *surface, \
+                     grape_rect_t clipped, size_t bpp) \
+    { \
+        const int32_t raster_width = clipped.width; \
+        const float local_x_step = surface->local_x_from_screen_x; \
+        const float local_y_step = surface->local_y_from_screen_x; \
+        const float surface_width = (float)surface->width; \
+        const float surface_height = (float)surface->height; \
+        const grape_pixel_format_t output_format = context->display_info.format; \
+        const uint8_t opacity = surface->opacity; \
+        for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) { \
+            float local_x; \
+            float local_y; \
+            affine_row_start(surface, clipped.x, y, &local_x, &local_y); \
+            uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp); \
+            for (int32_t x = 0; x < raster_width; ++x) { \
+                float shade_x = local_x; \
+                float shade_y = local_y; \
+                uint8_t coverage = 4U; \
+                bool inside = true; \
+                if (use_aa) { \
+                    coverage = surface_coverage_4x(surface, local_x, local_y, &shade_x, &shade_y); \
+                    inside = coverage != 0U; \
+                } else { \
+                    inside = local_x >= 0.0f && local_y >= 0.0f && \
+                             local_x < surface_width && local_y < surface_height; \
+                } \
+                if (inside) { \
+                    rgba8_t source; \
+                    if (sampler(surface, shade_x, shade_y, &source)) { \
+                        source.a = mul8(source.a, opacity); \
+                        if (use_aa && coverage != 4U) { \
+                            source.a = coverage_mul4(source.a, coverage); \
+                        } \
+                        composite_source_pixel(dst, output_format, source); \
+                    } \
+                } \
+                local_x += local_x_step; \
+                local_y += local_y_step; \
+                dst += bpp; \
+            } \
+        } \
+    }
+
+DEFINE_TEXTURED_RASTER(raster_quality_a8_nearest_noaa, sample_nearest_a8, 0)
+DEFINE_TEXTURED_RASTER(raster_quality_a8_nearest_aa, sample_nearest_a8, 1)
+DEFINE_TEXTURED_RASTER(raster_quality_a8_linear_noaa, sample_linear_a8, 0)
+DEFINE_TEXTURED_RASTER(raster_quality_a8_linear_aa, sample_linear_a8, 1)
+DEFINE_TEXTURED_RASTER(raster_quality_rgb565_nearest_noaa, sample_nearest_rgb565, 0)
+DEFINE_TEXTURED_RASTER(raster_quality_rgb565_nearest_aa, sample_nearest_rgb565, 1)
+DEFINE_TEXTURED_RASTER(raster_quality_rgb565_linear_noaa, sample_linear_rgb565, 0)
+DEFINE_TEXTURED_RASTER(raster_quality_rgb565_linear_aa, sample_linear_rgb565, 1)
+DEFINE_TEXTURED_RASTER(raster_quality_rgb888_nearest_noaa, sample_nearest_rgb888, 0)
+DEFINE_TEXTURED_RASTER(raster_quality_rgb888_nearest_aa, sample_nearest_rgb888, 1)
+DEFINE_TEXTURED_RASTER(raster_quality_rgb888_linear_noaa, sample_linear_rgb888, 0)
+DEFINE_TEXTURED_RASTER(raster_quality_rgb888_linear_aa, sample_linear_rgb888, 1)
+DEFINE_TEXTURED_RASTER(raster_quality_rgba8888_nearest_noaa, sample_nearest_rgba8888, 0)
+DEFINE_TEXTURED_RASTER(raster_quality_rgba8888_nearest_aa, sample_nearest_rgba8888, 1)
+DEFINE_TEXTURED_RASTER(raster_quality_rgba8888_linear_noaa, sample_linear_rgba8888, 0)
+DEFINE_TEXTURED_RASTER(raster_quality_rgba8888_linear_aa, sample_linear_rgba8888, 1)
+#undef DEFINE_TEXTURED_RASTER
+
+static void raster_surface_quality_dispatch(grape_context_t *context,
+                                            const grape_surface_t *surface,
+                                            grape_rect_t clipped,
+                                            size_t bpp)
+{
+    const bool linear = surface->texture_filter == GRAPE_TEXTURE_FILTER_LINEAR;
+    const bool aa = surface->aa == GRAPE_SURFACE_AA_COVERAGE_4X;
+
+#define DISPATCH_QUALITY(format_name) \
+    do { \
+        if (linear) { \
+            if (aa) raster_quality_##format_name##_linear_aa(context, surface, clipped, bpp); \
+            else raster_quality_##format_name##_linear_noaa(context, surface, clipped, bpp); \
+        } else { \
+            if (aa) raster_quality_##format_name##_nearest_aa(context, surface, clipped, bpp); \
+            else raster_quality_##format_name##_nearest_noaa(context, surface, clipped, bpp); \
+        } \
+    } while (0)
+
+    switch (surface->texture->format) {
+        case GRAPE_PIXEL_FORMAT_A8:
+            DISPATCH_QUALITY(a8);
+            break;
+        case GRAPE_PIXEL_FORMAT_RGB565:
+            DISPATCH_QUALITY(rgb565);
+            break;
+        case GRAPE_PIXEL_FORMAT_RGB888:
+            DISPATCH_QUALITY(rgb888);
+            break;
+        case GRAPE_PIXEL_FORMAT_RGBA8888:
+            DISPATCH_QUALITY(rgba8888);
+            break;
+        default:
+            break;
+    }
+#undef DISPATCH_QUALITY
+}
+
+static inline void evaluate_shader_chain_pixel(
+    const grape_surface_t *surface,
+    rgba8_t source,
+    float local_x,
+    float local_y,
+    float inv_width,
+    float inv_height,
+    uint8_t coverage,
+    uint8_t *dst,
+    grape_pixel_format_t output_format)
+{
+    const float surface_width = (float)surface->width;
+    const float surface_height = (float)surface->height;
+    grape_shader_eval_args_t args = {
+        .source_color = {
+            (float)source.r / 255.0f,
+            (float)source.g / 255.0f,
+            (float)source.b / 255.0f,
+            (float)source.a / 255.0f,
+        },
+        .uv = {local_x * inv_width, local_y * inv_height},
+        .local_position = {local_x, local_y},
+        .surface_size = {surface_width, surface_height},
+        .frag_coord = {local_x, surface_height - local_y},
+    };
+
+    grape_shader_vec4_t output = args.source_color;
+    for (size_t shader_index = 0U; shader_index < surface->shader_count; ++shader_index) {
+        const grape_surface_shader_instance_t *shader = &surface->shaders[shader_index];
+        args.source_color = output;
+        output = shader->program->eval(&args, shader->uniforms);
+    }
+
+    rgba8_t final_color = {
+        .r = grape_shader_float_to_u8(output.x),
+        .g = grape_shader_float_to_u8(output.y),
+        .b = grape_shader_float_to_u8(output.z),
+        .a = mul8(grape_shader_float_to_u8(output.w), surface->opacity),
+    };
+    if (coverage != 4U) {
+        final_color.a = coverage_mul4(final_color.a, coverage);
+    }
+    composite_source_pixel(dst, output_format, final_color);
 }
 
 static void raster_surface_shader_chain(grape_context_t *context,
@@ -241,6 +686,8 @@ static void raster_surface_shader_chain(grape_context_t *context,
     const float inv_height = 1.0f / surface_height;
     const float local_x_step = surface->local_x_from_screen_x;
     const float local_y_step = surface->local_y_from_screen_x;
+    const bool aa = surface->aa == GRAPE_SURFACE_AA_COVERAGE_4X;
+    surface_sample_fn_t sampler = surface_select_sampler(surface);
 
     for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
         float local_x;
@@ -249,46 +696,32 @@ static void raster_surface_shader_chain(grape_context_t *context,
         uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp);
 
         for (int32_t x = 0; x < clipped.width; ++x) {
-            if (local_x >= 0.0f && local_y >= 0.0f &&
-                local_x < surface_width && local_y < surface_height) {
+            float shade_x = local_x;
+            float shade_y = local_y;
+            uint8_t coverage = 4U;
+            bool inside;
+            if (aa) {
+                coverage = surface_coverage_4x(surface, local_x, local_y, &shade_x, &shade_y);
+                inside = coverage != 0U;
+            } else {
+                inside = local_x >= 0.0f && local_y >= 0.0f &&
+                         local_x < surface_width && local_y < surface_height;
+            }
+
+            if (inside) {
                 rgba8_t source = {0};
-                int32_t tx;
-                int32_t ty;
-                if (surface->texture &&
-                    grape_surface_map_texture_point(surface, local_x, local_y, &tx, &ty)) {
-                    source = sample_surface_texture(surface, tx, ty);
+                if (surface->texture && sampler) {
+                    /*
+                     * Shader chains run for the whole surface rectangle even
+                     * when the texture contributes transparent black. A later
+                     * stage is allowed to turn transparent input into visible
+                     * output, so texture alpha must never suppress evaluation.
+                     */
+                    (void)sampler(surface, shade_x, shade_y, &source);
                 }
-
-                grape_shader_eval_args_t args = {
-                    .source_color = {
-                        (float)source.r / 255.0f,
-                        (float)source.g / 255.0f,
-                        (float)source.b / 255.0f,
-                        (float)source.a / 255.0f,
-                    },
-                    .uv = {local_x * inv_width, local_y * inv_height},
-                    .local_position = {local_x, local_y},
-                    .surface_size = {surface_width, surface_height},
-                    .frag_coord = {local_x, surface_height - local_y},
-                };
-
-                grape_shader_vec4_t output = args.source_color;
-                for (size_t shader_index = 0U;
-                     shader_index < surface->shader_count;
-                     ++shader_index) {
-                    const grape_surface_shader_instance_t *shader =
-                        &surface->shaders[shader_index];
-                    args.source_color = output;
-                    output = shader->program->eval(&args, shader->uniforms);
-                }
-
-                rgba8_t final_color = {
-                    .r = grape_shader_float_to_u8(output.x),
-                    .g = grape_shader_float_to_u8(output.y),
-                    .b = grape_shader_float_to_u8(output.z),
-                    .a = mul8(grape_shader_float_to_u8(output.w), surface->opacity),
-                };
-                composite_source_pixel(dst, context->display_info.format, final_color);
+                evaluate_shader_chain_pixel(surface, source, shade_x, shade_y,
+                                            inv_width, inv_height, coverage,
+                                            dst, context->display_info.format);
             }
 
             local_x += local_x_step;
@@ -942,9 +1375,13 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         }
 
         bool handled = false;
+        const bool legacy_fast_path =
+            surface->texture_mapping_identity &&
+            surface->texture_filter == GRAPE_TEXTURE_FILTER_NEAREST &&
+            surface->aa == GRAPE_SURFACE_AA_NONE;
 
         // Attempt to raster the surface using three shear method if backend is set to auto, fallback to CPU
-        if (surface->texture_mapping_identity &&
+        if (legacy_fast_path &&
             context->rotation_backend == GRAPE_ROTATION_BACKEND_AUTO) {
             GRAPE_TIME_BLOCK(PPA_BLEND_DISPATCH) {
                 ret = grape_ppa_blend_surface(context, surface, rect, &handled);
@@ -958,7 +1395,7 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         }
 
         GRAPE_TIME_BLOCK(CPU_SURFACE_RASTER) {
-            if (surface->texture_mapping_identity &&
+            if (legacy_fast_path &&
                 context->rotation_backend == GRAPE_ROTATION_BACKEND_THREE_SHEAR) {
                 ret = raster_surface_three_shear_a8(
                     context,
@@ -974,10 +1411,10 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
             }
 
             if (!handled) {
-                if (surface->texture_mapping_identity) {
+                if (legacy_fast_path) {
                     raster_surface_cpu(context, surface, rect, clipped, bpp);
                 } else {
-                    raster_surface_mapped_cpu(context, surface, clipped, bpp);
+                    raster_surface_quality_dispatch(context, surface, clipped, bpp);
                 }
             }
         }

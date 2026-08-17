@@ -20,6 +20,18 @@ typedef enum {
     GRAPE_SURFACE_TEXTURE_CENTER,      ///< Keep native texture size and center it; crop/leave empty space as needed.
 } grape_surface_texture_mode_t;
 
+/** Texture reconstruction filter used when sampling a surface texture. */
+typedef enum {
+    GRAPE_TEXTURE_FILTER_NEAREST = 0, ///< Fast nearest-neighbour sampling.
+    GRAPE_TEXTURE_FILTER_LINEAR,      ///< Bilinear interpolation of four neighbouring texels.
+} grape_texture_filter_t;
+
+/** Geometry anti-aliasing mode for the transformed surface rectangle. */
+typedef enum {
+    GRAPE_SURFACE_AA_NONE = 0,       ///< Binary inside/outside surface coverage.
+    GRAPE_SURFACE_AA_COVERAGE_4X,   ///< Four sub-pixel coverage samples on boundary pixels.
+} grape_surface_aa_t;
+
 /** One stage in a surface shader chain. Uniform data is copied by GRAPE. */
 typedef struct {
     const grape_shader_program_t *program;
@@ -41,6 +53,8 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     grape_surface_texture_mode_t texture_mode;
+    grape_texture_filter_t texture_filter;
+    grape_surface_aa_t aa;
     const grape_surface_shader_desc_t *shaders;
     size_t shader_count;
     grape_transform_t transform;
@@ -55,6 +69,8 @@ typedef struct {
     .width = 0U, \
     .height = 0U, \
     .texture_mode = GRAPE_SURFACE_TEXTURE_STRETCH, \
+    .texture_filter = GRAPE_TEXTURE_FILTER_NEAREST, \
+    .aa = GRAPE_SURFACE_AA_NONE, \
     .shaders = NULL, \
     .shader_count = 0U, \
     .transform = GRAPE_TRANSFORM_DEFAULT(), \
@@ -69,6 +85,8 @@ typedef struct {
     .width = 0U, \
     .height = 0U, \
     .texture_mode = GRAPE_SURFACE_TEXTURE_STRETCH, \
+    .texture_filter = GRAPE_TEXTURE_FILTER_NEAREST, \
+    .aa = GRAPE_SURFACE_AA_NONE, \
     .shaders = NULL, \
     .shader_count = 0U, \
     .transform = GRAPE_TRANSFORM_DEFAULT(), \
@@ -85,6 +103,8 @@ esp_err_t grape_surface_destroy(grape_surface_t *surface);
 esp_err_t grape_surface_set_texture(grape_surface_t *surface, grape_texture_t *texture);
 esp_err_t grape_surface_set_size(grape_surface_t *surface, uint32_t width, uint32_t height);
 esp_err_t grape_surface_set_texture_mode(grape_surface_t *surface, grape_surface_texture_mode_t mode);
+esp_err_t grape_surface_set_texture_filter(grape_surface_t *surface, grape_texture_filter_t filter);
+esp_err_t grape_surface_set_aa(grape_surface_t *surface, grape_surface_aa_t aa);
 esp_err_t grape_surface_set_shaders(grape_surface_t *surface,
                                     const grape_surface_shader_desc_t *shaders,
                                     size_t shader_count);
@@ -104,6 +124,8 @@ const grape_transform_t *grape_surface_transform(const grape_surface_t *surface)
 uint32_t grape_surface_width(const grape_surface_t *surface);
 uint32_t grape_surface_height(const grape_surface_t *surface);
 grape_surface_texture_mode_t grape_surface_texture_mode(const grape_surface_t *surface);
+grape_texture_filter_t grape_surface_texture_filter(const grape_surface_t *surface);
+grape_surface_aa_t grape_surface_aa(const grape_surface_t *surface);
 int32_t grape_surface_z(const grape_surface_t *surface);
 uint8_t grape_surface_opacity(const grape_surface_t *surface);
 grape_color_t grape_surface_tint(const grape_surface_t *surface);
