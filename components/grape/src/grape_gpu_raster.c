@@ -127,10 +127,41 @@ static uint16_t gpu_depth_to_d16_fast(float depth)
     return (uint16_t)(depth + 0.5f);
 }
 
+static void gpu_setup_interp_plane(const grape_gpu_triangle_setup_t *setup,
+                                   const float values[3],
+                                   float inverse_area,
+                                   grape_gpu_interp_plane_t *plane)
+{
+    const float dx10 = setup->sx[1] - setup->sx[0];
+    const float dy10 = setup->sy[1] - setup->sy[0];
+    const float dx20 = setup->sx[2] - setup->sx[0];
+    const float dy20 = setup->sy[2] - setup->sy[0];
+    const float dv10 = values[1] - values[0];
+    const float dv20 = values[2] - values[0];
+    plane->step_x = (dv10 * dy20 - dv20 * dy10) * inverse_area;
+    plane->step_y = (dx10 * dv20 - dx20 * dv10) * inverse_area;
+    plane->row_start =
+        values[0] +
+        plane->step_x * (((float)setup->min_x + 0.5f) - setup->sx[0]) +
+        plane->step_y * (((float)setup->min_y + 0.5f) - setup->sy[0]);
+}
+
+static void gpu_swap_float(float *a, float *b)
+{
+    const float temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
 static bool gpu_setup_triangle(grape_gpu_context_t *context,
                                const grape_gpu_clip_vertex_t triangle[3],
                                grape_gpu_triangle_setup_t *setup)
 {
+    float inv_w[3];
+    float u_over_w[3];
+    float v_over_w[3];
+    float color_over_w[4][3];
+
     for (size_t i = 0U; i < 3U; ++i) {
         if (!gpu_clip_to_screen(
                 &context->viewport,
@@ -139,6 +170,15 @@ static bool gpu_setup_triangle(grape_gpu_context_t *context,
                 &setup->sy[i],
                 &setup->depth[i])) {
             return false;
+        }
+        if (triangle[i].w <= FLT_EPSILON) {
+            return false;
+        }
+        inv_w[i] = 1.0f / triangle[i].w;
+        u_over_w[i] = triangle[i].u * inv_w[i];
+        v_over_w[i] = triangle[i].v * inv_w[i];
+        for (uint32_t channel = 0U; channel < 4U; ++channel) {
+            color_over_w[channel][i] = triangle[i].color[channel] * inv_w[i];
         }
     }
 
@@ -163,16 +203,15 @@ static bool gpu_setup_triangle(grape_gpu_context_t *context,
         grape_gpu_fixed_point_t temp_fixed = setup->fixed[1];
         setup->fixed[1] = setup->fixed[2];
         setup->fixed[2] = temp_fixed;
-
-        float temp = setup->sx[1];
-        setup->sx[1] = setup->sx[2];
-        setup->sx[2] = temp;
-        temp = setup->sy[1];
-        setup->sy[1] = setup->sy[2];
-        setup->sy[2] = temp;
-        temp = setup->depth[1];
-        setup->depth[1] = setup->depth[2];
-        setup->depth[2] = temp;
+        gpu_swap_float(&setup->sx[1], &setup->sx[2]);
+        gpu_swap_float(&setup->sy[1], &setup->sy[2]);
+        gpu_swap_float(&setup->depth[1], &setup->depth[2]);
+        gpu_swap_float(&inv_w[1], &inv_w[2]);
+        gpu_swap_float(&u_over_w[1], &u_over_w[2]);
+        gpu_swap_float(&v_over_w[1], &v_over_w[2]);
+        for (uint32_t channel = 0U; channel < 4U; ++channel) {
+            gpu_swap_float(&color_over_w[channel][1], &color_over_w[channel][2]);
+        }
     }
 
     const float min_sx = fminf(setup->sx[0], fminf(setup->sx[1], setup->sx[2]));
@@ -247,6 +286,14 @@ static bool gpu_setup_triangle(grape_gpu_context_t *context,
         setup->depth_step_x * (((float)setup->min_x + 0.5f) - setup->sx[0]) +
         setup->depth_step_y * (((float)setup->min_y + 0.5f) - setup->sy[0]);
 
+    gpu_setup_interp_plane(setup, inv_w, inverse_area, &setup->inv_w);
+    gpu_setup_interp_plane(setup, u_over_w, inverse_area, &setup->u_over_w);
+    gpu_setup_interp_plane(setup, v_over_w, inverse_area, &setup->v_over_w);
+    for (uint32_t channel = 0U; channel < 4U; ++channel) {
+        gpu_setup_interp_plane(
+            setup, color_over_w[channel], inverse_area, &setup->color_over_w[channel]
+        );
+    }
     return true;
 }
 
@@ -478,6 +525,95 @@ static esp_err_t gpu_rasterize_depth_less_write(grape_gpu_context_t *context,
 }
 
 
+static bool gpu_fragment_is_shaded(grape_gpu_fragment_program_t program)
+{
+    return program == GRAPE_GPU_FRAGMENT_PROGRAM_VERTEX_COLOR ||
+           program == GRAPE_GPU_FRAGMENT_PROGRAM_TEXTURE ||
+           program == GRAPE_GPU_FRAGMENT_PROGRAM_TEXTURE_VERTEX_COLOR;
+}
+
+static esp_err_t gpu_rasterize_shaded(grape_gpu_context_t *context,
+                                      const grape_gpu_triangle_setup_t *setup)
+{
+    grape_texture_t *target = context->color_attachment;
+    grape_gpu_depth_buffer_t *depth_target = context->depth_attachment;
+    const grape_gpu_pipeline_t *pipeline = context->bound_pipeline;
+    const grape_gpu_depth_state_t depth_state = pipeline->desc.depth;
+    const grape_gpu_fragment_program_t program = pipeline->desc.fragment_program;
+    const grape_texture_t *texture = context->bound_textures[0];
+    const grape_gpu_sampler_desc_t *sampler = &pipeline->desc.sampler;
+    const int32_t min_x = setup->min_x;
+    const int32_t max_x = setup->max_x;
+    const int32_t min_y = setup->min_y;
+    const int32_t max_y = setup->max_y;
+    int64_t row_e0 = setup->row_e0;
+    int64_t row_e1 = setup->row_e1;
+    int64_t row_e2 = setup->row_e2;
+    float row_depth = setup->depth_row_start;
+    bool wrote_pixel = false;
+
+    for (int32_t y = min_y; y <= max_y; ++y) {
+        int64_t e0 = row_e0;
+        int64_t e1 = row_e1;
+        int64_t e2 = row_e2;
+        float depth_f = row_depth;
+        uint8_t *color_row = target->pixels + (size_t)y * target->stride;
+        uint16_t *depth_row = depth_target
+            ? (uint16_t *)((uint8_t *)depth_target->data + (size_t)y * depth_target->stride)
+            : NULL;
+
+        for (int32_t x = min_x; x <= max_x; ++x) {
+            if (e0 >= 0 && e1 >= 0 && e2 >= 0) {
+                const uint16_t incoming = gpu_depth_to_d16_fast(depth_f);
+                const bool pass = !depth_state.test_enable ||
+                    gpu_depth_compare(depth_state.compare_op, incoming, depth_row[x]);
+                if (pass) {
+                    grape_color_t color;
+                    esp_err_t ret = grape_gpu_shade_fragment(
+                        setup,
+                        program,
+                        texture,
+                        sampler,
+                        (float)x + 0.5f,
+                        (float)y + 0.5f,
+                        &color
+                    );
+                    if (ret != ESP_OK) {
+                        return ret;
+                    }
+                    if (depth_state.write_enable) {
+                        depth_row[x] = incoming;
+                    }
+                    uint8_t *pixel = color_row + (size_t)x * 4U;
+                    pixel[0] = color.r;
+                    pixel[1] = color.g;
+                    pixel[2] = color.b;
+                    pixel[3] = color.a;
+                    wrote_pixel = true;
+                }
+            }
+            e0 += setup->e0_step_x;
+            e1 += setup->e1_step_x;
+            e2 += setup->e2_step_x;
+            depth_f += setup->depth_step_x;
+        }
+        row_e0 += setup->e0_step_y;
+        row_e1 += setup->e1_step_y;
+        row_e2 += setup->e2_step_y;
+        row_depth += setup->depth_step_y;
+    }
+
+    if (wrote_pixel) {
+        grape_gpu_dirty_add(context, (grape_rect_t) {
+            .x = min_x,
+            .y = min_y,
+            .width = max_x - min_x + 1,
+            .height = max_y - min_y + 1,
+        });
+    }
+    return ESP_OK;
+}
+
 esp_err_t grape_gpu_raster_triangle(grape_gpu_context_t *context,
                                     const grape_gpu_clip_vertex_t triangle[3])
 {
@@ -491,11 +627,24 @@ esp_err_t grape_gpu_raster_triangle(grape_gpu_context_t *context,
         return ESP_OK;
     }
 
+    const grape_gpu_pipeline_t *pipeline = context->bound_pipeline;
     const grape_color_t color = gpu_fragment_color(context);
-    const grape_gpu_depth_state_t *depth = &context->bound_pipeline->desc.depth;
+    const grape_gpu_depth_state_t *depth = &pipeline->desc.depth;
 
     if (context->sample_count != GRAPE_GPU_SAMPLE_COUNT_1) {
-        return grape_gpu_tile_enqueue(context, &setup, color, *depth);
+        return grape_gpu_tile_enqueue(
+            context,
+            &setup,
+            color,
+            *depth,
+            pipeline->desc.fragment_program,
+            context->bound_textures[0],
+            pipeline->desc.sampler
+        );
+    }
+
+    if (gpu_fragment_is_shaded(pipeline->desc.fragment_program)) {
+        return gpu_rasterize_shaded(context, &setup);
     }
 
     if (!depth->test_enable && !depth->write_enable) {

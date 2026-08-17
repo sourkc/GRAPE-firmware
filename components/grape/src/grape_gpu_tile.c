@@ -385,7 +385,10 @@ esp_err_t grape_gpu_tile_begin(grape_gpu_context_t *context,
 esp_err_t grape_gpu_tile_enqueue(grape_gpu_context_t *context,
                                  const grape_gpu_triangle_setup_t *setup,
                                  grape_color_t color,
-                                 grape_gpu_depth_state_t depth)
+                                 grape_gpu_depth_state_t depth,
+                                 grape_gpu_fragment_program_t fragment_program,
+                                 grape_texture_t *texture,
+                                 grape_gpu_sampler_desc_t sampler)
 {
     if (!context || !setup || context->sample_count == GRAPE_GPU_SAMPLE_COUNT_1) {
         return ESP_ERR_INVALID_ARG;
@@ -402,6 +405,12 @@ esp_err_t grape_gpu_tile_enqueue(grape_gpu_context_t *context,
     primitive->setup = *setup;
     primitive->color = color;
     primitive->depth = depth;
+    primitive->fragment_program = fragment_program;
+    primitive->texture = texture;
+    primitive->sampler = sampler;
+    if (texture) {
+        texture->ref_count++;
+    }
     gpu_build_sample_biases(primitive, context->sample_count);
     return ESP_OK;
 }
@@ -542,6 +551,176 @@ static inline bool gpu_sample_covered_i32(const grape_gpu_prepared_triangle_t *p
     return e0 + primitive->sample_edge_bias[0][sample] >= 0 &&
            e1 + primitive->sample_edge_bias[1][sample] >= 0 &&
            e2 + primitive->sample_edge_bias[2][sample] >= 0;
+}
+static bool gpu_fragment_is_shaded_tile(grape_gpu_fragment_program_t program)
+{
+    return program == GRAPE_GPU_FRAGMENT_PROGRAM_VERTEX_COLOR ||
+           program == GRAPE_GPU_FRAGMENT_PROGRAM_TEXTURE ||
+           program == GRAPE_GPU_FRAGMENT_PROGRAM_TEXTURE_VERTEX_COLOR;
+}
+
+static uint32_t gpu_coverage_mask_i32(const grape_gpu_prepared_triangle_t *primitive,
+                                      uint32_t samples,
+                                      int32_t e0,
+                                      int32_t e1,
+                                      int32_t e2)
+{
+    if (gpu_all_samples_covered_i32(primitive, e0, e1, e2)) {
+        return (1U << samples) - 1U;
+    }
+
+    uint32_t mask = 0U;
+    for (uint32_t sample = 0U; sample < samples; ++sample) {
+        if (gpu_sample_covered_i32(primitive, sample, e0, e1, e2)) {
+            mask |= 1U << sample;
+        }
+    }
+    return mask;
+}
+
+static void gpu_coverage_centroid(uint32_t mask,
+                                  grape_gpu_sample_count_t sample_count,
+                                  float *out_dx,
+                                  float *out_dy)
+{
+    const uint32_t samples = (uint32_t)sample_count;
+    if (mask == ((1U << samples) - 1U)) {
+        *out_dx = 0.0f;
+        *out_dy = 0.0f;
+        return;
+    }
+
+    const int8_t *sample_x = NULL;
+    const int8_t *sample_y = NULL;
+    gpu_sample_offsets(sample_count, &sample_x, &sample_y);
+    int32_t sum_x = 0;
+    int32_t sum_y = 0;
+    uint32_t count = 0U;
+    for (uint32_t sample = 0U; sample < samples; ++sample) {
+        if ((mask & (1U << sample)) != 0U) {
+            sum_x += (int32_t)sample_x[sample] - GPU_SUBPIXEL_HALF;
+            sum_y += (int32_t)sample_y[sample] - GPU_SUBPIXEL_HALF;
+            ++count;
+        }
+    }
+    if (count == 0U) {
+        *out_dx = 0.0f;
+        *out_dy = 0.0f;
+        return;
+    }
+    *out_dx = (float)sum_x / ((float)count * (float)GPU_SUBPIXEL_SCALE);
+    *out_dy = (float)sum_y / ((float)count * (float)GPU_SUBPIXEL_SCALE);
+}
+
+static esp_err_t gpu_raster_tile_shaded_i32(grape_gpu_context_t *context,
+                                             const grape_gpu_prepared_triangle_t *primitive,
+                                             int32_t x0,
+                                             int32_t y0,
+                                             int32_t x1,
+                                             int32_t y1,
+                                             bool *out_wrote,
+                                             bool *out_depth_dirty)
+{
+    const uint32_t samples = (uint32_t)context->sample_count;
+    const uint32_t tile_stride = GRAPE_GPU_MSAA_TILE_SIZE * samples;
+    const int32_t dx0 = x0 - primitive->setup.min_x;
+    const int32_t dy0 = y0 - primitive->setup.min_y;
+    int32_t row_e0 = (int32_t)((int64_t)primitive->row_e[0] +
+                               (int64_t)primitive->edge_step_x[0] * dx0 +
+                               (int64_t)primitive->edge_step_y[0] * dy0);
+    int32_t row_e1 = (int32_t)((int64_t)primitive->row_e[1] +
+                               (int64_t)primitive->edge_step_x[1] * dx0 +
+                               (int64_t)primitive->edge_step_y[1] * dy0);
+    int32_t row_e2 = (int32_t)((int64_t)primitive->row_e[2] +
+                               (int64_t)primitive->edge_step_x[2] * dx0 +
+                               (int64_t)primitive->edge_step_y[2] * dy0);
+    int32_t row_depth = (int32_t)((int64_t)primitive->depth_row_start_fp +
+                                  (int64_t)primitive->depth_step_x_fp * dx0 +
+                                  (int64_t)primitive->depth_step_y_fp * dy0);
+    const grape_gpu_depth_state_t depth_state = primitive->depth;
+    bool wrote = false;
+
+    for (int32_t y = y0; y <= y1; ++y) {
+        int32_t e0 = row_e0;
+        int32_t e1 = row_e1;
+        int32_t e2 = row_e2;
+        int32_t depth_fp = row_depth;
+        const uint32_t local_y = (uint32_t)y & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
+        const uint32_t local_x0 = (uint32_t)x0 & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
+        uint32_t *color = context->tile_color + (size_t)local_y * tile_stride + local_x0 * samples;
+        uint16_t *depth = context->tile_depth
+            ? context->tile_depth + (size_t)local_y * tile_stride + local_x0 * samples
+            : NULL;
+
+        for (int32_t x = x0; x <= x1; ++x) {
+            const uint32_t coverage_mask = gpu_coverage_mask_i32(primitive, samples, e0, e1, e2);
+            if (coverage_mask != 0U) {
+                uint32_t pass_mask = 0U;
+                uint16_t incoming[4] = {0U, 0U, 0U, 0U};
+                for (uint32_t sample = 0U; sample < samples; ++sample) {
+                    const uint32_t bit = 1U << sample;
+                    if ((coverage_mask & bit) == 0U) {
+                        continue;
+                    }
+                    incoming[sample] = gpu_depth_fp_to_d16(
+                        depth_fp + primitive->sample_depth_bias_fp[sample]
+                    );
+                    if (!depth_state.test_enable ||
+                        gpu_depth_compare_tile(depth_state.compare_op, incoming[sample], depth[sample])) {
+                        pass_mask |= bit;
+                    }
+                }
+
+                if (pass_mask != 0U) {
+                    float centroid_x = 0.0f;
+                    float centroid_y = 0.0f;
+                    gpu_coverage_centroid(
+                        coverage_mask, context->sample_count, &centroid_x, &centroid_y
+                    );
+                    grape_color_t shaded;
+                    esp_err_t ret = grape_gpu_shade_fragment(
+                        &primitive->setup,
+                        primitive->fragment_program,
+                        primitive->texture,
+                        &primitive->sampler,
+                        (float)x + 0.5f + centroid_x,
+                        (float)y + 0.5f + centroid_y,
+                        &shaded
+                    );
+                    if (ret != ESP_OK) {
+                        return ret;
+                    }
+                    const uint32_t packed = gpu_pack_color(shaded);
+                    for (uint32_t sample = 0U; sample < samples; ++sample) {
+                        const uint32_t bit = 1U << sample;
+                        if ((pass_mask & bit) == 0U) {
+                            continue;
+                        }
+                        if (depth_state.write_enable) {
+                            depth[sample] = incoming[sample];
+                            *out_depth_dirty = true;
+                        }
+                        color[sample] = packed;
+                    }
+                    wrote = true;
+                }
+            }
+
+            color += samples;
+            depth += samples;
+            e0 += primitive->edge_step_x[0];
+            e1 += primitive->edge_step_x[1];
+            e2 += primitive->edge_step_x[2];
+            depth_fp += primitive->depth_step_x_fp;
+        }
+        row_e0 += primitive->edge_step_y[0];
+        row_e1 += primitive->edge_step_y[1];
+        row_e2 += primitive->edge_step_y[2];
+        row_depth += primitive->depth_step_y_fp;
+    }
+
+    *out_wrote = wrote;
+    return ESP_OK;
 }
 
 static bool gpu_raster_tile_color_only_i32(grape_gpu_context_t *context,
@@ -744,7 +923,9 @@ static bool gpu_raster_tile_depth_less_write_i32(grape_gpu_context_t *context,
         const uint32_t local_y = (uint32_t)y & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
         const uint32_t local_x0 = (uint32_t)x0 & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
         uint32_t *color = context->tile_color + (size_t)local_y * tile_stride + local_x0 * samples;
-        uint16_t *depth = context->tile_depth + (size_t)local_y * tile_stride + local_x0 * samples;
+        uint16_t *depth = context->tile_depth
+            ? context->tile_depth + (size_t)local_y * tile_stride + local_x0 * samples
+            : NULL;
 
         for (int32_t x = x0; x <= x1; ++x) {
             if (gpu_all_samples_covered_i32(primitive, e0, e1, e2)) {
@@ -919,7 +1100,9 @@ static bool gpu_raster_tile_depth_generic_i32(grape_gpu_context_t *context,
         const uint32_t local_y = (uint32_t)y & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
         const uint32_t local_x0 = (uint32_t)x0 & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
         uint32_t *color = context->tile_color + (size_t)local_y * tile_stride + local_x0 * samples;
-        uint16_t *depth = context->tile_depth + (size_t)local_y * tile_stride + local_x0 * samples;
+        uint16_t *depth = context->tile_depth
+            ? context->tile_depth + (size_t)local_y * tile_stride + local_x0 * samples
+            : NULL;
 
         for (int32_t x = x0; x <= x1; ++x) {
             const bool all_covered = gpu_all_samples_covered_i32(primitive, e0, e1, e2);
@@ -954,6 +1137,118 @@ static bool gpu_raster_tile_depth_generic_i32(grape_gpu_context_t *context,
         row_depth += depth_step_y;
     }
     return wrote;
+}
+
+static esp_err_t gpu_raster_tile_shaded_fallback(grape_gpu_context_t *context,
+                                                  const grape_gpu_prepared_triangle_t *primitive,
+                                                  int32_t x0,
+                                                  int32_t y0,
+                                                  int32_t x1,
+                                                  int32_t y1,
+                                                  bool *out_wrote,
+                                                  bool *out_depth_dirty)
+{
+    const grape_gpu_triangle_setup_t *setup = &primitive->setup;
+    const uint32_t samples = (uint32_t)context->sample_count;
+    const uint32_t tile_stride = GRAPE_GPU_MSAA_TILE_SIZE * samples;
+    const int32_t dx0 = x0 - setup->min_x;
+    const int32_t dy0 = y0 - setup->min_y;
+    int64_t row_e0 = setup->row_e0 + setup->e0_step_x * dx0 + setup->e0_step_y * dy0;
+    int64_t row_e1 = setup->row_e1 + setup->e1_step_x * dx0 + setup->e1_step_y * dy0;
+    int64_t row_e2 = setup->row_e2 + setup->e2_step_x * dx0 + setup->e2_step_y * dy0;
+    float row_depth = setup->depth_row_start + setup->depth_step_x * dx0 + setup->depth_step_y * dy0;
+    const grape_gpu_depth_state_t depth_state = primitive->depth;
+    bool wrote = false;
+
+    for (int32_t y = y0; y <= y1; ++y) {
+        int64_t e0 = row_e0;
+        int64_t e1 = row_e1;
+        int64_t e2 = row_e2;
+        float depth_f = row_depth;
+        const uint32_t local_y = (uint32_t)y & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
+        const uint32_t local_x0 = (uint32_t)x0 & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
+        uint32_t *color = context->tile_color + (size_t)local_y * tile_stride + local_x0 * samples;
+        uint16_t *depth = context->tile_depth
+            ? context->tile_depth + (size_t)local_y * tile_stride + local_x0 * samples
+            : NULL;
+
+        for (int32_t x = x0; x <= x1; ++x) {
+            uint32_t coverage_mask = 0U;
+            for (uint32_t sample = 0U; sample < samples; ++sample) {
+                if (e0 + primitive->sample_e0_bias_fallback[sample] >= 0 &&
+                    e1 + primitive->sample_e1_bias_fallback[sample] >= 0 &&
+                    e2 + primitive->sample_e2_bias_fallback[sample] >= 0) {
+                    coverage_mask |= 1U << sample;
+                }
+            }
+
+            if (coverage_mask != 0U) {
+                uint32_t pass_mask = 0U;
+                uint16_t incoming[4] = {0U, 0U, 0U, 0U};
+                for (uint32_t sample = 0U; sample < samples; ++sample) {
+                    const uint32_t bit = 1U << sample;
+                    if ((coverage_mask & bit) == 0U) {
+                        continue;
+                    }
+                    incoming[sample] = gpu_depth_to_d16_tile(
+                        depth_f + primitive->sample_depth_bias_fallback[sample]
+                    );
+                    if (!depth_state.test_enable ||
+                        gpu_depth_compare_tile(depth_state.compare_op, incoming[sample], depth[sample])) {
+                        pass_mask |= bit;
+                    }
+                }
+
+                if (pass_mask != 0U) {
+                    float centroid_x = 0.0f;
+                    float centroid_y = 0.0f;
+                    gpu_coverage_centroid(
+                        coverage_mask, context->sample_count, &centroid_x, &centroid_y
+                    );
+                    grape_color_t shaded;
+                    esp_err_t ret = grape_gpu_shade_fragment(
+                        setup,
+                        primitive->fragment_program,
+                        primitive->texture,
+                        &primitive->sampler,
+                        (float)x + 0.5f + centroid_x,
+                        (float)y + 0.5f + centroid_y,
+                        &shaded
+                    );
+                    if (ret != ESP_OK) {
+                        return ret;
+                    }
+                    const uint32_t packed = gpu_pack_color(shaded);
+                    for (uint32_t sample = 0U; sample < samples; ++sample) {
+                        const uint32_t bit = 1U << sample;
+                        if ((pass_mask & bit) == 0U) {
+                            continue;
+                        }
+                        if (depth_state.write_enable) {
+                            depth[sample] = incoming[sample];
+                            *out_depth_dirty = true;
+                        }
+                        color[sample] = packed;
+                    }
+                    wrote = true;
+                }
+            }
+
+            color += samples;
+            depth += samples;
+            e0 += setup->e0_step_x;
+            e1 += setup->e1_step_x;
+            e2 += setup->e2_step_x;
+            depth_f += setup->depth_step_x;
+        }
+        row_e0 += setup->e0_step_y;
+        row_e1 += setup->e1_step_y;
+        row_e2 += setup->e2_step_y;
+        row_depth += setup->depth_step_y;
+    }
+
+    *out_wrote = wrote;
+    return ESP_OK;
 }
 
 static bool gpu_raster_tile_color_only_fallback(grape_gpu_context_t *context,
@@ -1033,7 +1328,9 @@ static bool gpu_raster_tile_depth_less_write_fallback(grape_gpu_context_t *conte
         const uint32_t local_y = (uint32_t)y & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
         const uint32_t local_x0 = (uint32_t)x0 & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
         uint32_t *color = context->tile_color + (size_t)local_y * tile_stride + local_x0 * samples;
-        uint16_t *depth = context->tile_depth + (size_t)local_y * tile_stride + local_x0 * samples;
+        uint16_t *depth = context->tile_depth
+            ? context->tile_depth + (size_t)local_y * tile_stride + local_x0 * samples
+            : NULL;
 
         for (int32_t x = x0; x <= x1; ++x) {
             for (uint32_t sample = 0U; sample < samples; ++sample) {
@@ -1096,7 +1393,9 @@ static bool gpu_raster_tile_depth_generic_fallback(grape_gpu_context_t *context,
         const uint32_t local_y = (uint32_t)y & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
         const uint32_t local_x0 = (uint32_t)x0 & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
         uint32_t *color = context->tile_color + (size_t)local_y * tile_stride + local_x0 * samples;
-        uint16_t *depth = context->tile_depth + (size_t)local_y * tile_stride + local_x0 * samples;
+        uint16_t *depth = context->tile_depth
+            ? context->tile_depth + (size_t)local_y * tile_stride + local_x0 * samples
+            : NULL;
 
         for (int32_t x = x0; x <= x1; ++x) {
             for (uint32_t sample = 0U; sample < samples; ++sample) {
@@ -1274,7 +1573,18 @@ static esp_err_t gpu_render_tile(grape_gpu_context_t *context,
             const uint32_t packed = gpu_pack_color(primitive->color);
             const bool four_x = context->sample_count == GRAPE_GPU_SAMPLE_COUNT_4;
             bool wrote = false;
-            if (!primitive->depth.test_enable && !primitive->depth.write_enable) {
+            if (gpu_fragment_is_shaded_tile(primitive->fragment_program)) {
+                esp_err_t shaded_ret = primitive->raster_i32_valid
+                    ? gpu_raster_tile_shaded_i32(
+                        context, primitive, rx0, ry0, rx1, ry1, &wrote, &depth_dirty
+                    )
+                    : gpu_raster_tile_shaded_fallback(
+                        context, primitive, rx0, ry0, rx1, ry1, &wrote, &depth_dirty
+                    );
+                if (shaded_ret != ESP_OK) {
+                    return shaded_ret;
+                }
+            } else if (!primitive->depth.test_enable && !primitive->depth.write_enable) {
                 if (primitive->raster_i32_valid) {
                     wrote = four_x
                         ? gpu_raster_tile_color_only_4x_i32(
@@ -1336,6 +1646,20 @@ static esp_err_t gpu_render_tile(grape_gpu_context_t *context,
     return ESP_OK;
 }
 
+static void gpu_release_primitive_textures(grape_gpu_context_t *context)
+{
+    if (!context) {
+        return;
+    }
+    for (size_t i = 0U; i < context->tile_primitive_count; ++i) {
+        grape_texture_t *texture = context->tile_primitives[i].texture;
+        if (texture && texture->ref_count != 0U) {
+            texture->ref_count--;
+        }
+        context->tile_primitives[i].texture = NULL;
+    }
+}
+
 esp_err_t grape_gpu_tile_execute(grape_gpu_context_t *context)
 {
     GRAPE_TIME_SCOPE(GPU_TILE_EXECUTE);
@@ -1348,6 +1672,7 @@ esp_err_t grape_gpu_tile_execute(grape_gpu_context_t *context)
 
     esp_err_t ret = gpu_build_bins(context);
     if (ret != ESP_OK) {
+        gpu_release_primitive_textures(context);
         context->tile_primitive_count = 0U;
         return ret;
     }
@@ -1368,6 +1693,7 @@ esp_err_t grape_gpu_tile_execute(grape_gpu_context_t *context)
         }
     }
 
+    gpu_release_primitive_textures(context);
     context->tile_primitive_count = 0U;
     return ret;
 }
@@ -1378,6 +1704,7 @@ void grape_gpu_tile_release(grape_gpu_context_t *context)
         return;
     }
 
+    gpu_release_primitive_textures(context);
     free(context->tile_primitives);
     context->tile_primitives = NULL;
     context->tile_primitive_count = 0U;

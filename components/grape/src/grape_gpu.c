@@ -6,6 +6,27 @@
 #include "grape_gpu_internal.h"
 #include "grape_internal.h"
 
+static void gpu_unbind_textures(grape_gpu_context_t *context)
+{
+    if (!context) {
+        return;
+    }
+    for (uint32_t slot = 0U; slot < GRAPE_GPU_MAX_TEXTURE_SLOTS; ++slot) {
+        if (context->bound_textures[slot]) {
+            if (context->bound_textures[slot]->ref_count != 0U) {
+                context->bound_textures[slot]->ref_count--;
+            }
+            context->bound_textures[slot] = NULL;
+        }
+    }
+}
+
+static bool gpu_fragment_uses_texture(grape_gpu_fragment_program_t program)
+{
+    return program == GRAPE_GPU_FRAGMENT_PROGRAM_TEXTURE ||
+           program == GRAPE_GPU_FRAGMENT_PROGRAM_TEXTURE_VERTEX_COLOR;
+}
+
 
 grape_gpu_sample_count_t grape_gpu_sample_count_resolve(grape_gpu_sample_count_t sample_count)
 {
@@ -157,6 +178,7 @@ esp_err_t grape_gpu_context_destroy(grape_gpu_context_t *context)
         return ESP_ERR_INVALID_STATE;
     }
 
+    gpu_unbind_textures(context);
     grape_gpu_tile_release(context);
     free(context);
     return ESP_OK;
@@ -213,6 +235,7 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
     context->bound_pipeline = NULL;
     context->bound_vertex_buffer = NULL;
     context->bound_index_buffer = NULL;
+    gpu_unbind_textures(context);
     context->dirty_valid = false;
     context->viewport = (grape_gpu_viewport_t) {
         .x = 0.0f,
@@ -309,6 +332,7 @@ esp_err_t grape_gpu_end_render_pass(grape_gpu_context_t *context)
     context->bound_pipeline = NULL;
     context->bound_vertex_buffer = NULL;
     context->bound_index_buffer = NULL;
+    gpu_unbind_textures(context);
     context->dirty_valid = false;
     return ret;
 }
@@ -403,6 +427,34 @@ esp_err_t grape_gpu_bind_index_buffer(grape_gpu_context_t *context,
     return ESP_OK;
 }
 
+esp_err_t grape_gpu_bind_texture(grape_gpu_context_t *context,
+                                 uint32_t slot,
+                                 grape_texture_t *texture)
+{
+    if (!context || slot >= GRAPE_GPU_MAX_TEXTURE_SLOTS) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!context->render_pass_active) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (texture && (texture->context != context->grape || texture == context->color_attachment)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    grape_texture_t *previous = context->bound_textures[slot];
+    if (previous == texture) {
+        return ESP_OK;
+    }
+    if (texture) {
+        texture->ref_count++;
+    }
+    context->bound_textures[slot] = texture;
+    if (previous && previous->ref_count != 0U) {
+        previous->ref_count--;
+    }
+    return ESP_OK;
+}
+
 static esp_err_t gpu_validate_draw_state(const grape_gpu_context_t *context)
 {
     if (!context || !context->render_pass_active ||
@@ -412,6 +464,10 @@ static esp_err_t gpu_validate_draw_state(const grape_gpu_context_t *context)
 
     const grape_gpu_depth_state_t *depth = &context->bound_pipeline->desc.depth;
     if ((depth->test_enable || depth->write_enable) && !context->depth_attachment) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (gpu_fragment_uses_texture(context->bound_pipeline->desc.fragment_program) &&
+        !context->bound_textures[0]) {
         return ESP_ERR_INVALID_STATE;
     }
 

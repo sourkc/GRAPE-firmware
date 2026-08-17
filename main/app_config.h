@@ -23,9 +23,10 @@
  *   6 - aa
  *   7 - screenshot (AA scene + PNG/JPEG to SD)
  *   8 - aa_rotate_checker
- *   9 - gpu_3d_cube (M2.2b SRAM tile renderer, 4x MSAA)
+ *   9 - gpu_3d_cube (M2.2d optimized flat cube, 4x MSAA)
+ *  10 - gpu_3d_textured_cube (M3 perspective-correct textures)
  */
-#define GRAPE_APP_DEMO 9U
+#define GRAPE_APP_DEMO 10U
 
 /* Benchmark suites used when GRAPE_APP_MODE == GRAPE_APP_MODE_BENCHMARK. */
 #define GRAPE_APP_BENCHMARK_SUITE_MASK GRAPE_BENCHMARK_SUITE_ALL

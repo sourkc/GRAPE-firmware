@@ -12,6 +12,7 @@ extern "C" {
 
 #define GRAPE_GPU_MAX_VERTEX_ATTRIBUTES 8U
 #define GRAPE_GPU_MAX_PUSH_CONSTANT_BYTES 128U
+#define GRAPE_GPU_MAX_TEXTURE_SLOTS 4U
 
 typedef struct grape_gpu_context grape_gpu_context_t;
 typedef struct grape_gpu_buffer grape_gpu_buffer_t;
@@ -47,7 +48,26 @@ typedef enum {
 typedef enum {
     GRAPE_GPU_FRAGMENT_PROGRAM_SOLID_COLOR = 0,
     GRAPE_GPU_FRAGMENT_PROGRAM_PUSH_COLOR,
+    GRAPE_GPU_FRAGMENT_PROGRAM_VERTEX_COLOR,
+    GRAPE_GPU_FRAGMENT_PROGRAM_TEXTURE,
+    GRAPE_GPU_FRAGMENT_PROGRAM_TEXTURE_VERTEX_COLOR,
 } grape_gpu_fragment_program_t;
+
+typedef enum {
+    GRAPE_GPU_FILTER_NEAREST = 0,
+    GRAPE_GPU_FILTER_LINEAR,
+} grape_gpu_filter_t;
+
+typedef enum {
+    GRAPE_GPU_ADDRESS_CLAMP = 0,
+    GRAPE_GPU_ADDRESS_REPEAT,
+} grape_gpu_address_mode_t;
+
+typedef struct {
+    grape_gpu_filter_t filter;
+    grape_gpu_address_mode_t address_u;
+    grape_gpu_address_mode_t address_v;
+} grape_gpu_sampler_desc_t;
 
 typedef enum {
     GRAPE_GPU_CULL_NONE = 0,
@@ -103,6 +123,13 @@ typedef struct {
     grape_color_t color;
 } grape_gpu_builtin_constants_t;
 
+/*
+ * Built-in vertex-program ABI locations:
+ *   0 - position (F32x2/F32x3/F32x4)
+ *   1 - normalized texture coordinates UV (F32x2)
+ *   2 - straight normalized vertex color RGBA (F32x4)
+ * UV/color are smooth perspective-correct varyings and survive clipping.
+ */
 typedef struct {
     uint32_t location;
     grape_gpu_vertex_format_t format;
@@ -145,6 +172,11 @@ typedef struct {
     grape_gpu_cull_mode_t cull_mode;
     grape_gpu_front_face_t front_face;
     grape_gpu_depth_state_t depth;
+    /*
+     * Sampler used by built-in texture fragment programs. UVs are normalized:
+     * (0,0) is the top-left texture edge and (1,1) the bottom-right edge.
+     */
+    grape_gpu_sampler_desc_t sampler;
     /* 0 is accepted as GRAPE_GPU_SAMPLE_COUNT_1 for backwards compatibility. */
     grape_gpu_sample_count_t sample_count;
 } grape_gpu_pipeline_desc_t;
@@ -215,6 +247,10 @@ esp_err_t grape_gpu_bind_vertex_buffer(grape_gpu_context_t *context,
 esp_err_t grape_gpu_bind_index_buffer(grape_gpu_context_t *context,
                                       grape_gpu_buffer_t *buffer,
                                       grape_gpu_index_type_t index_type);
+/* Built-in texture fragment programs currently sample slot 0. */
+esp_err_t grape_gpu_bind_texture(grape_gpu_context_t *context,
+                                 uint32_t slot,
+                                 grape_texture_t *texture);
 esp_err_t grape_gpu_draw(grape_gpu_context_t *context,
                          uint32_t first_vertex,
                          uint32_t vertex_count);

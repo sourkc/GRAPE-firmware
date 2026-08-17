@@ -10,7 +10,16 @@ typedef struct {
     float y;
     float z;
     float w;
+    float u;
+    float v;
+    float color[4];
 } grape_gpu_clip_vertex_t;
+
+typedef struct {
+    float row_start;
+    float step_x;
+    float step_y;
+} grape_gpu_interp_plane_t;
 
 typedef struct {
     int32_t x;
@@ -38,6 +47,10 @@ typedef struct {
     float depth_row_start;
     float depth_step_x;
     float depth_step_y;
+    grape_gpu_interp_plane_t inv_w;
+    grape_gpu_interp_plane_t u_over_w;
+    grape_gpu_interp_plane_t v_over_w;
+    grape_gpu_interp_plane_t color_over_w[4];
 } grape_gpu_triangle_setup_t;
 
 typedef struct {
@@ -61,6 +74,9 @@ typedef struct {
 
     grape_color_t color;
     grape_gpu_depth_state_t depth;
+    grape_gpu_fragment_program_t fragment_program;
+    grape_texture_t *texture;
+    grape_gpu_sampler_desc_t sampler;
     bool raster_i32_valid;
 } grape_gpu_prepared_triangle_t;
 
@@ -97,6 +113,8 @@ struct grape_gpu_pipeline {
     struct grape_gpu_pipeline *next;
     grape_gpu_pipeline_desc_t desc;
     uint32_t position_attribute_index;
+    uint32_t texcoord_attribute_index;
+    uint32_t color_attribute_index;
 };
 
 struct grape_gpu_context {
@@ -110,6 +128,7 @@ struct grape_gpu_context {
     grape_gpu_buffer_t *bound_vertex_buffer;
     grape_gpu_buffer_t *bound_index_buffer;
     grape_gpu_index_type_t bound_index_type;
+    grape_texture_t *bound_textures[GRAPE_GPU_MAX_TEXTURE_SLOTS];
     grape_gpu_viewport_t viewport;
     uint8_t push_constants[GRAPE_GPU_MAX_PUSH_CONSTANT_BYTES];
     grape_gpu_prepared_triangle_t *tile_primitives;
@@ -146,7 +165,10 @@ esp_err_t grape_gpu_tile_begin(grape_gpu_context_t *context,
 esp_err_t grape_gpu_tile_enqueue(grape_gpu_context_t *context,
                                  const grape_gpu_triangle_setup_t *setup,
                                  grape_color_t color,
-                                 grape_gpu_depth_state_t depth);
+                                 grape_gpu_depth_state_t depth,
+                                 grape_gpu_fragment_program_t fragment_program,
+                                 grape_texture_t *texture,
+                                 grape_gpu_sampler_desc_t sampler);
 esp_err_t grape_gpu_tile_execute(grape_gpu_context_t *context);
 void grape_gpu_tile_release(grape_gpu_context_t *context);
 
@@ -163,6 +185,20 @@ void grape_gpu_depth_store_tile(grape_gpu_depth_buffer_t *buffer,
                                 uint32_t tile_y,
                                 const uint16_t *src,
                                 uint32_t src_stride_values);
+
+esp_err_t grape_gpu_shade_fragment(const grape_gpu_triangle_setup_t *setup,
+                                  grape_gpu_fragment_program_t program,
+                                  const grape_texture_t *texture,
+                                  const grape_gpu_sampler_desc_t *sampler,
+                                  float screen_x,
+                                  float screen_y,
+                                  grape_color_t *out_color);
+
+esp_err_t grape_gpu_sample_texture(const grape_texture_t *texture,
+                                   const grape_gpu_sampler_desc_t *sampler,
+                                   float u,
+                                   float v,
+                                   grape_color_t *out_color);
 
 esp_err_t grape_gpu_vertex_fetch_transform(const grape_gpu_context_t *context,
                                            uint32_t vertex_index,

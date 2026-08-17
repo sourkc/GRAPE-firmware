@@ -21,6 +21,7 @@ typedef enum {
     GRAPE_DEMO_SCREENSHOT = 7,
     GRAPE_DEMO_AA_ROTATE_CHECKER = 8,
     GRAPE_DEMO_GPU_3D_CUBE = 9,
+    GRAPE_DEMO_GPU_3D_TEXTURED_CUBE = 10,
 } grape_demo_id_t;
 
 typedef void (*grape_demo_configure_fn)(grape_config_t *config);

@@ -67,6 +67,12 @@ static const grape_demo_t s_demos[] = {
         .configure = NULL,
         .run = grape_demo_gpu_3d_cube_run,
     },
+    {
+        .id = GRAPE_DEMO_GPU_3D_TEXTURED_CUBE,
+        .name = "gpu_3d_textured_cube",
+        .configure = NULL,
+        .run = grape_demo_gpu_3d_textured_cube_run,
+    },
 };
 
 size_t grape_demo_count(void)
