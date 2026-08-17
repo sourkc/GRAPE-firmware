@@ -16,14 +16,32 @@ size_t grape_gpu_vertex_format_size_internal(grape_gpu_vertex_format_t format)
     }
 }
 
+size_t grape_gpu_index_type_size_internal(grape_gpu_index_type_t type)
+{
+    switch (type) {
+        case GRAPE_GPU_INDEX_U16:
+            return sizeof(uint16_t);
+        case GRAPE_GPU_INDEX_U32:
+            return sizeof(uint32_t);
+        default:
+            return 0U;
+    }
+}
+
 esp_err_t grape_gpu_pipeline_create(grape_gpu_context_t *context,
                                     const grape_gpu_pipeline_desc_t *desc,
                                     grape_gpu_pipeline_t **out_pipeline)
 {
     if (!context || !desc || !out_pipeline ||
         desc->topology != GRAPE_GPU_TOPOLOGY_TRIANGLE_LIST ||
-        desc->vertex_program != GRAPE_GPU_VERTEX_PROGRAM_CLIP_SPACE ||
-        desc->fragment_program != GRAPE_GPU_FRAGMENT_PROGRAM_SOLID_COLOR ||
+        desc->vertex_program < GRAPE_GPU_VERTEX_PROGRAM_CLIP_SPACE ||
+        desc->vertex_program > GRAPE_GPU_VERTEX_PROGRAM_MVP ||
+        desc->fragment_program < GRAPE_GPU_FRAGMENT_PROGRAM_SOLID_COLOR ||
+        desc->fragment_program > GRAPE_GPU_FRAGMENT_PROGRAM_PUSH_COLOR ||
+        desc->cull_mode < GRAPE_GPU_CULL_NONE || desc->cull_mode > GRAPE_GPU_CULL_BACK ||
+        desc->front_face < GRAPE_GPU_FRONT_FACE_CCW || desc->front_face > GRAPE_GPU_FRONT_FACE_CW ||
+        desc->depth.compare_op < GRAPE_GPU_COMPARE_LESS ||
+        desc->depth.compare_op > GRAPE_GPU_COMPARE_ALWAYS ||
         desc->vertex_layout.stride == 0U ||
         desc->vertex_layout.attribute_count == 0U ||
         desc->vertex_layout.attribute_count > GRAPE_GPU_MAX_VERTEX_ATTRIBUTES) {

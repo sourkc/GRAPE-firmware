@@ -22,8 +22,10 @@
  *   5 - surface_features
  *   6 - aa
  *   7 - screenshot (AA scene + PNG/JPEG to SD)
+ *   8 - aa_rotate_checker
+ *   9 - gpu_3d_cube
  */
-#define GRAPE_APP_DEMO 7U
+#define GRAPE_APP_DEMO 9U
 
 /* Benchmark suites used when GRAPE_APP_MODE == GRAPE_APP_MODE_BENCHMARK. */
 #define GRAPE_APP_BENCHMARK_SUITE_MASK GRAPE_BENCHMARK_SUITE_ALL

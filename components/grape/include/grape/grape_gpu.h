@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -10,10 +11,12 @@ extern "C" {
 #endif
 
 #define GRAPE_GPU_MAX_VERTEX_ATTRIBUTES 8U
+#define GRAPE_GPU_MAX_PUSH_CONSTANT_BYTES 128U
 
 typedef struct grape_gpu_context grape_gpu_context_t;
 typedef struct grape_gpu_buffer grape_gpu_buffer_t;
 typedef struct grape_gpu_pipeline grape_gpu_pipeline_t;
+typedef struct grape_gpu_depth_buffer grape_gpu_depth_buffer_t;
 
 typedef enum {
     GRAPE_GPU_BUFFER_VERTEX = 0,
@@ -28,21 +31,71 @@ typedef enum {
 } grape_gpu_vertex_format_t;
 
 typedef enum {
+    GRAPE_GPU_INDEX_U16 = 0,
+    GRAPE_GPU_INDEX_U32,
+} grape_gpu_index_type_t;
+
+typedef enum {
     GRAPE_GPU_TOPOLOGY_TRIANGLE_LIST = 0,
 } grape_gpu_primitive_topology_t;
 
 typedef enum {
     GRAPE_GPU_VERTEX_PROGRAM_CLIP_SPACE = 0,
+    GRAPE_GPU_VERTEX_PROGRAM_MVP,
 } grape_gpu_vertex_program_t;
 
 typedef enum {
     GRAPE_GPU_FRAGMENT_PROGRAM_SOLID_COLOR = 0,
+    GRAPE_GPU_FRAGMENT_PROGRAM_PUSH_COLOR,
 } grape_gpu_fragment_program_t;
+
+typedef enum {
+    GRAPE_GPU_CULL_NONE = 0,
+    GRAPE_GPU_CULL_FRONT,
+    GRAPE_GPU_CULL_BACK,
+} grape_gpu_cull_mode_t;
+
+typedef enum {
+    GRAPE_GPU_FRONT_FACE_CCW = 0,
+    GRAPE_GPU_FRONT_FACE_CW,
+} grape_gpu_front_face_t;
+
+typedef enum {
+    GRAPE_GPU_COMPARE_LESS = 0,
+    GRAPE_GPU_COMPARE_LEQUAL,
+    GRAPE_GPU_COMPARE_EQUAL,
+    GRAPE_GPU_COMPARE_GEQUAL,
+    GRAPE_GPU_COMPARE_GREATER,
+    GRAPE_GPU_COMPARE_NEVER,
+    GRAPE_GPU_COMPARE_ALWAYS,
+} grape_gpu_compare_op_t;
+
+typedef enum {
+    GRAPE_GPU_DEPTH_D16 = 0,
+} grape_gpu_depth_format_t;
 
 typedef enum {
     GRAPE_GPU_LOAD_OP_LOAD = 0,
     GRAPE_GPU_LOAD_OP_CLEAR,
 } grape_gpu_load_op_t;
+
+/* Row-major matrix multiplied by a column vector. MVP output uses
+ * -w <= x <= w, -w <= y <= w, 0 <= z <= w clip space. */
+typedef struct {
+    float m[16];
+} grape_gpu_mat4_t;
+
+/*
+ * Built-in program push-constant ABI.
+ *
+ * GRAPE_GPU_VERTEX_PROGRAM_MVP reads mvp.
+ * GRAPE_GPU_FRAGMENT_PROGRAM_PUSH_COLOR reads color.
+ * Applications may still use grape_gpu_set_push_constants() directly.
+ */
+typedef struct {
+    grape_gpu_mat4_t mvp;
+    grape_color_t color;
+} grape_gpu_builtin_constants_t;
 
 typedef struct {
     uint32_t location;
@@ -63,17 +116,36 @@ typedef struct {
 } grape_gpu_buffer_desc_t;
 
 typedef struct {
+    uint32_t width;
+    uint32_t height;
+    grape_gpu_depth_format_t format;
+    grape_memory_t memory;
+} grape_gpu_depth_buffer_desc_t;
+
+typedef struct {
+    bool test_enable;
+    bool write_enable;
+    grape_gpu_compare_op_t compare_op;
+} grape_gpu_depth_state_t;
+
+typedef struct {
     grape_gpu_vertex_layout_t vertex_layout;
     grape_gpu_primitive_topology_t topology;
     grape_gpu_vertex_program_t vertex_program;
     grape_gpu_fragment_program_t fragment_program;
     grape_color_t solid_color;
+    grape_gpu_cull_mode_t cull_mode;
+    grape_gpu_front_face_t front_face;
+    grape_gpu_depth_state_t depth;
 } grape_gpu_pipeline_desc_t;
 
 typedef struct {
     grape_texture_t *color_attachment;
     grape_gpu_load_op_t color_load_op;
     grape_color_t clear_color;
+    grape_gpu_depth_buffer_t *depth_attachment;
+    grape_gpu_load_op_t depth_load_op;
+    float clear_depth;
 } grape_gpu_render_pass_desc_t;
 
 typedef struct {
@@ -98,6 +170,13 @@ esp_err_t grape_gpu_buffer_write(grape_gpu_buffer_t *buffer,
                                  size_t size);
 size_t grape_gpu_buffer_size(const grape_gpu_buffer_t *buffer);
 
+esp_err_t grape_gpu_depth_buffer_create(grape_gpu_context_t *context,
+                                        const grape_gpu_depth_buffer_desc_t *desc,
+                                        grape_gpu_depth_buffer_t **out_buffer);
+esp_err_t grape_gpu_depth_buffer_destroy(grape_gpu_depth_buffer_t *buffer);
+uint32_t grape_gpu_depth_buffer_width(const grape_gpu_depth_buffer_t *buffer);
+uint32_t grape_gpu_depth_buffer_height(const grape_gpu_depth_buffer_t *buffer);
+
 esp_err_t grape_gpu_pipeline_create(grape_gpu_context_t *context,
                                     const grape_gpu_pipeline_desc_t *desc,
                                     grape_gpu_pipeline_t **out_pipeline);
@@ -108,13 +187,24 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
 esp_err_t grape_gpu_end_render_pass(grape_gpu_context_t *context);
 esp_err_t grape_gpu_set_viewport(grape_gpu_context_t *context,
                                  const grape_gpu_viewport_t *viewport);
+esp_err_t grape_gpu_set_push_constants(grape_gpu_context_t *context,
+                                       uint32_t offset,
+                                       const void *data,
+                                       size_t size);
 esp_err_t grape_gpu_bind_pipeline(grape_gpu_context_t *context,
                                   grape_gpu_pipeline_t *pipeline);
 esp_err_t grape_gpu_bind_vertex_buffer(grape_gpu_context_t *context,
                                        grape_gpu_buffer_t *buffer);
+esp_err_t grape_gpu_bind_index_buffer(grape_gpu_context_t *context,
+                                      grape_gpu_buffer_t *buffer,
+                                      grape_gpu_index_type_t index_type);
 esp_err_t grape_gpu_draw(grape_gpu_context_t *context,
                          uint32_t first_vertex,
                          uint32_t vertex_count);
+esp_err_t grape_gpu_draw_indexed(grape_gpu_context_t *context,
+                                 uint32_t first_index,
+                                 uint32_t index_count,
+                                 int32_t vertex_offset);
 
 #ifdef __cplusplus
 }

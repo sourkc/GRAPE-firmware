@@ -1,5 +1,7 @@
 #include <math.h>
+#include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "grape_gpu_internal.h"
 #include "grape_internal.h"
@@ -23,6 +25,17 @@ static bool gpu_viewport_valid(const grape_gpu_viewport_t *viewport)
 static bool gpu_color_format_supported(grape_pixel_format_t format)
 {
     return format == GRAPE_PIXEL_FORMAT_RGBA8888;
+}
+
+static uint16_t gpu_depth_to_d16(float depth)
+{
+    if (depth <= 0.0f) {
+        return 0U;
+    }
+    if (depth >= 1.0f) {
+        return UINT16_MAX;
+    }
+    return (uint16_t)lroundf(depth * 65535.0f);
 }
 
 void grape_gpu_dirty_add(grape_gpu_context_t *context, grape_rect_t rect)
@@ -54,6 +67,35 @@ static void gpu_clear_rgba8888(grape_texture_t *texture, grape_color_t color)
     }
 }
 
+static void gpu_clear_d16(grape_gpu_depth_buffer_t *buffer, float clear_depth)
+{
+    const uint16_t value = gpu_depth_to_d16(clear_depth);
+    for (uint32_t y = 0U; y < buffer->height; ++y) {
+        uint16_t *row = (uint16_t *)((uint8_t *)buffer->data + (size_t)y * buffer->stride);
+        for (uint32_t x = 0U; x < buffer->width; ++x) {
+            row[x] = value;
+        }
+    }
+}
+
+static void gpu_init_default_push_constants(grape_gpu_context_t *context)
+{
+    grape_gpu_builtin_constants_t constants = {
+        .mvp = {
+            .m = {
+                1.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 1.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 1.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, 1.0f,
+            },
+        },
+        .color = { .r = 255, .g = 255, .b = 255, .a = 255 },
+    };
+
+    memset(context->push_constants, 0, sizeof(context->push_constants));
+    memcpy(context->push_constants, &constants, sizeof(constants));
+}
+
 esp_err_t grape_gpu_context_create(grape_context_t *grape, grape_gpu_context_t **out_context)
 {
     if (!grape || !out_context) {
@@ -66,6 +108,7 @@ esp_err_t grape_gpu_context_create(grape_context_t *grape, grape_gpu_context_t *
     }
 
     context->grape = grape;
+    gpu_init_default_push_constants(context);
     *out_context = context;
     return ESP_OK;
 }
@@ -75,7 +118,7 @@ esp_err_t grape_gpu_context_destroy(grape_gpu_context_t *context)
     if (!context) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (context->render_pass_active || context->buffers || context->pipelines) {
+    if (context->render_pass_active || context->buffers || context->depth_buffers || context->pipelines) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -103,9 +146,27 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
         return ESP_ERR_NOT_SUPPORTED;
     }
 
+    if (desc->depth_attachment) {
+        if (desc->depth_attachment->context != context ||
+            desc->depth_attachment->width != desc->color_attachment->width ||
+            desc->depth_attachment->height != desc->color_attachment->height ||
+            desc->depth_attachment->format != GRAPE_GPU_DEPTH_D16 ||
+            desc->depth_load_op < GRAPE_GPU_LOAD_OP_LOAD ||
+            desc->depth_load_op > GRAPE_GPU_LOAD_OP_CLEAR) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (desc->depth_load_op == GRAPE_GPU_LOAD_OP_CLEAR &&
+            (!isfinite(desc->clear_depth) ||
+             desc->clear_depth < 0.0f || desc->clear_depth > 1.0f)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+
     context->color_attachment = desc->color_attachment;
+    context->depth_attachment = desc->depth_attachment;
     context->bound_pipeline = NULL;
     context->bound_vertex_buffer = NULL;
+    context->bound_index_buffer = NULL;
     context->dirty_valid = false;
     context->viewport = (grape_gpu_viewport_t) {
         .x = 0.0f,
@@ -125,6 +186,10 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
             .width = (int32_t)desc->color_attachment->width,
             .height = (int32_t)desc->color_attachment->height,
         });
+    }
+
+    if (desc->depth_attachment && desc->depth_load_op == GRAPE_GPU_LOAD_OP_CLEAR) {
+        gpu_clear_d16(desc->depth_attachment, desc->clear_depth);
     }
 
     return ESP_OK;
@@ -150,8 +215,10 @@ esp_err_t grape_gpu_end_render_pass(grape_gpu_context_t *context)
 
     context->render_pass_active = false;
     context->color_attachment = NULL;
+    context->depth_attachment = NULL;
     context->bound_pipeline = NULL;
     context->bound_vertex_buffer = NULL;
+    context->bound_index_buffer = NULL;
     context->dirty_valid = false;
     return ret;
 }
@@ -170,6 +237,22 @@ esp_err_t grape_gpu_set_viewport(grape_gpu_context_t *context,
     }
 
     context->viewport = *viewport;
+    return ESP_OK;
+}
+
+esp_err_t grape_gpu_set_push_constants(grape_gpu_context_t *context,
+                                       uint32_t offset,
+                                       const void *data,
+                                       size_t size)
+{
+    if (!context || (!data && size != 0U) || offset > GRAPE_GPU_MAX_PUSH_CONSTANT_BYTES ||
+        size > GRAPE_GPU_MAX_PUSH_CONSTANT_BYTES - offset) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (size != 0U) {
+        memcpy(context->push_constants + offset, data, size);
+    }
     return ESP_OK;
 }
 
@@ -207,17 +290,71 @@ esp_err_t grape_gpu_bind_vertex_buffer(grape_gpu_context_t *context,
     return ESP_OK;
 }
 
-esp_err_t grape_gpu_draw(grape_gpu_context_t *context,
-                         uint32_t first_vertex,
-                         uint32_t vertex_count)
+esp_err_t grape_gpu_bind_index_buffer(grape_gpu_context_t *context,
+                                      grape_gpu_buffer_t *buffer,
+                                      grape_gpu_index_type_t index_type)
+{
+    if (!context || !buffer ||
+        index_type < GRAPE_GPU_INDEX_U16 || index_type > GRAPE_GPU_INDEX_U32) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!context->render_pass_active) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (buffer->context != context || buffer->usage != GRAPE_GPU_BUFFER_INDEX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    context->bound_index_buffer = buffer;
+    context->bound_index_type = index_type;
+    return ESP_OK;
+}
+
+static esp_err_t gpu_validate_draw_state(const grape_gpu_context_t *context)
 {
     if (!context || !context->render_pass_active ||
         !context->bound_pipeline || !context->bound_vertex_buffer) {
         return ESP_ERR_INVALID_STATE;
+    }
+
+    const grape_gpu_depth_state_t *depth = &context->bound_pipeline->desc.depth;
+    if ((depth->test_enable || depth->write_enable) && !context->depth_attachment) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t grape_gpu_draw(grape_gpu_context_t *context,
+                         uint32_t first_vertex,
+                         uint32_t vertex_count)
+{
+    esp_err_t ret = gpu_validate_draw_state(context);
+    if (ret != ESP_OK) {
+        return ret;
     }
     if (vertex_count == 0U || vertex_count % 3U != 0U) {
         return ESP_ERR_INVALID_ARG;
     }
 
     return grape_gpu_raster_draw(context, first_vertex, vertex_count);
+}
+
+esp_err_t grape_gpu_draw_indexed(grape_gpu_context_t *context,
+                                 uint32_t first_index,
+                                 uint32_t index_count,
+                                 int32_t vertex_offset)
+{
+    esp_err_t ret = gpu_validate_draw_state(context);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    if (!context->bound_index_buffer) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (index_count == 0U || index_count % 3U != 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return grape_gpu_raster_draw_indexed(context, first_index, index_count, vertex_offset);
 }

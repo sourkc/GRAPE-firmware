@@ -64,7 +64,8 @@ esp_err_t grape_gpu_buffer_destroy(grape_gpu_buffer_t *buffer)
     }
 
     grape_gpu_context_t *context = buffer->context;
-    if (context->render_pass_active && context->bound_vertex_buffer == buffer) {
+    if (context->render_pass_active &&
+        (context->bound_vertex_buffer == buffer || context->bound_index_buffer == buffer)) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -79,6 +80,9 @@ esp_err_t grape_gpu_buffer_destroy(grape_gpu_buffer_t *buffer)
     *cursor = buffer->next;
     if (context->bound_vertex_buffer == buffer) {
         context->bound_vertex_buffer = NULL;
+    }
+    if (context->bound_index_buffer == buffer) {
+        context->bound_index_buffer = NULL;
     }
     heap_caps_free(buffer->data);
     free(buffer);

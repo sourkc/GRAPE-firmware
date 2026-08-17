@@ -55,6 +55,18 @@ static const grape_demo_t s_demos[] = {
         .configure = NULL,
         .run = grape_demo_screenshot_run,
     },
+    {
+        .id = GRAPE_DEMO_AA_ROTATE_CHECKER,
+        .name = "aa_rotate_checker",
+        .configure = NULL,
+        .run = grape_demo_aa_rotate_checker_run,
+    },
+    {
+        .id = GRAPE_DEMO_GPU_3D_CUBE,
+        .name = "gpu_3d_cube",
+        .configure = NULL,
+        .run = grape_demo_gpu_3d_cube_run,
+    },
 };
 
 size_t grape_demo_count(void)
