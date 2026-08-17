@@ -37,6 +37,12 @@ static const grape_demo_t s_demos[] = {
         .configure = NULL,
         .run = grape_demo_gpu_3d_triangle_run,
     },
+    {
+        .id = GRAPE_DEMO_SURFACE_FEATURES,
+        .name = "surface_features",
+        .configure = NULL,
+        .run = grape_demo_surface_features_run,
+    },
 };
 
 size_t grape_demo_count(void)

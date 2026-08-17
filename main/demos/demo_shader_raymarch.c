@@ -60,7 +60,7 @@ static esp_err_t prepare_shader_demo(grape_context_t *grape)
         return ret;
     }
 
-    ret = grape_surface_create(grape, s_shader_demo_texture, &s_shader_demo_surface);
+    ret = grape_surface_create(grape, &GRAPE_SURFACE_DESC_TEXTURE(s_shader_demo_texture), &s_shader_demo_surface);
     if (ret != ESP_OK) {
         return ret;
     }

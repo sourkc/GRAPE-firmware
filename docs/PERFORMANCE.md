@@ -81,3 +81,14 @@ improve performance in hot paths.
 
 **NOTICE: Please always run the benchmark before committing this change, there is 
 no guarantee that this fix works**
+
+### Some operations require forced caching
+In `grape_compositor.c` we do 
+```c++
+const float local_x_step = surface->local_x_from_screen_x;
+const float local_y_step = surface->local_y_from_screen_x;
+```
+Because otherwise GCC might not cache them before the loop properly and instead
+reload `surface->local_x_from_screen_x` and `surface->local_y_from_screen_x`
+from memory on every pixel iteration instead of keeping them in
+registers for the duration of the loop

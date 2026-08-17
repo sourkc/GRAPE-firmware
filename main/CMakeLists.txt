@@ -7,6 +7,7 @@ idf_component_register(
         "demos/demo_font.c"
         "demos/demo_vector_svg.c"
         "demos/demo_gpu_3d_triangle.c"
+        "demos/demo_surface_features.c"
     INCLUDE_DIRS
         "."
         "demos"

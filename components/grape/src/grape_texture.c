@@ -443,7 +443,7 @@ esp_err_t grape_texture_invalidate_rect(grape_texture_t *texture,
         }
 
         esp_err_t ret;
-        if (surface->shader) {
+        if (surface->shader_count > 0U || !surface->texture_mapping_identity) {
             ret = grape_damage_add_surface_coverage(surface);
         } else {
             ret = grape_damage_add(

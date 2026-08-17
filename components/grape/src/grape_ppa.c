@@ -519,6 +519,7 @@ esp_err_t grape_ppa_blend_surface(grape_context_t *context, const grape_surface_
 
     if (!grape_feature_is_active(context, GRAPE_FEATURE_PPA_A8_BLEND) ||
         !context->ppa_blend || !surface->texture ||
+        !surface->texture_mapping_identity ||
         surface->texture->format != GRAPE_PIXEL_FORMAT_A8 ||
         !is_identity_linear_transform(surface)) {
         return ESP_OK;

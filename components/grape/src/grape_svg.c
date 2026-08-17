@@ -549,7 +549,7 @@ static esp_err_t svg_xml_add_path(grape_svg_xml_state_t *state, const XML_Char *
         return ret;
     }
 
-    ret = grape_surface_create(state->document->context, raster.texture, &surface);
+    ret = grape_surface_create(state->document->context, &GRAPE_SURFACE_DESC_TEXTURE(raster.texture), &surface);
     if (ret != ESP_OK) {
         grape_texture_destroy(raster.texture);
         return ret;

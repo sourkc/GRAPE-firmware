@@ -55,6 +55,11 @@ struct grape_texture {
     bool occupancy_all_empty; ///< If the occupancy is all empty for a texture (aka an empty transparent texture)
 };
 
+typedef struct {
+    const grape_shader_program_t *program;
+    void *uniforms;
+} grape_surface_shader_instance_t;
+
 /**
  * GRAPE surface
  */
@@ -63,10 +68,21 @@ struct grape_surface {
     struct grape_surface *prev; ///< Pointer to the previous surface in the Z-ordered surface list
     struct grape_surface *next; ///< Pointer to the next surface in the Z-ordered surface list
     grape_texture_t *texture;
-    const grape_shader_program_t *shader;
+    grape_surface_shader_instance_t *shaders;
+    size_t shader_count;
     uint32_t width;
     uint32_t height;
-    void *shader_uniforms;
+    grape_surface_texture_mode_t texture_mode;
+    float texture_from_local_x_scale;
+    float texture_from_local_y_scale;
+    float texture_from_local_x_offset;
+    float texture_from_local_y_offset;
+    float texture_local_left;
+    float texture_local_top;
+    float texture_local_right;
+    float texture_local_bottom;
+    bool texture_mapping_repeat;
+    bool texture_mapping_identity;
     grape_transform_t transform;
     grape_rect_t bounds;
     grape_color_t tint;
@@ -224,6 +240,7 @@ grape_rect_t grape_surface_calculate_bounds(const grape_surface_t *surface);
 void grape_surface_recache(grape_surface_t *surface);
 void grape_surface_insert_sorted(grape_context_t *context, grape_surface_t *surface);
 void grape_surface_remove(grape_context_t *context, grape_surface_t *surface);
+bool grape_surface_map_texture_point(const grape_surface_t *surface, float local_x, float local_y, int32_t *out_x, int32_t *out_y);
 esp_err_t grape_texture_rebuild_occupancy(grape_texture_t *texture);
 
 void grape_feature_init(grape_context_t *context);

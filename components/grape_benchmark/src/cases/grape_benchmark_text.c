@@ -177,7 +177,7 @@ static esp_err_t create_surface_from_raster(grape_benchmark_runtime_t *runtime,
 
     state->display_texture = state->raster.texture;
     state->raster.texture = NULL;
-    ret = grape_surface_create(runtime->grape, state->display_texture, &state->surface);
+    ret = grape_surface_create(runtime->grape, &GRAPE_SURFACE_DESC_TEXTURE(state->display_texture), &state->surface);
     if (ret == ESP_OK) {
         ret = grape_surface_set_tint(
             state->surface,

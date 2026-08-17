@@ -1185,7 +1185,7 @@ static esp_err_t gpu_ensure_clear_surface(grape_gfxlink_t *link,
         return ret;
     }
 
-    ret = grape_surface_create(link->grape, context->clear_texture, &context->clear_surface);
+    ret = grape_surface_create(link->grape, &GRAPE_SURFACE_DESC_TEXTURE(context->clear_texture), &context->clear_surface);
     if (ret != ESP_OK) {
         grape_texture_destroy(context->clear_texture);
         context->clear_texture = NULL;
@@ -1259,7 +1259,7 @@ static esp_err_t gpu_execute_draw_image(grape_gfxlink_t *link,
             return ESP_ERR_NO_MEM;
         }
 
-        esp_err_t ret = grape_surface_create(link->grape, image->texture, &draw->surface);
+        esp_err_t ret = grape_surface_create(link->grape, &GRAPE_SURFACE_DESC_TEXTURE(image->texture), &draw->surface);
         if (ret != ESP_OK) {
             free(draw);
             return ret;
@@ -1440,7 +1440,7 @@ static esp_err_t create_solid_surface(grape_gfxlink_t *link,
     }
 
     grape_surface_t *surface = NULL;
-    ret = grape_surface_create(link->grape, texture, &surface);
+    ret = grape_surface_create(link->grape, &GRAPE_SURFACE_DESC_TEXTURE(texture), &surface);
     if (ret != ESP_OK) {
         grape_texture_destroy(texture);
         return ret;
@@ -1551,7 +1551,7 @@ static esp_err_t create_surface(grape_gfxlink_t *link,
     }
 
     grape_surface_t *surface = NULL;
-    esp_err_t ret = grape_surface_create(link->grape, texture_slot->texture, &surface);
+    esp_err_t ret = grape_surface_create(link->grape, &GRAPE_SURFACE_DESC_TEXTURE(texture_slot->texture), &surface);
     if (ret != ESP_OK) {
         return ret;
     }

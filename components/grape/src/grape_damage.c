@@ -827,7 +827,7 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
         return ESP_OK;
     }
 
-    if (surface->shader) {
+    if (surface->shader_count > 0U) {
         return grape_damage_add(surface->context, surface->bounds);
     }
 
@@ -842,6 +842,14 @@ esp_err_t grape_damage_add_surface_coverage(grape_surface_t *surface)
     grape_texture_t *texture = surface->texture;
     if (texture->occupancy_all_empty) {
         return ESP_OK;
+    }
+
+    /* Occupancy cells are stored in texture space. Until the occupancy
+     * planner learns arbitrary surface texture mappings, use the surface
+     * bounds for stretched/tiled/fitted textures. The 1:1 path keeps the
+     * existing fine-grained occupancy optimization. */
+    if (!surface->texture_mapping_identity) {
+        return grape_damage_add(surface->context, surface->bounds);
     }
 
     GRAPE_TIME_SCOPE(DAMAGE_MARK);

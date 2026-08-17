@@ -4,6 +4,205 @@
 
 #include "grape_internal.h"
 
+static bool surface_texture_mode_valid(grape_surface_texture_mode_t mode)
+{
+    return mode >= GRAPE_SURFACE_TEXTURE_STRETCH &&
+           mode <= GRAPE_SURFACE_TEXTURE_CENTER;
+}
+
+static void surface_free_shaders(grape_surface_shader_instance_t *shaders, size_t shader_count)
+{
+    if (!shaders) {
+        return;
+    }
+    for (size_t i = 0U; i < shader_count; ++i) {
+        free(shaders[i].uniforms);
+    }
+    free(shaders);
+}
+
+static esp_err_t surface_copy_shaders(const grape_surface_shader_desc_t *descs,
+                                      size_t shader_count,
+                                      grape_surface_shader_instance_t **out_shaders)
+{
+    if (!out_shaders || (shader_count > 0U && !descs)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *out_shaders = NULL;
+    if (shader_count == 0U) {
+        return ESP_OK;
+    }
+    if (shader_count > SIZE_MAX / sizeof(grape_surface_shader_instance_t)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    grape_surface_shader_instance_t *shaders = calloc(shader_count, sizeof(*shaders));
+    if (!shaders) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    for (size_t i = 0U; i < shader_count; ++i) {
+        const grape_shader_program_t *program = descs[i].program;
+        if (!program || !program->eval ||
+            (program->uniform_size > 0U && !descs[i].uniforms)) {
+            surface_free_shaders(shaders, shader_count);
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        shaders[i].program = program;
+        if (program->uniform_size > 0U) {
+            shaders[i].uniforms = malloc(program->uniform_size);
+            if (!shaders[i].uniforms) {
+                surface_free_shaders(shaders, shader_count);
+                return ESP_ERR_NO_MEM;
+            }
+            memcpy(shaders[i].uniforms, descs[i].uniforms, program->uniform_size);
+        }
+    }
+
+    *out_shaders = shaders;
+    return ESP_OK;
+}
+
+static bool surface_shader_chain_can_start_without_texture(
+    const grape_surface_shader_instance_t *shaders,
+    size_t shader_count)
+{
+    return shader_count > 0U && shaders && shaders[0].program &&
+           (shaders[0].program->flags & GRAPE_SHADER_PROGRAM_USES_SOURCE_COLOR) == 0U;
+}
+
+static void surface_recache_texture_mapping(grape_surface_t *surface)
+{
+    surface->texture_from_local_x_scale = 0.0f;
+    surface->texture_from_local_y_scale = 0.0f;
+    surface->texture_from_local_x_offset = 0.0f;
+    surface->texture_from_local_y_offset = 0.0f;
+    surface->texture_local_left = 0.0f;
+    surface->texture_local_top = 0.0f;
+    surface->texture_local_right = (float)surface->width;
+    surface->texture_local_bottom = (float)surface->height;
+    surface->texture_mapping_repeat = false;
+    surface->texture_mapping_identity = false;
+
+    if (!surface->texture || surface->width == 0U || surface->height == 0U) {
+        return;
+    }
+
+    const float surface_width = (float)surface->width;
+    const float surface_height = (float)surface->height;
+    const float texture_width = (float)surface->texture->width;
+    const float texture_height = (float)surface->texture->height;
+
+    switch (surface->texture_mode) {
+        case GRAPE_SURFACE_TEXTURE_STRETCH:
+            surface->texture_from_local_x_scale = texture_width / surface_width;
+            surface->texture_from_local_y_scale = texture_height / surface_height;
+            break;
+
+        case GRAPE_SURFACE_TEXTURE_TILE:
+            surface->texture_from_local_x_scale = 1.0f;
+            surface->texture_from_local_y_scale = 1.0f;
+            surface->texture_mapping_repeat = true;
+            break;
+
+        case GRAPE_SURFACE_TEXTURE_FIT:
+        case GRAPE_SURFACE_TEXTURE_COVER: {
+            const float scale_x = surface_width / texture_width;
+            const float scale_y = surface_height / texture_height;
+            const float image_scale = surface->texture_mode == GRAPE_SURFACE_TEXTURE_FIT
+                ? fminf(scale_x, scale_y)
+                : fmaxf(scale_x, scale_y);
+            const float image_width = texture_width * image_scale;
+            const float image_height = texture_height * image_scale;
+            const float left = (surface_width - image_width) * 0.5f;
+            const float top = (surface_height - image_height) * 0.5f;
+            const float inverse_scale = 1.0f / image_scale;
+
+            surface->texture_from_local_x_scale = inverse_scale;
+            surface->texture_from_local_y_scale = inverse_scale;
+            surface->texture_from_local_x_offset = -left * inverse_scale;
+            surface->texture_from_local_y_offset = -top * inverse_scale;
+            if (surface->texture_mode == GRAPE_SURFACE_TEXTURE_FIT) {
+                surface->texture_local_left = left;
+                surface->texture_local_top = top;
+                surface->texture_local_right = left + image_width;
+                surface->texture_local_bottom = top + image_height;
+            }
+            break;
+        }
+
+        case GRAPE_SURFACE_TEXTURE_CENTER: {
+            const float left = (surface_width - texture_width) * 0.5f;
+            const float top = (surface_height - texture_height) * 0.5f;
+            surface->texture_from_local_x_scale = 1.0f;
+            surface->texture_from_local_y_scale = 1.0f;
+            surface->texture_from_local_x_offset = -left;
+            surface->texture_from_local_y_offset = -top;
+            surface->texture_local_left = left;
+            surface->texture_local_top = top;
+            surface->texture_local_right = left + texture_width;
+            surface->texture_local_bottom = top + texture_height;
+            break;
+        }
+
+        default:
+            break;
+    }
+
+    surface->texture_mapping_identity =
+        surface->width == surface->texture->width &&
+        surface->height == surface->texture->height &&
+        (surface->texture_mode == GRAPE_SURFACE_TEXTURE_STRETCH ||
+         surface->texture_mode == GRAPE_SURFACE_TEXTURE_TILE ||
+         surface->texture_mode == GRAPE_SURFACE_TEXTURE_FIT ||
+         surface->texture_mode == GRAPE_SURFACE_TEXTURE_COVER ||
+         surface->texture_mode == GRAPE_SURFACE_TEXTURE_CENTER);
+}
+
+bool grape_surface_map_texture_point(const grape_surface_t *surface,
+                                     float local_x,
+                                     float local_y,
+                                     int32_t *out_x,
+                                     int32_t *out_y)
+{
+    if (!surface || !surface->texture || !out_x || !out_y ||
+        local_x < 0.0f || local_y < 0.0f ||
+        local_x >= (float)surface->width || local_y >= (float)surface->height) {
+        return false;
+    }
+
+    if (surface->texture_mapping_repeat) {
+        int32_t x = (int32_t)local_x;
+        int32_t y = (int32_t)local_y;
+        *out_x = x % (int32_t)surface->texture->width;
+        *out_y = y % (int32_t)surface->texture->height;
+        return true;
+    }
+
+    if (local_x < surface->texture_local_left ||
+        local_y < surface->texture_local_top ||
+        local_x >= surface->texture_local_right ||
+        local_y >= surface->texture_local_bottom) {
+        return false;
+    }
+
+    float texture_x = local_x * surface->texture_from_local_x_scale +
+                      surface->texture_from_local_x_offset;
+    float texture_y = local_y * surface->texture_from_local_y_scale +
+                      surface->texture_from_local_y_offset;
+    if (texture_x < 0.0f || texture_y < 0.0f ||
+        texture_x >= (float)surface->texture->width ||
+        texture_y >= (float)surface->texture->height) {
+        return false;
+    }
+
+    *out_x = (int32_t)texture_x;
+    *out_y = (int32_t)texture_y;
+    return true;
+}
+
 /**
  * Transforms local surface coordinates into screen coordinates
  *
@@ -108,6 +307,7 @@ void grape_surface_recache(grape_surface_t *surface)
                        - surface->local_y_from_screen_y * surface->transform.y;
 
     surface->bounds = grape_surface_calculate_bounds(surface);
+    surface_recache_texture_mapping(surface);
 
 }
 
@@ -176,106 +376,85 @@ void grape_surface_insert_sorted(grape_context_t *context, grape_surface_t *surf
 #define mark_surface_coverage(surface) grape_damage_add_surface_coverage(surface)
 
 /**
- * Creates a GRAPE surface
+ * Creates a GRAPE surface from one descriptor.
  *
- * @param context GRAPE context
- * @param texture Texture for the surface
- * @param out_surface Returns a surface
- * @return Returns ESP_OK on success or an error code
+ * Width/height may be zero when a texture is supplied; zero dimensions then
+ * resolve to the texture's native dimensions. The resolved surface size is
+ * independent from the texture afterwards.
  */
-esp_err_t grape_surface_create(grape_context_t *context, grape_texture_t *texture, grape_surface_t **out_surface)
+esp_err_t grape_surface_create(grape_context_t *context,
+                               const grape_surface_desc_t *desc,
+                               grape_surface_t **out_surface)
 {
-    if (!context || !texture || !out_surface || texture->context != context) {
+    if (!context || !desc || !out_surface ||
+        !surface_texture_mode_valid(desc->texture_mode) ||
+        (desc->texture && desc->texture->context != context) ||
+        (desc->shader_count > 0U && !desc->shaders) ||
+        fabsf(desc->transform.scale_x) < FLT_EPSILON ||
+        fabsf(desc->transform.scale_y) < FLT_EPSILON) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    grape_surface_t *surface = calloc(1, sizeof(*surface));
-    if (!surface) {
-        return ESP_ERR_NO_MEM;
+    uint32_t width = desc->width;
+    uint32_t height = desc->height;
+    if (width == 0U && desc->texture) {
+        width = desc->texture->width;
+    }
+    if (height == 0U && desc->texture) {
+        height = desc->texture->height;
+    }
+    if (width == 0U || height == 0U) {
+        return ESP_ERR_INVALID_ARG;
     }
 
-    surface->context = context;
-    surface->texture = texture;
-    surface->width = texture->width;
-    surface->height = texture->height;
-    surface->transform = (grape_transform_t)GRAPE_TRANSFORM_DEFAULT();
-    surface->tint = (grape_color_t){255, 255, 255, 255};
-    surface->opacity = 255;
-    surface->visible = true;
-    surface->z = 0;
-    texture->ref_count++;
-
-    grape_surface_recache(surface);
-    grape_surface_insert_sorted(context, surface);
-
-    esp_err_t ret = mark_surface_coverage(surface);
+    grape_surface_shader_instance_t *shaders = NULL;
+    esp_err_t ret = surface_copy_shaders(desc->shaders, desc->shader_count, &shaders);
     if (ret != ESP_OK) {
-        grape_surface_remove(context, surface);
-        texture->ref_count--;
-        free(surface);
         return ret;
     }
 
-    *out_surface = surface;
-    return ESP_OK;
-}
-
-/**
- * Creates a procedural GRAPE surface. Procedural
- * surfaces dont have  textures, they use shaders.
- *
- * @param context GRAPE context
- * @param width Surface width
- * @param height Surface height
- * @param shader Surface shader
- * @param uniforms Shader uniforms
- * @param out_surface Returns a surface
- * @return Returns ESP_OK on success or an error code
- */
-esp_err_t grape_surface_create_procedural(grape_context_t *context,
-                                          uint32_t width,
-                                          uint32_t height,
-                                          const grape_shader_program_t *shader,
-                                          const void *uniforms,
-                                          grape_surface_t **out_surface)
-{
-    if (!context || width == 0U || height == 0U || !shader || !shader->kernel || !out_surface ||
-        (shader->uniform_size > 0U && !uniforms) ||
-        (shader->flags & GRAPE_SHADER_PROGRAM_USES_SOURCE_COLOR) != 0U) {
+    if (!desc->texture && desc->shader_count == 0U) {
+        surface_free_shaders(shaders, desc->shader_count);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!desc->texture &&
+        !surface_shader_chain_can_start_without_texture(shaders, desc->shader_count)) {
+        surface_free_shaders(shaders, desc->shader_count);
         return ESP_ERR_INVALID_ARG;
     }
 
     grape_surface_t *surface = calloc(1, sizeof(*surface));
     if (!surface) {
+        surface_free_shaders(shaders, desc->shader_count);
         return ESP_ERR_NO_MEM;
     }
 
-    if (shader->uniform_size > 0U) {
-        surface->shader_uniforms = malloc(shader->uniform_size);
-        if (!surface->shader_uniforms) {
-            free(surface);
-            return ESP_ERR_NO_MEM;
-        }
-        memcpy(surface->shader_uniforms, uniforms, shader->uniform_size);
-    }
-
     surface->context = context;
-    surface->shader = shader;
+    surface->texture = desc->texture;
+    surface->shaders = shaders;
+    surface->shader_count = desc->shader_count;
     surface->width = width;
     surface->height = height;
-    surface->transform = (grape_transform_t)GRAPE_TRANSFORM_DEFAULT();
-    surface->tint = (grape_color_t){255, 255, 255, 255};
-    surface->opacity = 255;
-    surface->visible = true;
-    surface->z = 0;
+    surface->texture_mode = desc->texture_mode;
+    surface->transform = desc->transform;
+    surface->tint = desc->tint;
+    surface->opacity = desc->opacity;
+    surface->visible = desc->visible;
+    surface->z = desc->z;
+    if (surface->texture) {
+        surface->texture->ref_count++;
+    }
 
     grape_surface_recache(surface);
     grape_surface_insert_sorted(context, surface);
 
-    esp_err_t ret = mark_surface_coverage(surface);
+    ret = mark_surface_coverage(surface);
     if (ret != ESP_OK) {
         grape_surface_remove(context, surface);
-        free(surface->shader_uniforms);
+        if (surface->texture && surface->texture->ref_count) {
+            surface->texture->ref_count--;
+        }
+        surface_free_shaders(surface->shaders, surface->shader_count);
         free(surface);
         return ret;
     }
@@ -305,7 +484,7 @@ esp_err_t grape_surface_destroy(grape_surface_t *surface)
     if (surface->texture && surface->texture->ref_count) {
         surface->texture->ref_count--;
     }
-    free(surface->shader_uniforms);
+    surface_free_shaders(surface->shaders, surface->shader_count);
     free(surface);
     return ESP_OK;
 }
@@ -319,8 +498,12 @@ esp_err_t grape_surface_destroy(grape_surface_t *surface)
  */
 esp_err_t grape_surface_set_texture(grape_surface_t *surface, grape_texture_t *texture)
 {
-    if (!surface || !texture || texture->context != surface->context) {
+    if (!surface || (texture && texture->context != surface->context) ||
+        (!texture && !surface_shader_chain_can_start_without_texture(surface->shaders, surface->shader_count))) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (surface->texture == texture) {
+        return ESP_OK;
     }
 
     esp_err_t ret = mark_surface_coverage(surface);
@@ -328,16 +511,155 @@ esp_err_t grape_surface_set_texture(grape_surface_t *surface, grape_texture_t *t
         return ret;
     }
 
-    if (surface->texture && surface->texture->ref_count) {
-        surface->texture->ref_count--;
+    grape_texture_t *old_texture = surface->texture;
+    if (texture) {
+        texture->ref_count++;
     }
     surface->texture = texture;
-    surface->width = texture->width;
-    surface->height = texture->height;
-    texture->ref_count++;
     grape_surface_recache(surface);
 
-    return mark_surface_coverage(surface);
+    ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        surface->texture = old_texture;
+        grape_surface_recache(surface);
+        if (texture && texture->ref_count) {
+            texture->ref_count--;
+        }
+        (void)mark_surface_coverage(surface);
+        return ret;
+    }
+
+    if (old_texture && old_texture->ref_count) {
+        old_texture->ref_count--;
+    }
+    return ESP_OK;
+}
+
+esp_err_t grape_surface_set_size(grape_surface_t *surface, uint32_t width, uint32_t height)
+{
+    if (!surface || width == 0U || height == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (surface->width == width && surface->height == height) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    uint32_t old_width = surface->width;
+    uint32_t old_height = surface->height;
+    surface->width = width;
+    surface->height = height;
+    grape_surface_recache(surface);
+
+    ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        surface->width = old_width;
+        surface->height = old_height;
+        grape_surface_recache(surface);
+        (void)mark_surface_coverage(surface);
+    }
+    return ret;
+}
+
+esp_err_t grape_surface_set_texture_mode(grape_surface_t *surface, grape_surface_texture_mode_t mode)
+{
+    if (!surface || !surface_texture_mode_valid(mode)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (surface->texture_mode == mode) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    grape_surface_texture_mode_t old_mode = surface->texture_mode;
+    surface->texture_mode = mode;
+    grape_surface_recache(surface);
+    ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        surface->texture_mode = old_mode;
+        grape_surface_recache(surface);
+        (void)mark_surface_coverage(surface);
+    }
+    return ret;
+}
+
+esp_err_t grape_surface_set_shaders(grape_surface_t *surface,
+                                    const grape_surface_shader_desc_t *shaders,
+                                    size_t shader_count)
+{
+    if (!surface || (shader_count > 0U && !shaders)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    grape_surface_shader_instance_t *new_shaders = NULL;
+    esp_err_t ret = surface_copy_shaders(shaders, shader_count, &new_shaders);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    if (!surface->texture && shader_count == 0U) {
+        surface_free_shaders(new_shaders, shader_count);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!surface->texture &&
+        !surface_shader_chain_can_start_without_texture(new_shaders, shader_count)) {
+        surface_free_shaders(new_shaders, shader_count);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        surface_free_shaders(new_shaders, shader_count);
+        return ret;
+    }
+
+    grape_surface_shader_instance_t *old_shaders = surface->shaders;
+    size_t old_shader_count = surface->shader_count;
+    surface->shaders = new_shaders;
+    surface->shader_count = shader_count;
+
+    ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        surface->shaders = old_shaders;
+        surface->shader_count = old_shader_count;
+        surface_free_shaders(new_shaders, shader_count);
+        (void)mark_surface_coverage(surface);
+        return ret;
+    }
+
+    surface_free_shaders(old_shaders, old_shader_count);
+    return ESP_OK;
+}
+
+esp_err_t grape_surface_update_shader_uniforms(grape_surface_t *surface,
+                                               size_t shader_index,
+                                               const void *uniforms)
+{
+    if (!surface || shader_index >= surface->shader_count) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    grape_surface_shader_instance_t *shader = &surface->shaders[shader_index];
+    if (shader->program->uniform_size == 0U) {
+        return ESP_OK;
+    }
+    if (!uniforms || !shader->uniforms) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t ret = mark_surface_coverage(surface);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    memcpy(shader->uniforms, uniforms, shader->program->uniform_size);
+    return ESP_OK;
 }
 
 /**
@@ -548,76 +870,6 @@ esp_err_t grape_surface_set_visible(grape_surface_t *surface, bool visible)
 
 
 /**
- * Attaches a generated shader program to a surface. Uniform data is copied.
- */
-esp_err_t grape_surface_set_shader(grape_surface_t *surface, const grape_shader_program_t *shader, const void *uniforms)
-{
-    if (!surface ||
-        (!shader && !surface->texture) ||
-        (shader && (!shader->kernel ||
-                    (shader->uniform_size > 0U && !uniforms) ||
-                    (!surface->texture &&
-                     (shader->flags & GRAPE_SHADER_PROGRAM_USES_SOURCE_COLOR) != 0U)))) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    void *new_uniforms = NULL;
-    if (shader && shader->uniform_size > 0U) {
-        new_uniforms = malloc(shader->uniform_size);
-        if (!new_uniforms) {
-            return ESP_ERR_NO_MEM;
-        }
-        memcpy(new_uniforms, uniforms, shader->uniform_size);
-    }
-
-    esp_err_t ret = mark_surface_coverage(surface);
-    if (ret != ESP_OK) {
-        free(new_uniforms);
-        return ret;
-    }
-
-    const grape_shader_program_t *old_shader = surface->shader;
-    void *old_uniforms = surface->shader_uniforms;
-    surface->shader = shader;
-    surface->shader_uniforms = new_uniforms;
-
-    ret = mark_surface_coverage(surface);
-    if (ret != ESP_OK) {
-        surface->shader = old_shader;
-        surface->shader_uniforms = old_uniforms;
-        free(new_uniforms);
-        return ret;
-    }
-
-    free(old_uniforms);
-    return ESP_OK;
-}
-
-/**
- * Replaces the copied uniform data for the shader attached to a surface.
- */
-esp_err_t grape_surface_update_shader_uniforms(grape_surface_t *surface, const void *uniforms)
-{
-    if (!surface || !surface->shader) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (surface->shader->uniform_size == 0U) {
-        return ESP_OK;
-    }
-    if (!uniforms || !surface->shader_uniforms) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    esp_err_t ret = mark_surface_coverage(surface);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-
-    memcpy(surface->shader_uniforms, uniforms, surface->shader->uniform_size);
-    return ESP_OK;
-}
-
-/**
  * Gets the transform of a GRAPE surface
  *
  * @param surface GRAPE surface
@@ -626,6 +878,21 @@ esp_err_t grape_surface_update_shader_uniforms(grape_surface_t *surface, const v
 const grape_transform_t *grape_surface_transform(const grape_surface_t *surface)
 {
     return surface ? &surface->transform : NULL;
+}
+
+uint32_t grape_surface_width(const grape_surface_t *surface)
+{
+    return surface ? surface->width : 0U;
+}
+
+uint32_t grape_surface_height(const grape_surface_t *surface)
+{
+    return surface ? surface->height : 0U;
+}
+
+grape_surface_texture_mode_t grape_surface_texture_mode(const grape_surface_t *surface)
+{
+    return surface ? surface->texture_mode : GRAPE_SURFACE_TEXTURE_STRETCH;
 }
 
 /**
@@ -672,9 +939,16 @@ bool grape_surface_visible(const grape_surface_t *surface)
     return surface ? surface->visible : false;
 }
 
-const grape_shader_program_t *grape_surface_shader(const grape_surface_t *surface)
+size_t grape_surface_shader_count(const grape_surface_t *surface)
 {
-    return surface ? surface->shader : NULL;
+    return surface ? surface->shader_count : 0U;
+}
+
+const grape_shader_program_t *grape_surface_shader(const grape_surface_t *surface, size_t shader_index)
+{
+    return surface && shader_index < surface->shader_count
+        ? surface->shaders[shader_index].program
+        : NULL;
 }
 
 /**

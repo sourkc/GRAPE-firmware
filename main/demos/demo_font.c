@@ -153,7 +153,7 @@ static esp_err_t create_demo_text_surface(grape_context_t *grape,
         return ESP_ERR_INVALID_ARG;
     }
 
-    esp_err_t ret = grape_surface_create(grape, raster->texture, out_surface);
+    esp_err_t ret = grape_surface_create(grape, &GRAPE_SURFACE_DESC_TEXTURE(raster->texture), out_surface);
     if (ret != ESP_OK) {
         return ret;
     }

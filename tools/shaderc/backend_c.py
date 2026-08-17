@@ -93,6 +93,8 @@ def generate_c(module: IRModule, shader_name: str, banner: str) -> tuple[str, st
     c_lines.append("")
     c_lines.extend(_emit_eval(module, prefix))
     c_lines.append("")
+    c_lines.extend(_emit_eval_program(module, prefix))
+    c_lines.append("")
 
     routes = [
         ("a8", "rgb565", "grape_shader_source_a8", "grape_shader_composite_rgb565", 2),
@@ -127,6 +129,7 @@ def generate_c(module: IRModule, shader_name: str, banner: str) -> tuple[str, st
             "",
             f"const grape_shader_program_t {prefix}_program = {{",
             f"    .kernel = {prefix}_kernel,",
+            f"    .eval = {prefix}_eval_program,",
             f"    .uniform_size = {'sizeof(' + prefix + '_uniforms_t)' if module.uniforms else '0U'},",
             f"    .flags = {flags},",
             "};",
@@ -357,6 +360,40 @@ def _emit_eval(module: IRModule, prefix: str) -> list[str]:
         f"    return {main_name}(&ctx);",
         "}",
     ]
+def _emit_eval_program(module: IRModule, prefix: str) -> list[str]:
+    lines = [
+        f"static grape_shader_vec4_t {prefix}_eval_program(",
+        "    const grape_shader_eval_args_t *args,",
+        "    const void *uniform_data)",
+        "{",
+        "    if (!args) {",
+        "        return (grape_shader_vec4_t){0};",
+        "    }",
+    ]
+    if module.uniforms:
+        lines.extend(
+            [
+                "    if (!uniform_data) {",
+                "        return (grape_shader_vec4_t){0};",
+                "    }",
+            ]
+        )
+    lines.extend(
+        [
+            f"    const {prefix}_uniforms_t *uniforms = uniform_data;",
+            f"    return {prefix}_eval(",
+            "        args->source_color,",
+            "        args->uv,",
+            "        args->local_position,",
+            "        args->surface_size,",
+            "        uniforms",
+            "    );",
+            "}",
+        ]
+    )
+    return lines
+
+
 def _emit_raster_route(
     prefix: str,
     source_name: str,

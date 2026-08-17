@@ -137,6 +137,167 @@ static inline rgba8_t read_rgb888(const uint8_t *src)
     };
 }
 
+static __attribute__((always_inline)) inline void affine_row_start(const grape_surface_t *surface, int32_t x, int32_t y,
+                                    float *local_x, float *local_y);
+
+static __attribute__((always_inline)) inline void composite_source_pixel(
+    uint8_t *dst, grape_pixel_format_t output_format, rgba8_t source);
+
+static inline rgba8_t read_rgba8888(const uint8_t *src)
+{
+    return (rgba8_t) {
+        .r = src[0],
+        .g = src[1],
+        .b = src[2],
+        .a = src[3],
+    };
+}
+
+static __attribute__((always_inline)) inline rgba8_t sample_surface_texture(
+    const grape_surface_t *surface,
+    int32_t tx,
+    int32_t ty)
+{
+    const grape_texture_t *texture = surface->texture;
+    const uint8_t *row = texture->pixels + (size_t)ty * texture->stride;
+    rgba8_t color;
+
+    switch (texture->format) {
+        case GRAPE_PIXEL_FORMAT_A8:
+            color = (rgba8_t) {
+                .r = surface->tint.r,
+                .g = surface->tint.g,
+                .b = surface->tint.b,
+                .a = mul8(row[tx], surface->tint.a),
+            };
+            break;
+        case GRAPE_PIXEL_FORMAT_RGB565:
+            color = read_rgb565(row + (size_t)tx * 2U);
+            color.r = mul8(color.r, surface->tint.r);
+            color.g = mul8(color.g, surface->tint.g);
+            color.b = mul8(color.b, surface->tint.b);
+            color.a = surface->tint.a;
+            break;
+        case GRAPE_PIXEL_FORMAT_RGB888:
+            color = read_rgb888(row + (size_t)tx * 3U);
+            color.r = mul8(color.r, surface->tint.r);
+            color.g = mul8(color.g, surface->tint.g);
+            color.b = mul8(color.b, surface->tint.b);
+            color.a = surface->tint.a;
+            break;
+        case GRAPE_PIXEL_FORMAT_RGBA8888:
+            color = read_rgba8888(row + (size_t)tx * 4U);
+            color.r = mul8(color.r, surface->tint.r);
+            color.g = mul8(color.g, surface->tint.g);
+            color.b = mul8(color.b, surface->tint.b);
+            color.a = mul8(color.a, surface->tint.a);
+            break;
+        default:
+            color = (rgba8_t){0};
+            break;
+    }
+
+    return color;
+}
+
+static void raster_surface_mapped_cpu(grape_context_t *context,
+                                      const grape_surface_t *surface,
+                                      grape_rect_t clipped,
+                                      size_t bpp)
+{
+    const int32_t raster_width = clipped.width;
+    const float local_x_step = surface->local_x_from_screen_x;
+    const float local_y_step = surface->local_y_from_screen_x;
+
+    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
+        float local_x;
+        float local_y;
+        affine_row_start(surface, clipped.x, y, &local_x, &local_y);
+        uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp);
+
+        for (int32_t x = 0; x < raster_width; ++x) {
+            int32_t tx;
+            int32_t ty;
+            if (grape_surface_map_texture_point(surface, local_x, local_y, &tx, &ty)) {
+                rgba8_t source = sample_surface_texture(surface, tx, ty);
+                source.a = mul8(source.a, surface->opacity);
+                composite_source_pixel(dst, context->display_info.format, source);
+            }
+            local_x += local_x_step;
+            local_y += local_y_step;
+            dst += bpp;
+        }
+    }
+}
+
+static void raster_surface_shader_chain(grape_context_t *context,
+                                        const grape_surface_t *surface,
+                                        grape_rect_t clipped,
+                                        size_t bpp)
+{
+    const float surface_width = (float)surface->width;
+    const float surface_height = (float)surface->height;
+    const float inv_width = 1.0f / surface_width;
+    const float inv_height = 1.0f / surface_height;
+    const float local_x_step = surface->local_x_from_screen_x;
+    const float local_y_step = surface->local_y_from_screen_x;
+
+    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
+        float local_x;
+        float local_y;
+        affine_row_start(surface, clipped.x, y, &local_x, &local_y);
+        uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp);
+
+        for (int32_t x = 0; x < clipped.width; ++x) {
+            if (local_x >= 0.0f && local_y >= 0.0f &&
+                local_x < surface_width && local_y < surface_height) {
+                rgba8_t source = {0};
+                int32_t tx;
+                int32_t ty;
+                if (surface->texture &&
+                    grape_surface_map_texture_point(surface, local_x, local_y, &tx, &ty)) {
+                    source = sample_surface_texture(surface, tx, ty);
+                }
+
+                grape_shader_eval_args_t args = {
+                    .source_color = {
+                        (float)source.r / 255.0f,
+                        (float)source.g / 255.0f,
+                        (float)source.b / 255.0f,
+                        (float)source.a / 255.0f,
+                    },
+                    .uv = {local_x * inv_width, local_y * inv_height},
+                    .local_position = {local_x, local_y},
+                    .surface_size = {surface_width, surface_height},
+                    .frag_coord = {local_x, surface_height - local_y},
+                };
+
+                grape_shader_vec4_t output = args.source_color;
+                for (size_t shader_index = 0U;
+                     shader_index < surface->shader_count;
+                     ++shader_index) {
+                    const grape_surface_shader_instance_t *shader =
+                        &surface->shaders[shader_index];
+                    args.source_color = output;
+                    output = shader->program->eval(&args, shader->uniforms);
+                }
+
+                rgba8_t final_color = {
+                    .r = grape_shader_float_to_u8(output.x),
+                    .g = grape_shader_float_to_u8(output.y),
+                    .b = grape_shader_float_to_u8(output.z),
+                    .a = mul8(grape_shader_float_to_u8(output.w), surface->opacity),
+                };
+                composite_source_pixel(dst, context->display_info.format, final_color);
+            }
+
+            local_x += local_x_step;
+            local_y += local_y_step;
+            dst += bpp;
+        }
+    }
+}
+
 /**
  * Composites an RGBA source pixel over a framebuffer pixel.
  *
@@ -758,7 +919,7 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         // Check if the surface is even visible
         if (!surface->visible ||
             surface->opacity == 0 ||
-            (!surface->texture && !surface->shader)) {
+            (!surface->texture && surface->shader_count == 0U)) {
             continue;
         }
 
@@ -773,31 +934,9 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
             continue;
         }
 
-        // If the shader exists...
-        if (surface->shader) {
-            grape_shader_kernel_args_t shader_args = {
-                .texture_pixels = surface->texture ? surface->texture->pixels : NULL,
-                .texture_stride = surface->texture ? surface->texture->stride : 0U,
-                .texture_width = surface->texture ? surface->texture->width : 0U,
-                .texture_height = surface->texture ? surface->texture->height : 0U,
-                .texture_format = surface->texture ? surface->texture->format : GRAPE_PIXEL_FORMAT_A8,
-                .surface_width = surface->width,
-                .surface_height = surface->height,
-                .target_pixels = context->render_target.pixels,
-                .target_stride = context->render_target.stride,
-                .target_format = context->display_info.format,
-                .clipped = clipped,
-                .tint = surface->tint,
-                .opacity = surface->opacity,
-                .local_x_from_screen_x = surface->local_x_from_screen_x,
-                .local_x_from_screen_y = surface->local_x_from_screen_y,
-                .local_x_offset = surface->local_x_offset,
-                .local_y_from_screen_x = surface->local_y_from_screen_x,
-                .local_y_from_screen_y = surface->local_y_from_screen_y,
-                .local_y_offset = surface->local_y_offset,
-            }; // Set all arguments
+        if (surface->shader_count > 0U) {
             GRAPE_TIME_BLOCK(CPU_SURFACE_RASTER) {
-                surface->shader->kernel(&shader_args, surface->shader_uniforms); // Run shader inside a timing block
+                raster_surface_shader_chain(context, surface, clipped, bpp);
             }
             continue;
         }
@@ -805,7 +944,8 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         bool handled = false;
 
         // Attempt to raster the surface using three shear method if backend is set to auto, fallback to CPU
-        if (context->rotation_backend == GRAPE_ROTATION_BACKEND_AUTO) {
+        if (surface->texture_mapping_identity &&
+            context->rotation_backend == GRAPE_ROTATION_BACKEND_AUTO) {
             GRAPE_TIME_BLOCK(PPA_BLEND_DISPATCH) {
                 ret = grape_ppa_blend_surface(context, surface, rect, &handled);
             }
@@ -818,7 +958,8 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
         }
 
         GRAPE_TIME_BLOCK(CPU_SURFACE_RASTER) {
-            if (context->rotation_backend == GRAPE_ROTATION_BACKEND_THREE_SHEAR) {
+            if (surface->texture_mapping_identity &&
+                context->rotation_backend == GRAPE_ROTATION_BACKEND_THREE_SHEAR) {
                 ret = raster_surface_three_shear_a8(
                     context,
                     surface,
@@ -833,7 +974,11 @@ esp_err_t grape_compositor_render(grape_context_t *context, grape_rect_t rect)
             }
 
             if (!handled) {
-                raster_surface_cpu(context, surface, rect, clipped, bpp);
+                if (surface->texture_mapping_identity) {
+                    raster_surface_cpu(context, surface, rect, clipped, bpp);
+                } else {
+                    raster_surface_mapped_cpu(context, surface, clipped, bpp);
+                }
             }
         }
     }

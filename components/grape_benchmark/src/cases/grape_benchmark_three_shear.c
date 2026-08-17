@@ -152,7 +152,7 @@ static esp_err_t setup(grape_benchmark_runtime_t *runtime,
     fill_mask(state->texture);
     ret = grape_texture_invalidate(state->texture);
     if (ret == ESP_OK) {
-        ret = grape_surface_create(runtime->grape, state->texture, &state->surface);
+        ret = grape_surface_create(runtime->grape, &GRAPE_SURFACE_DESC_TEXTURE(state->texture), &state->surface);
     }
     if (ret == ESP_OK) {
         ret = grape_surface_set_origin(

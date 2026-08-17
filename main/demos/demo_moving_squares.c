@@ -186,7 +186,7 @@ esp_err_t grape_demo_moving_squares_run(grape_context_t *grape)
             square->spin_speed = (i & 1U ? -1.0f : 1.0f) * (0.14f + (float)i * 0.018f);
             square->phase = (float)i * 7.137f;
 
-            ESP_ERROR_CHECK(grape_surface_create(grape, square_texture, &square->surface));
+            ESP_ERROR_CHECK(grape_surface_create(grape, &GRAPE_SURFACE_DESC_TEXTURE(square_texture), &square->surface));
 
             float hue = 60.0f + (240.0f * (float)i / (float)(DEMO_SQUARE_COUNT - 1U));
             ESP_ERROR_CHECK(grape_surface_set_tint(square->surface, hue_to_rgb(hue)));

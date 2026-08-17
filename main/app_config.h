@@ -19,8 +19,9 @@
  *   2 - font
  *   3 - vector_svg
  *   4 - gpu_3d_triangle
+ *   5 - surface_features
  */
-#define GRAPE_APP_DEMO 4U
+#define GRAPE_APP_DEMO 5U
 
 /* Benchmark suites used when GRAPE_APP_MODE == GRAPE_APP_MODE_BENCHMARK. */
 #define GRAPE_APP_BENCHMARK_SUITE_MASK GRAPE_BENCHMARK_SUITE_ALL
