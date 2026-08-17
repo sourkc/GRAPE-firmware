@@ -27,6 +27,7 @@ extern "C" {
     X(PPA_BLEND_HW,         2, "render.ppa_blend_hw",      "ppa_blend_hw") \
     X(PPA_ROTATE,           2, "render.ppa_rotate",        "ppa_rotate") \
     X(CPU_SURFACE_RASTER,   2, "render.cpu_surface_raster", "cpu_surface_raster") \
+    X(RGBA8888_AXIS_FAST,  2, "render.rgba8888_axis_fast", "rgba8888_axis_fast") \
     X(SHEAR_PREP,           2, "shear.prep",               "shear_prep") \
     X(SHEAR_X1,             2, "shear.x1",                 "shear_x1") \
     X(SHEAR_Y,              2, "shear.y",                  "shear_y") \

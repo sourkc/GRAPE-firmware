@@ -1019,6 +1019,228 @@ static void raster_surface_rgb888(grape_context_t *context, const grape_surface_
     }
 }
 
+
+typedef struct {
+    int32_t left;
+    int32_t top;
+    uint32_t scale_x;
+    uint32_t scale_y;
+} rgba8888_axis_scale_t;
+
+/*
+ * Detect the deliberately narrow but very common "GPU render target as a
+ * surface" case. Keeping this predicate strict means the generic compositor
+ * remains the source of truth for rotation, fractional scale, tinting,
+ * non-identity texture layouts, filtering, AA, and shader chains.
+ *
+ * For an integer positive scale and integer transformed top-left, point
+ * sampling of destination pixel centres maps exactly to:
+ *
+ *   src_x = (dst_x - left) / scale_x
+ *   src_y = (dst_y - top)  / scale_y
+ *
+ * so the hot loop needs no inverse-affine floats at all.
+ */
+static bool rgba8888_axis_integer_scale(
+    const grape_surface_t *surface,
+    rgba8888_axis_scale_t *out)
+{
+    if (!surface || !surface->texture || !out ||
+        surface->texture->format != GRAPE_PIXEL_FORMAT_RGBA8888 ||
+        !surface->texture_mapping_identity ||
+        surface->texture_filter != GRAPE_TEXTURE_FILTER_NEAREST ||
+        surface->aa != GRAPE_SURFACE_AA_NONE ||
+        surface->shader_count != 0U ||
+        surface->opacity != 255U ||
+        surface->tint.r != 255U ||
+        surface->tint.g != 255U ||
+        surface->tint.b != 255U ||
+        surface->tint.a != 255U ||
+        fabsf(surface->sin_rotation) > 0.0001f ||
+        fabsf(surface->cos_rotation - 1.0f) > 0.0001f ||
+        !isfinite(surface->transform.scale_x) ||
+        !isfinite(surface->transform.scale_y) ||
+        surface->transform.scale_x < 1.0f ||
+        surface->transform.scale_y < 1.0f) {
+        return false;
+    }
+
+    const float scale_x_rounded = roundf(surface->transform.scale_x);
+    const float scale_y_rounded = roundf(surface->transform.scale_y);
+    if (fabsf(surface->transform.scale_x - scale_x_rounded) > 0.0001f ||
+        fabsf(surface->transform.scale_y - scale_y_rounded) > 0.0001f ||
+        scale_x_rounded > 65535.0f ||
+        scale_y_rounded > 65535.0f) {
+        return false;
+    }
+
+    const float left_f =
+        surface->transform.x -
+        surface->transform.origin_x * surface->transform.scale_x;
+    const float top_f =
+        surface->transform.y -
+        surface->transform.origin_y * surface->transform.scale_y;
+    if (!isfinite(left_f) || !isfinite(top_f)) {
+        return false;
+    }
+
+    const float left_rounded = roundf(left_f);
+    const float top_rounded = roundf(top_f);
+    if (fabsf(left_f - left_rounded) > 0.0001f ||
+        fabsf(top_f - top_rounded) > 0.0001f ||
+        left_rounded < (float)INT32_MIN ||
+        left_rounded > (float)INT32_MAX ||
+        top_rounded < (float)INT32_MIN ||
+        top_rounded > (float)INT32_MAX) {
+        return false;
+    }
+
+    *out = (rgba8888_axis_scale_t) {
+        .left = (int32_t)left_rounded,
+        .top = (int32_t)top_rounded,
+        .scale_x = (uint32_t)scale_x_rounded,
+        .scale_y = (uint32_t)scale_y_rounded,
+    };
+    return true;
+}
+
+static __attribute__((always_inline)) inline void
+rgba8888_fast_blend_rgb565(uint8_t *dst, const uint8_t *src)
+{
+    const uint8_t alpha = src[3];
+    if (alpha == 0U) {
+        return;
+    }
+
+    rgba8_t source = {
+        .r = src[0],
+        .g = src[1],
+        .b = src[2],
+        .a = alpha,
+    };
+
+    if (alpha == 255U) {
+        write_rgb565(dst, source);
+        return;
+    }
+
+    write_rgb565(dst, blend_over(read_rgb565(dst), source));
+}
+
+static __attribute__((always_inline)) inline void
+rgba8888_fast_blend_rgb888(uint8_t *dst, const uint8_t *src)
+{
+    const uint8_t alpha = src[3];
+    if (alpha == 0U) {
+        return;
+    }
+
+    if (alpha == 255U) {
+        dst[0] = src[0];
+        dst[1] = src[1];
+        dst[2] = src[2];
+        return;
+    }
+
+    rgba8_t source = {
+        .r = src[0],
+        .g = src[1],
+        .b = src[2],
+        .a = alpha,
+    };
+    write_rgb888(dst, blend_over(read_rgb888(dst), source));
+}
+
+/*
+ * Fast path for axis-aligned integer-nearest RGBA8888 surfaces.
+ *
+ * The run-based X walker is important for scaled GPU targets: at 2x scale we
+ * decode/sample one source texel for two destination pixels instead of doing
+ * the generic inverse transform and source-address calculation twice.
+ */
+static void raster_surface_rgba8888_axis_integer(
+    grape_context_t *context,
+    const grape_surface_t *surface,
+    grape_rect_t clipped,
+    size_t bpp,
+    const rgba8888_axis_scale_t *mapping)
+{
+    const grape_texture_t *texture = surface->texture;
+    const uint8_t *texture_pixels = texture->pixels;
+    const size_t texture_stride = texture->stride;
+    const uint32_t scale_x = mapping->scale_x;
+    const uint32_t scale_y = mapping->scale_y;
+    const grape_pixel_format_t output_format = context->display_info.format;
+
+    const int32_t first_local_x = clipped.x - mapping->left;
+    const uint32_t first_source_x = (uint32_t)first_local_x / scale_x;
+    const uint32_t first_phase_x = (uint32_t)first_local_x % scale_x;
+
+    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
+        const int32_t local_y = y - mapping->top;
+        const uint32_t source_y = (uint32_t)local_y / scale_y;
+        const uint8_t *src =
+            texture_pixels +
+            (size_t)source_y * texture_stride +
+            (size_t)first_source_x * 4U;
+        uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp);
+
+        int32_t remaining = clipped.width;
+        uint32_t phase = first_phase_x;
+
+        while (remaining > 0) {
+            uint32_t run = scale_x - phase;
+            if (run > (uint32_t)remaining) {
+                run = (uint32_t)remaining;
+            }
+
+            const uint8_t alpha = src[3];
+            if (alpha != 0U) {
+                if (output_format == GRAPE_PIXEL_FORMAT_RGB565) {
+                    if (alpha == 255U) {
+                        const uint16_t packed =
+                            (uint16_t)(((uint16_t)(src[0] >> 3) << 11) |
+                                       ((uint16_t)(src[1] >> 2) << 5) |
+                                       (uint16_t)(src[2] >> 3));
+                        const uint8_t packed_lo = (uint8_t)(packed & 0xFFU);
+                        const uint8_t packed_hi = (uint8_t)(packed >> 8);
+                        for (uint32_t i = 0U; i < run; ++i) {
+                            dst[0] = packed_lo;
+                            dst[1] = packed_hi;
+                            dst += 2U;
+                        }
+                    } else {
+                        for (uint32_t i = 0U; i < run; ++i) {
+                            rgba8888_fast_blend_rgb565(dst, src);
+                            dst += 2U;
+                        }
+                    }
+                } else {
+                    if (alpha == 255U) {
+                        for (uint32_t i = 0U; i < run; ++i) {
+                            dst[0] = src[0];
+                            dst[1] = src[1];
+                            dst[2] = src[2];
+                            dst += 3U;
+                        }
+                    } else {
+                        for (uint32_t i = 0U; i < run; ++i) {
+                            rgba8888_fast_blend_rgb888(dst, src);
+                            dst += 3U;
+                        }
+                    }
+                }
+            } else {
+                dst += (size_t)run * bpp;
+            }
+
+            remaining -= (int32_t)run;
+            src += 4U;
+            phase = 0U;
+        }
+    }
+}
+
 /**
  * Rasters an RGBA8888 surface using Inverse Affine Transform
  * (see /docs/MATH.md#affine-rotation).
@@ -1095,6 +1317,22 @@ static void raster_surface_rgba8888(grape_context_t *context, const grape_surfac
 static void raster_surface_cpu(grape_context_t *context, const grape_surface_t *surface,
                                grape_rect_t damage_rect, grape_rect_t clipped, size_t bpp)
 {
+    if (surface->texture->format == GRAPE_PIXEL_FORMAT_RGBA8888) {
+        rgba8888_axis_scale_t mapping;
+        if (rgba8888_axis_integer_scale(surface, &mapping)) {
+            GRAPE_TIME_BLOCK(RGBA8888_AXIS_FAST) {
+                raster_surface_rgba8888_axis_integer(
+                    context,
+                    surface,
+                    clipped,
+                    bpp,
+                    &mapping
+                );
+            }
+            return;
+        }
+    }
+
     switch (surface->texture->format) {
         case GRAPE_PIXEL_FORMAT_A8:
             raster_surface_a8(context, surface, damage_rect, clipped, bpp);

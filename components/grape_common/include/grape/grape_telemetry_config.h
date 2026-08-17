@@ -8,11 +8,11 @@
  *   3 - per-tile GPU timings (high instrumentation overhead)
  */
 #ifndef GRAPE_TELEMETRY_LEVEL
-#define GRAPE_TELEMETRY_LEVEL 2
+#define GRAPE_TELEMETRY_LEVEL 0
 #endif
 
 #if GRAPE_TELEMETRY_LEVEL < 0 || GRAPE_TELEMETRY_LEVEL > 3
-#error "GRAPE_TELEMETRY_LEVEL must be 0, 1, or 2"
+#error "GRAPE_TELEMETRY_LEVEL must be 0, 1, 2, or 3"
 #endif
 
 #ifndef GRAPE_TELEMETRY_REPORT_INTERVAL_MS
