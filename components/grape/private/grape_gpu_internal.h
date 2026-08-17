@@ -42,12 +42,26 @@ typedef struct {
 
 typedef struct {
     grape_gpu_triangle_setup_t setup;
-    int64_t sample_e0_bias[4];
-    int64_t sample_e1_bias[4];
-    int64_t sample_e2_bias[4];
-    float sample_depth_bias[4];
+
+    int32_t row_e[3];
+    int32_t edge_step_x[3];
+    int32_t edge_step_y[3];
+    int32_t sample_edge_bias[3][4];
+    int32_t min_sample_edge_bias[3];
+
+    int32_t depth_row_start_fp;
+    int32_t depth_step_x_fp;
+    int32_t depth_step_y_fp;
+    int32_t sample_depth_bias_fp[4];
+
+    int64_t sample_e0_bias_fallback[4];
+    int64_t sample_e1_bias_fallback[4];
+    int64_t sample_e2_bias_fallback[4];
+    float sample_depth_bias_fallback[4];
+
     grape_color_t color;
     grape_gpu_depth_state_t depth;
+    bool raster_i32_valid;
 } grape_gpu_prepared_triangle_t;
 
 struct grape_gpu_buffer {

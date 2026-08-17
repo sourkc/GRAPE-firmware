@@ -1,4 +1,5 @@
 #include <limits.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +54,13 @@ static uint32_t gpu_pack_color(grape_color_t color)
     return packed;
 }
 
+#define GPU_SUBPIXEL_SCALE 8
+#define GPU_SUBPIXEL_HALF 4
+#define GPU_DEPTH_FP_BITS 14
+#define GPU_DEPTH_FP_SCALE (1 << GPU_DEPTH_FP_BITS)
+#define GPU_DEPTH_FP_HALF (GPU_DEPTH_FP_SCALE / 2)
+#define GPU_DEPTH_FP_MAX ((int32_t)(65535U << GPU_DEPTH_FP_BITS))
+
 static void gpu_sample_offsets(grape_gpu_sample_count_t sample_count,
                                const int8_t **out_x,
                                const int8_t **out_y)
@@ -72,6 +80,91 @@ static void gpu_sample_offsets(grape_gpu_sample_count_t sample_count,
     *out_y = sample_4x_y;
 }
 
+static bool gpu_i64_to_i32_checked(int64_t value, int32_t *out_value)
+{
+    if (value < INT32_MIN || value > INT32_MAX) {
+        return false;
+    }
+    *out_value = (int32_t)value;
+    return true;
+}
+
+static bool gpu_float_to_depth_fp_checked(float value, int32_t *out_value)
+{
+    const double scaled = (double)value * (double)GPU_DEPTH_FP_SCALE;
+    if (!isfinite(value) || scaled < (double)INT32_MIN || scaled > (double)INT32_MAX) {
+        return false;
+    }
+    *out_value = (int32_t)llround(scaled);
+    return true;
+}
+
+static bool gpu_edge_range_fits_i32(const grape_gpu_triangle_setup_t *setup,
+                                    uint32_t edge,
+                                    int64_t min_bias,
+                                    int64_t max_bias)
+{
+    const int64_t row = edge == 0U ? setup->row_e0 : edge == 1U ? setup->row_e1 : setup->row_e2;
+    const int64_t step_x = edge == 0U ? setup->e0_step_x : edge == 1U ? setup->e1_step_x : setup->e2_step_x;
+    const int64_t step_y = edge == 0U ? setup->e0_step_y : edge == 1U ? setup->e1_step_y : setup->e2_step_y;
+    const int64_t width = (int64_t)setup->max_x - setup->min_x;
+    const int64_t height = (int64_t)setup->max_y - setup->min_y;
+    const int64_t corners[4] = {
+        row,
+        row + step_x * width,
+        row + step_y * height,
+        row + step_x * width + step_y * height,
+    };
+
+    if (step_x < INT32_MIN || step_x > INT32_MAX || step_y < INT32_MIN || step_y > INT32_MAX) {
+        return false;
+    }
+
+    for (size_t i = 0U; i < 4U; ++i) {
+        if (corners[i] < INT32_MIN || corners[i] > INT32_MAX ||
+            corners[i] + min_bias < INT32_MIN || corners[i] + min_bias > INT32_MAX ||
+            corners[i] + max_bias < INT32_MIN || corners[i] + max_bias > INT32_MAX) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool gpu_depth_range_fits_i32(const grape_gpu_triangle_setup_t *setup,
+                                     const float sample_bias[4],
+                                     uint32_t sample_count)
+{
+    float min_bias = sample_bias[0];
+    float max_bias = sample_bias[0];
+    for (uint32_t sample = 1U; sample < sample_count; ++sample) {
+        if (sample_bias[sample] < min_bias) {
+            min_bias = sample_bias[sample];
+        }
+        if (sample_bias[sample] > max_bias) {
+            max_bias = sample_bias[sample];
+        }
+    }
+
+    const float width = (float)(setup->max_x - setup->min_x);
+    const float height = (float)(setup->max_y - setup->min_y);
+    const float corners[4] = {
+        setup->depth_row_start,
+        setup->depth_row_start + setup->depth_step_x * width,
+        setup->depth_row_start + setup->depth_step_y * height,
+        setup->depth_row_start + setup->depth_step_x * width + setup->depth_step_y * height,
+    };
+
+    for (size_t i = 0U; i < 4U; ++i) {
+        int32_t ignored;
+        if (!gpu_float_to_depth_fp_checked(corners[i], &ignored) ||
+            !gpu_float_to_depth_fp_checked(corners[i] + min_bias, &ignored) ||
+            !gpu_float_to_depth_fp_checked(corners[i] + max_bias, &ignored)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static void gpu_build_sample_biases(grape_gpu_prepared_triangle_t *primitive,
                                     grape_gpu_sample_count_t sample_count)
 {
@@ -80,23 +173,89 @@ static void gpu_build_sample_biases(grape_gpu_prepared_triangle_t *primitive,
     gpu_sample_offsets(sample_count, &sample_x, &sample_y);
 
     const grape_gpu_triangle_setup_t *setup = &primitive->setup;
-    const int64_t e0_subpixel_x = setup->e0_step_x / 8;
-    const int64_t e1_subpixel_x = setup->e1_step_x / 8;
-    const int64_t e2_subpixel_x = setup->e2_step_x / 8;
-    const int64_t e0_subpixel_y = setup->e0_step_y / 8;
-    const int64_t e1_subpixel_y = setup->e1_step_y / 8;
-    const int64_t e2_subpixel_y = setup->e2_step_y / 8;
-    const float inverse_subpixel = 1.0f / 8.0f;
+    const int64_t edge_subpixel_x[3] = {
+        setup->e0_step_x / GPU_SUBPIXEL_SCALE,
+        setup->e1_step_x / GPU_SUBPIXEL_SCALE,
+        setup->e2_step_x / GPU_SUBPIXEL_SCALE,
+    };
+    const int64_t edge_subpixel_y[3] = {
+        setup->e0_step_y / GPU_SUBPIXEL_SCALE,
+        setup->e1_step_y / GPU_SUBPIXEL_SCALE,
+        setup->e2_step_y / GPU_SUBPIXEL_SCALE,
+    };
+    const float inverse_subpixel = 1.0f / (float)GPU_SUBPIXEL_SCALE;
+    float depth_bias[4] = {0};
+    int64_t edge_bias[3][4] = {{0}};
 
     for (uint32_t sample = 0U; sample < (uint32_t)sample_count; ++sample) {
-        const int32_t dx = (int32_t)sample_x[sample] - 4;
-        const int32_t dy = (int32_t)sample_y[sample] - 4;
-        primitive->sample_e0_bias[sample] = e0_subpixel_x * dx + e0_subpixel_y * dy;
-        primitive->sample_e1_bias[sample] = e1_subpixel_x * dx + e1_subpixel_y * dy;
-        primitive->sample_e2_bias[sample] = e2_subpixel_x * dx + e2_subpixel_y * dy;
-        primitive->sample_depth_bias[sample] =
+        const int32_t dx = (int32_t)sample_x[sample] - GPU_SUBPIXEL_HALF;
+        const int32_t dy = (int32_t)sample_y[sample] - GPU_SUBPIXEL_HALF;
+        for (uint32_t edge = 0U; edge < 3U; ++edge) {
+            edge_bias[edge][sample] = edge_subpixel_x[edge] * dx + edge_subpixel_y[edge] * dy;
+        }
+        depth_bias[sample] =
             setup->depth_step_x * ((float)dx * inverse_subpixel) +
             setup->depth_step_y * ((float)dy * inverse_subpixel);
+    }
+
+    for (uint32_t sample = 0U; sample < (uint32_t)sample_count; ++sample) {
+        primitive->sample_e0_bias_fallback[sample] = edge_bias[0][sample];
+        primitive->sample_e1_bias_fallback[sample] = edge_bias[1][sample];
+        primitive->sample_e2_bias_fallback[sample] = edge_bias[2][sample];
+        primitive->sample_depth_bias_fallback[sample] = depth_bias[sample];
+    }
+
+    primitive->raster_i32_valid = true;
+    for (uint32_t edge = 0U; edge < 3U; ++edge) {
+        int64_t min_bias = edge_bias[edge][0];
+        int64_t max_bias = edge_bias[edge][0];
+        for (uint32_t sample = 1U; sample < (uint32_t)sample_count; ++sample) {
+            if (edge_bias[edge][sample] < min_bias) {
+                min_bias = edge_bias[edge][sample];
+            }
+            if (edge_bias[edge][sample] > max_bias) {
+                max_bias = edge_bias[edge][sample];
+            }
+        }
+
+        const int64_t row = edge == 0U ? setup->row_e0 : edge == 1U ? setup->row_e1 : setup->row_e2;
+        const int64_t step_x = edge == 0U ? setup->e0_step_x : edge == 1U ? setup->e1_step_x : setup->e2_step_x;
+        const int64_t step_y = edge == 0U ? setup->e0_step_y : edge == 1U ? setup->e1_step_y : setup->e2_step_y;
+        if (!gpu_edge_range_fits_i32(setup, edge, min_bias, max_bias) ||
+            !gpu_i64_to_i32_checked(row, &primitive->row_e[edge]) ||
+            !gpu_i64_to_i32_checked(step_x, &primitive->edge_step_x[edge]) ||
+            !gpu_i64_to_i32_checked(step_y, &primitive->edge_step_y[edge]) ||
+            !gpu_i64_to_i32_checked(min_bias, &primitive->min_sample_edge_bias[edge])) {
+            primitive->raster_i32_valid = false;
+            break;
+        }
+        for (uint32_t sample = 0U; sample < (uint32_t)sample_count; ++sample) {
+            if (!gpu_i64_to_i32_checked(edge_bias[edge][sample],
+                                        &primitive->sample_edge_bias[edge][sample])) {
+                primitive->raster_i32_valid = false;
+                break;
+            }
+        }
+        if (!primitive->raster_i32_valid) {
+            break;
+        }
+    }
+
+    if (!primitive->raster_i32_valid ||
+        !gpu_depth_range_fits_i32(setup, depth_bias, (uint32_t)sample_count) ||
+        !gpu_float_to_depth_fp_checked(setup->depth_row_start, &primitive->depth_row_start_fp) ||
+        !gpu_float_to_depth_fp_checked(setup->depth_step_x, &primitive->depth_step_x_fp) ||
+        !gpu_float_to_depth_fp_checked(setup->depth_step_y, &primitive->depth_step_y_fp)) {
+        primitive->raster_i32_valid = false;
+        return;
+    }
+
+    for (uint32_t sample = 0U; sample < (uint32_t)sample_count; ++sample) {
+        if (!gpu_float_to_depth_fp_checked(depth_bias[sample],
+                                           &primitive->sample_depth_bias_fp[sample])) {
+            primitive->raster_i32_valid = false;
+            return;
+        }
     }
 }
 
@@ -353,13 +512,457 @@ static void gpu_init_color_tile(grape_gpu_context_t *context,
     }
 }
 
-static bool gpu_raster_tile_color_only(grape_gpu_context_t *context,
-                                       const grape_gpu_prepared_triangle_t *primitive,
-                                       int32_t x0,
-                                       int32_t y0,
-                                       int32_t x1,
-                                       int32_t y1,
-                                       uint32_t packed_color)
+static inline uint16_t gpu_depth_fp_to_d16(int32_t depth_fp)
+{
+    if (depth_fp <= 0) {
+        return 0U;
+    }
+    if (depth_fp >= GPU_DEPTH_FP_MAX) {
+        return UINT16_MAX;
+    }
+    return (uint16_t)((depth_fp + GPU_DEPTH_FP_HALF) >> GPU_DEPTH_FP_BITS);
+}
+
+static inline bool gpu_all_samples_covered_i32(const grape_gpu_prepared_triangle_t *primitive,
+                                                int32_t e0,
+                                                int32_t e1,
+                                                int32_t e2)
+{
+    return e0 + primitive->min_sample_edge_bias[0] >= 0 &&
+           e1 + primitive->min_sample_edge_bias[1] >= 0 &&
+           e2 + primitive->min_sample_edge_bias[2] >= 0;
+}
+
+static inline bool gpu_sample_covered_i32(const grape_gpu_prepared_triangle_t *primitive,
+                                          uint32_t sample,
+                                          int32_t e0,
+                                          int32_t e1,
+                                          int32_t e2)
+{
+    return e0 + primitive->sample_edge_bias[0][sample] >= 0 &&
+           e1 + primitive->sample_edge_bias[1][sample] >= 0 &&
+           e2 + primitive->sample_edge_bias[2][sample] >= 0;
+}
+
+static bool gpu_raster_tile_color_only_i32(grape_gpu_context_t *context,
+                                           const grape_gpu_prepared_triangle_t *primitive,
+                                           int32_t x0,
+                                           int32_t y0,
+                                           int32_t x1,
+                                           int32_t y1,
+                                           uint32_t packed_color)
+{
+    const grape_gpu_triangle_setup_t *setup = &primitive->setup;
+    const uint32_t samples = (uint32_t)context->sample_count;
+    const uint32_t tile_stride = GRAPE_GPU_MSAA_TILE_SIZE * samples;
+    const int32_t dx0 = x0 - setup->min_x;
+    const int32_t dy0 = y0 - setup->min_y;
+    int32_t row_e0 = (int32_t)((int64_t)primitive->row_e[0] +
+                               (int64_t)primitive->edge_step_x[0] * dx0 +
+                               (int64_t)primitive->edge_step_y[0] * dy0);
+    int32_t row_e1 = (int32_t)((int64_t)primitive->row_e[1] +
+                               (int64_t)primitive->edge_step_x[1] * dx0 +
+                               (int64_t)primitive->edge_step_y[1] * dy0);
+    int32_t row_e2 = (int32_t)((int64_t)primitive->row_e[2] +
+                               (int64_t)primitive->edge_step_x[2] * dx0 +
+                               (int64_t)primitive->edge_step_y[2] * dy0);
+    const int32_t e0_step_x = primitive->edge_step_x[0];
+    const int32_t e1_step_x = primitive->edge_step_x[1];
+    const int32_t e2_step_x = primitive->edge_step_x[2];
+    const int32_t e0_step_y = primitive->edge_step_y[0];
+    const int32_t e1_step_y = primitive->edge_step_y[1];
+    const int32_t e2_step_y = primitive->edge_step_y[2];
+    bool wrote = false;
+
+    for (int32_t y = y0; y <= y1; ++y) {
+        int32_t e0 = row_e0;
+        int32_t e1 = row_e1;
+        int32_t e2 = row_e2;
+        const uint32_t local_y = (uint32_t)y & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
+        uint32_t *color = context->tile_color +
+            (size_t)local_y * tile_stride +
+            ((uint32_t)x0 & (GRAPE_GPU_MSAA_TILE_SIZE - 1U)) * samples;
+
+        for (int32_t x = x0; x <= x1; ++x) {
+            if (gpu_all_samples_covered_i32(primitive, e0, e1, e2)) {
+                for (uint32_t sample = 0U; sample < samples; ++sample) {
+                    color[sample] = packed_color;
+                }
+                wrote = true;
+            } else {
+                for (uint32_t sample = 0U; sample < samples; ++sample) {
+                    if (gpu_sample_covered_i32(primitive, sample, e0, e1, e2)) {
+                        color[sample] = packed_color;
+                        wrote = true;
+                    }
+                }
+            }
+            color += samples;
+            e0 += e0_step_x;
+            e1 += e1_step_x;
+            e2 += e2_step_x;
+        }
+
+        row_e0 += e0_step_y;
+        row_e1 += e1_step_y;
+        row_e2 += e2_step_y;
+    }
+    return wrote;
+}
+
+static bool gpu_raster_tile_color_only_4x_i32(grape_gpu_context_t *context,
+                                               const grape_gpu_prepared_triangle_t *primitive,
+                                               int32_t x0,
+                                               int32_t y0,
+                                               int32_t x1,
+                                               int32_t y1,
+                                               uint32_t packed_color)
+{
+    const grape_gpu_triangle_setup_t *setup = &primitive->setup;
+    const int32_t dx0 = x0 - setup->min_x;
+    const int32_t dy0 = y0 - setup->min_y;
+    int32_t row_e0 = (int32_t)((int64_t)primitive->row_e[0] +
+                               (int64_t)primitive->edge_step_x[0] * dx0 +
+                               (int64_t)primitive->edge_step_y[0] * dy0);
+    int32_t row_e1 = (int32_t)((int64_t)primitive->row_e[1] +
+                               (int64_t)primitive->edge_step_x[1] * dx0 +
+                               (int64_t)primitive->edge_step_y[1] * dy0);
+    int32_t row_e2 = (int32_t)((int64_t)primitive->row_e[2] +
+                               (int64_t)primitive->edge_step_x[2] * dx0 +
+                               (int64_t)primitive->edge_step_y[2] * dy0);
+    const int32_t e0_step_x = primitive->edge_step_x[0];
+    const int32_t e1_step_x = primitive->edge_step_x[1];
+    const int32_t e2_step_x = primitive->edge_step_x[2];
+    const int32_t e0_step_y = primitive->edge_step_y[0];
+    const int32_t e1_step_y = primitive->edge_step_y[1];
+    const int32_t e2_step_y = primitive->edge_step_y[2];
+    bool wrote = false;
+
+    for (int32_t y = y0; y <= y1; ++y) {
+        int32_t e0 = row_e0;
+        int32_t e1 = row_e1;
+        int32_t e2 = row_e2;
+        const uint32_t local_y = (uint32_t)y & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
+        uint32_t *color = context->tile_color +
+            (size_t)local_y * (GRAPE_GPU_MSAA_TILE_SIZE * 4U) +
+            (((uint32_t)x0 & (GRAPE_GPU_MSAA_TILE_SIZE - 1U)) * 4U);
+
+        for (int32_t x = x0; x <= x1; ++x) {
+            if (gpu_all_samples_covered_i32(primitive, e0, e1, e2)) {
+                color[0] = packed_color;
+                color[1] = packed_color;
+                color[2] = packed_color;
+                color[3] = packed_color;
+                wrote = true;
+            } else {
+                if (gpu_sample_covered_i32(primitive, 0U, e0, e1, e2)) {
+                    color[0] = packed_color;
+                    wrote = true;
+                }
+                if (gpu_sample_covered_i32(primitive, 1U, e0, e1, e2)) {
+                    color[1] = packed_color;
+                    wrote = true;
+                }
+                if (gpu_sample_covered_i32(primitive, 2U, e0, e1, e2)) {
+                    color[2] = packed_color;
+                    wrote = true;
+                }
+                if (gpu_sample_covered_i32(primitive, 3U, e0, e1, e2)) {
+                    color[3] = packed_color;
+                    wrote = true;
+                }
+            }
+            color += 4U;
+            e0 += e0_step_x;
+            e1 += e1_step_x;
+            e2 += e2_step_x;
+        }
+
+        row_e0 += e0_step_y;
+        row_e1 += e1_step_y;
+        row_e2 += e2_step_y;
+    }
+    return wrote;
+}
+
+static inline bool gpu_depth_less_write_sample(uint16_t *depth,
+                                               uint32_t *color,
+                                               uint32_t sample,
+                                               int32_t depth_fp,
+                                               uint32_t packed_color)
+{
+    const uint16_t incoming = gpu_depth_fp_to_d16(depth_fp);
+    if (incoming >= depth[sample]) {
+        return false;
+    }
+    depth[sample] = incoming;
+    color[sample] = packed_color;
+    return true;
+}
+
+static bool gpu_raster_tile_depth_less_write_i32(grape_gpu_context_t *context,
+                                                  const grape_gpu_prepared_triangle_t *primitive,
+                                                  int32_t x0,
+                                                  int32_t y0,
+                                                  int32_t x1,
+                                                  int32_t y1,
+                                                  uint32_t packed_color,
+                                                  bool *out_depth_dirty)
+{
+    const grape_gpu_triangle_setup_t *setup = &primitive->setup;
+    const uint32_t samples = (uint32_t)context->sample_count;
+    const uint32_t tile_stride = GRAPE_GPU_MSAA_TILE_SIZE * samples;
+    const int32_t dx0 = x0 - setup->min_x;
+    const int32_t dy0 = y0 - setup->min_y;
+    int32_t row_e0 = (int32_t)((int64_t)primitive->row_e[0] +
+                               (int64_t)primitive->edge_step_x[0] * dx0 +
+                               (int64_t)primitive->edge_step_y[0] * dy0);
+    int32_t row_e1 = (int32_t)((int64_t)primitive->row_e[1] +
+                               (int64_t)primitive->edge_step_x[1] * dx0 +
+                               (int64_t)primitive->edge_step_y[1] * dy0);
+    int32_t row_e2 = (int32_t)((int64_t)primitive->row_e[2] +
+                               (int64_t)primitive->edge_step_x[2] * dx0 +
+                               (int64_t)primitive->edge_step_y[2] * dy0);
+    int32_t row_depth = (int32_t)((int64_t)primitive->depth_row_start_fp +
+                                  (int64_t)primitive->depth_step_x_fp * dx0 +
+                                  (int64_t)primitive->depth_step_y_fp * dy0);
+    const int32_t e0_step_x = primitive->edge_step_x[0];
+    const int32_t e1_step_x = primitive->edge_step_x[1];
+    const int32_t e2_step_x = primitive->edge_step_x[2];
+    const int32_t e0_step_y = primitive->edge_step_y[0];
+    const int32_t e1_step_y = primitive->edge_step_y[1];
+    const int32_t e2_step_y = primitive->edge_step_y[2];
+    const int32_t depth_step_x = primitive->depth_step_x_fp;
+    const int32_t depth_step_y = primitive->depth_step_y_fp;
+    bool wrote = false;
+
+    for (int32_t y = y0; y <= y1; ++y) {
+        int32_t e0 = row_e0;
+        int32_t e1 = row_e1;
+        int32_t e2 = row_e2;
+        int32_t depth_fp = row_depth;
+        const uint32_t local_y = (uint32_t)y & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
+        const uint32_t local_x0 = (uint32_t)x0 & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
+        uint32_t *color = context->tile_color + (size_t)local_y * tile_stride + local_x0 * samples;
+        uint16_t *depth = context->tile_depth + (size_t)local_y * tile_stride + local_x0 * samples;
+
+        for (int32_t x = x0; x <= x1; ++x) {
+            if (gpu_all_samples_covered_i32(primitive, e0, e1, e2)) {
+                for (uint32_t sample = 0U; sample < samples; ++sample) {
+                    if (gpu_depth_less_write_sample(depth, color, sample,
+                                                    depth_fp + primitive->sample_depth_bias_fp[sample],
+                                                    packed_color)) {
+                        wrote = true;
+                        *out_depth_dirty = true;
+                    }
+                }
+            } else {
+                for (uint32_t sample = 0U; sample < samples; ++sample) {
+                    if (gpu_sample_covered_i32(primitive, sample, e0, e1, e2) &&
+                        gpu_depth_less_write_sample(depth, color, sample,
+                                                    depth_fp + primitive->sample_depth_bias_fp[sample],
+                                                    packed_color)) {
+                        wrote = true;
+                        *out_depth_dirty = true;
+                    }
+                }
+            }
+            color += samples;
+            depth += samples;
+            e0 += e0_step_x;
+            e1 += e1_step_x;
+            e2 += e2_step_x;
+            depth_fp += depth_step_x;
+        }
+
+        row_e0 += e0_step_y;
+        row_e1 += e1_step_y;
+        row_e2 += e2_step_y;
+        row_depth += depth_step_y;
+    }
+    return wrote;
+}
+
+static bool gpu_raster_tile_depth_less_write_4x_i32(grape_gpu_context_t *context,
+                                                     const grape_gpu_prepared_triangle_t *primitive,
+                                                     int32_t x0,
+                                                     int32_t y0,
+                                                     int32_t x1,
+                                                     int32_t y1,
+                                                     uint32_t packed_color,
+                                                     bool *out_depth_dirty)
+{
+    const grape_gpu_triangle_setup_t *setup = &primitive->setup;
+    const int32_t dx0 = x0 - setup->min_x;
+    const int32_t dy0 = y0 - setup->min_y;
+    int32_t row_e0 = (int32_t)((int64_t)primitive->row_e[0] +
+                               (int64_t)primitive->edge_step_x[0] * dx0 +
+                               (int64_t)primitive->edge_step_y[0] * dy0);
+    int32_t row_e1 = (int32_t)((int64_t)primitive->row_e[1] +
+                               (int64_t)primitive->edge_step_x[1] * dx0 +
+                               (int64_t)primitive->edge_step_y[1] * dy0);
+    int32_t row_e2 = (int32_t)((int64_t)primitive->row_e[2] +
+                               (int64_t)primitive->edge_step_x[2] * dx0 +
+                               (int64_t)primitive->edge_step_y[2] * dy0);
+    int32_t row_depth = (int32_t)((int64_t)primitive->depth_row_start_fp +
+                                  (int64_t)primitive->depth_step_x_fp * dx0 +
+                                  (int64_t)primitive->depth_step_y_fp * dy0);
+    const int32_t e0_step_x = primitive->edge_step_x[0];
+    const int32_t e1_step_x = primitive->edge_step_x[1];
+    const int32_t e2_step_x = primitive->edge_step_x[2];
+    const int32_t e0_step_y = primitive->edge_step_y[0];
+    const int32_t e1_step_y = primitive->edge_step_y[1];
+    const int32_t e2_step_y = primitive->edge_step_y[2];
+    const int32_t depth_step_x = primitive->depth_step_x_fp;
+    const int32_t depth_step_y = primitive->depth_step_y_fp;
+    const int32_t depth_bias0 = primitive->sample_depth_bias_fp[0];
+    const int32_t depth_bias1 = primitive->sample_depth_bias_fp[1];
+    const int32_t depth_bias2 = primitive->sample_depth_bias_fp[2];
+    const int32_t depth_bias3 = primitive->sample_depth_bias_fp[3];
+    bool wrote = false;
+
+    for (int32_t y = y0; y <= y1; ++y) {
+        int32_t e0 = row_e0;
+        int32_t e1 = row_e1;
+        int32_t e2 = row_e2;
+        int32_t depth_fp = row_depth;
+        const uint32_t local_y = (uint32_t)y & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
+        const uint32_t local_x0 = (uint32_t)x0 & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
+        uint32_t *color = context->tile_color +
+            (size_t)local_y * (GRAPE_GPU_MSAA_TILE_SIZE * 4U) + local_x0 * 4U;
+        uint16_t *depth = context->tile_depth +
+            (size_t)local_y * (GRAPE_GPU_MSAA_TILE_SIZE * 4U) + local_x0 * 4U;
+
+        for (int32_t x = x0; x <= x1; ++x) {
+            bool pixel_wrote = false;
+            if (gpu_all_samples_covered_i32(primitive, e0, e1, e2)) {
+                pixel_wrote |= gpu_depth_less_write_sample(depth, color, 0U, depth_fp + depth_bias0, packed_color);
+                pixel_wrote |= gpu_depth_less_write_sample(depth, color, 1U, depth_fp + depth_bias1, packed_color);
+                pixel_wrote |= gpu_depth_less_write_sample(depth, color, 2U, depth_fp + depth_bias2, packed_color);
+                pixel_wrote |= gpu_depth_less_write_sample(depth, color, 3U, depth_fp + depth_bias3, packed_color);
+            } else {
+                if (gpu_sample_covered_i32(primitive, 0U, e0, e1, e2)) {
+                    pixel_wrote |= gpu_depth_less_write_sample(depth, color, 0U, depth_fp + depth_bias0, packed_color);
+                }
+                if (gpu_sample_covered_i32(primitive, 1U, e0, e1, e2)) {
+                    pixel_wrote |= gpu_depth_less_write_sample(depth, color, 1U, depth_fp + depth_bias1, packed_color);
+                }
+                if (gpu_sample_covered_i32(primitive, 2U, e0, e1, e2)) {
+                    pixel_wrote |= gpu_depth_less_write_sample(depth, color, 2U, depth_fp + depth_bias2, packed_color);
+                }
+                if (gpu_sample_covered_i32(primitive, 3U, e0, e1, e2)) {
+                    pixel_wrote |= gpu_depth_less_write_sample(depth, color, 3U, depth_fp + depth_bias3, packed_color);
+                }
+            }
+            if (pixel_wrote) {
+                wrote = true;
+                *out_depth_dirty = true;
+            }
+            color += 4U;
+            depth += 4U;
+            e0 += e0_step_x;
+            e1 += e1_step_x;
+            e2 += e2_step_x;
+            depth_fp += depth_step_x;
+        }
+
+        row_e0 += e0_step_y;
+        row_e1 += e1_step_y;
+        row_e2 += e2_step_y;
+        row_depth += depth_step_y;
+    }
+    return wrote;
+}
+
+static bool gpu_raster_tile_depth_generic_i32(grape_gpu_context_t *context,
+                                               const grape_gpu_prepared_triangle_t *primitive,
+                                               int32_t x0,
+                                               int32_t y0,
+                                               int32_t x1,
+                                               int32_t y1,
+                                               uint32_t packed_color,
+                                               bool *out_depth_dirty)
+{
+    const grape_gpu_triangle_setup_t *setup = &primitive->setup;
+    const grape_gpu_depth_state_t depth_state = primitive->depth;
+    const uint32_t samples = (uint32_t)context->sample_count;
+    const uint32_t tile_stride = GRAPE_GPU_MSAA_TILE_SIZE * samples;
+    const int32_t dx0 = x0 - setup->min_x;
+    const int32_t dy0 = y0 - setup->min_y;
+    int32_t row_e0 = (int32_t)((int64_t)primitive->row_e[0] +
+                               (int64_t)primitive->edge_step_x[0] * dx0 +
+                               (int64_t)primitive->edge_step_y[0] * dy0);
+    int32_t row_e1 = (int32_t)((int64_t)primitive->row_e[1] +
+                               (int64_t)primitive->edge_step_x[1] * dx0 +
+                               (int64_t)primitive->edge_step_y[1] * dy0);
+    int32_t row_e2 = (int32_t)((int64_t)primitive->row_e[2] +
+                               (int64_t)primitive->edge_step_x[2] * dx0 +
+                               (int64_t)primitive->edge_step_y[2] * dy0);
+    int32_t row_depth = (int32_t)((int64_t)primitive->depth_row_start_fp +
+                                  (int64_t)primitive->depth_step_x_fp * dx0 +
+                                  (int64_t)primitive->depth_step_y_fp * dy0);
+    const int32_t e0_step_x = primitive->edge_step_x[0];
+    const int32_t e1_step_x = primitive->edge_step_x[1];
+    const int32_t e2_step_x = primitive->edge_step_x[2];
+    const int32_t e0_step_y = primitive->edge_step_y[0];
+    const int32_t e1_step_y = primitive->edge_step_y[1];
+    const int32_t e2_step_y = primitive->edge_step_y[2];
+    const int32_t depth_step_x = primitive->depth_step_x_fp;
+    const int32_t depth_step_y = primitive->depth_step_y_fp;
+    bool wrote = false;
+
+    for (int32_t y = y0; y <= y1; ++y) {
+        int32_t e0 = row_e0;
+        int32_t e1 = row_e1;
+        int32_t e2 = row_e2;
+        int32_t depth_fp = row_depth;
+        const uint32_t local_y = (uint32_t)y & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
+        const uint32_t local_x0 = (uint32_t)x0 & (GRAPE_GPU_MSAA_TILE_SIZE - 1U);
+        uint32_t *color = context->tile_color + (size_t)local_y * tile_stride + local_x0 * samples;
+        uint16_t *depth = context->tile_depth + (size_t)local_y * tile_stride + local_x0 * samples;
+
+        for (int32_t x = x0; x <= x1; ++x) {
+            const bool all_covered = gpu_all_samples_covered_i32(primitive, e0, e1, e2);
+            for (uint32_t sample = 0U; sample < samples; ++sample) {
+                if (all_covered || gpu_sample_covered_i32(primitive, sample, e0, e1, e2)) {
+                    const uint16_t incoming = gpu_depth_fp_to_d16(
+                        depth_fp + primitive->sample_depth_bias_fp[sample]
+                    );
+                    const bool pass = !depth_state.test_enable ||
+                        gpu_depth_compare_tile(depth_state.compare_op, incoming, depth[sample]);
+                    if (pass) {
+                        if (depth_state.write_enable) {
+                            depth[sample] = incoming;
+                            *out_depth_dirty = true;
+                        }
+                        color[sample] = packed_color;
+                        wrote = true;
+                    }
+                }
+            }
+            color += samples;
+            depth += samples;
+            e0 += e0_step_x;
+            e1 += e1_step_x;
+            e2 += e2_step_x;
+            depth_fp += depth_step_x;
+        }
+
+        row_e0 += e0_step_y;
+        row_e1 += e1_step_y;
+        row_e2 += e2_step_y;
+        row_depth += depth_step_y;
+    }
+    return wrote;
+}
+
+static bool gpu_raster_tile_color_only_fallback(grape_gpu_context_t *context,
+                                                 const grape_gpu_prepared_triangle_t *primitive,
+                                                 int32_t x0,
+                                                 int32_t y0,
+                                                 int32_t x1,
+                                                 int32_t y1,
+                                                 uint32_t packed_color)
 {
     const grape_gpu_triangle_setup_t *setup = &primitive->setup;
     const uint32_t samples = (uint32_t)context->sample_count;
@@ -382,9 +985,9 @@ static bool gpu_raster_tile_color_only(grape_gpu_context_t *context,
 
         for (int32_t x = x0; x <= x1; ++x) {
             for (uint32_t sample = 0U; sample < samples; ++sample) {
-                if (e0 + primitive->sample_e0_bias[sample] >= 0 &&
-                    e1 + primitive->sample_e1_bias[sample] >= 0 &&
-                    e2 + primitive->sample_e2_bias[sample] >= 0) {
+                if (e0 + primitive->sample_e0_bias_fallback[sample] >= 0 &&
+                    e1 + primitive->sample_e1_bias_fallback[sample] >= 0 &&
+                    e2 + primitive->sample_e2_bias_fallback[sample] >= 0) {
                     color[sample] = packed_color;
                     wrote = true;
                 }
@@ -402,14 +1005,14 @@ static bool gpu_raster_tile_color_only(grape_gpu_context_t *context,
     return wrote;
 }
 
-static bool gpu_raster_tile_depth_less_write(grape_gpu_context_t *context,
-                                             const grape_gpu_prepared_triangle_t *primitive,
-                                             int32_t x0,
-                                             int32_t y0,
-                                             int32_t x1,
-                                             int32_t y1,
-                                             uint32_t packed_color,
-                                             bool *out_depth_dirty)
+static bool gpu_raster_tile_depth_less_write_fallback(grape_gpu_context_t *context,
+                                                        const grape_gpu_prepared_triangle_t *primitive,
+                                                        int32_t x0,
+                                                        int32_t y0,
+                                                        int32_t x1,
+                                                        int32_t y1,
+                                                        uint32_t packed_color,
+                                                        bool *out_depth_dirty)
 {
     const grape_gpu_triangle_setup_t *setup = &primitive->setup;
     const uint32_t samples = (uint32_t)context->sample_count;
@@ -434,11 +1037,11 @@ static bool gpu_raster_tile_depth_less_write(grape_gpu_context_t *context,
 
         for (int32_t x = x0; x <= x1; ++x) {
             for (uint32_t sample = 0U; sample < samples; ++sample) {
-                if (e0 + primitive->sample_e0_bias[sample] >= 0 &&
-                    e1 + primitive->sample_e1_bias[sample] >= 0 &&
-                    e2 + primitive->sample_e2_bias[sample] >= 0) {
+                if (e0 + primitive->sample_e0_bias_fallback[sample] >= 0 &&
+                    e1 + primitive->sample_e1_bias_fallback[sample] >= 0 &&
+                    e2 + primitive->sample_e2_bias_fallback[sample] >= 0) {
                     const uint16_t incoming = gpu_depth_to_d16_tile(
-                        depth_f + primitive->sample_depth_bias[sample]
+                        depth_f + primitive->sample_depth_bias_fallback[sample]
                     );
                     if (incoming < depth[sample]) {
                         depth[sample] = incoming;
@@ -464,14 +1067,14 @@ static bool gpu_raster_tile_depth_less_write(grape_gpu_context_t *context,
     return wrote;
 }
 
-static bool gpu_raster_tile_depth_generic(grape_gpu_context_t *context,
-                                          const grape_gpu_prepared_triangle_t *primitive,
-                                          int32_t x0,
-                                          int32_t y0,
-                                          int32_t x1,
-                                          int32_t y1,
-                                          uint32_t packed_color,
-                                          bool *out_depth_dirty)
+static bool gpu_raster_tile_depth_generic_fallback(grape_gpu_context_t *context,
+                                                     const grape_gpu_prepared_triangle_t *primitive,
+                                                     int32_t x0,
+                                                     int32_t y0,
+                                                     int32_t x1,
+                                                     int32_t y1,
+                                                     uint32_t packed_color,
+                                                     bool *out_depth_dirty)
 {
     const grape_gpu_triangle_setup_t *setup = &primitive->setup;
     const grape_gpu_depth_state_t depth_state = primitive->depth;
@@ -497,11 +1100,11 @@ static bool gpu_raster_tile_depth_generic(grape_gpu_context_t *context,
 
         for (int32_t x = x0; x <= x1; ++x) {
             for (uint32_t sample = 0U; sample < samples; ++sample) {
-                if (e0 + primitive->sample_e0_bias[sample] >= 0 &&
-                    e1 + primitive->sample_e1_bias[sample] >= 0 &&
-                    e2 + primitive->sample_e2_bias[sample] >= 0) {
+                if (e0 + primitive->sample_e0_bias_fallback[sample] >= 0 &&
+                    e1 + primitive->sample_e1_bias_fallback[sample] >= 0 &&
+                    e2 + primitive->sample_e2_bias_fallback[sample] >= 0) {
                     const uint16_t incoming = gpu_depth_to_d16_tile(
-                        depth_f + primitive->sample_depth_bias[sample]
+                        depth_f + primitive->sample_depth_bias_fallback[sample]
                     );
                     const bool pass = !depth_state.test_enable ||
                         gpu_depth_compare_tile(depth_state.compare_op, incoming, depth[sample]);
@@ -669,18 +1272,45 @@ static esp_err_t gpu_render_tile(grape_gpu_context_t *context,
             }
 
             const uint32_t packed = gpu_pack_color(primitive->color);
+            const bool four_x = context->sample_count == GRAPE_GPU_SAMPLE_COUNT_4;
             bool wrote = false;
             if (!primitive->depth.test_enable && !primitive->depth.write_enable) {
-                wrote = gpu_raster_tile_color_only(context, primitive, rx0, ry0, rx1, ry1, packed);
+                if (primitive->raster_i32_valid) {
+                    wrote = four_x
+                        ? gpu_raster_tile_color_only_4x_i32(
+                            context, primitive, rx0, ry0, rx1, ry1, packed
+                        )
+                        : gpu_raster_tile_color_only_i32(
+                            context, primitive, rx0, ry0, rx1, ry1, packed
+                        );
+                } else {
+                    wrote = gpu_raster_tile_color_only_fallback(
+                        context, primitive, rx0, ry0, rx1, ry1, packed
+                    );
+                }
             } else if (primitive->depth.test_enable && primitive->depth.write_enable &&
                        primitive->depth.compare_op == GRAPE_GPU_COMPARE_LESS) {
-                wrote = gpu_raster_tile_depth_less_write(
-                    context, primitive, rx0, ry0, rx1, ry1, packed, &depth_dirty
-                );
+                if (primitive->raster_i32_valid) {
+                    wrote = four_x
+                        ? gpu_raster_tile_depth_less_write_4x_i32(
+                            context, primitive, rx0, ry0, rx1, ry1, packed, &depth_dirty
+                        )
+                        : gpu_raster_tile_depth_less_write_i32(
+                            context, primitive, rx0, ry0, rx1, ry1, packed, &depth_dirty
+                        );
+                } else {
+                    wrote = gpu_raster_tile_depth_less_write_fallback(
+                        context, primitive, rx0, ry0, rx1, ry1, packed, &depth_dirty
+                    );
+                }
             } else {
-                wrote = gpu_raster_tile_depth_generic(
-                    context, primitive, rx0, ry0, rx1, ry1, packed, &depth_dirty
-                );
+                wrote = primitive->raster_i32_valid
+                    ? gpu_raster_tile_depth_generic_i32(
+                        context, primitive, rx0, ry0, rx1, ry1, packed, &depth_dirty
+                    )
+                    : gpu_raster_tile_depth_generic_fallback(
+                        context, primitive, rx0, ry0, rx1, ry1, packed, &depth_dirty
+                    );
             }
             color_dirty |= wrote;
         }
@@ -708,6 +1338,7 @@ static esp_err_t gpu_render_tile(grape_gpu_context_t *context,
 
 esp_err_t grape_gpu_tile_execute(grape_gpu_context_t *context)
 {
+    GRAPE_TIME_SCOPE(GPU_TILE_EXECUTE);
     if (!context || context->sample_count == GRAPE_GPU_SAMPLE_COUNT_1) {
         return ESP_ERR_INVALID_STATE;
     }

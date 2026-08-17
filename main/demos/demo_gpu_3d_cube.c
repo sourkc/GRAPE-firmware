@@ -252,7 +252,7 @@ esp_err_t grape_demo_gpu_3d_cube_run(grape_context_t *grape)
     );
 
     ESP_LOGI(TAG,
-             "GPU 3D M2.2b: indexed rotating cube, 4x MSAA, D16 per-sample depth, clipping, culling");
+             "GPU 3D M2.2c: indexed rotating cube, 4x MSAA, D16 per-sample depth, clipping, culling");
     ESP_LOGI(TAG,
              "render target=%ux%u near=%.2f far=%.1f; cube lightly intersects near plane",
              GPU_3D_CUBE_WIDTH,
@@ -338,7 +338,7 @@ esp_err_t grape_demo_gpu_3d_cube_run(grape_context_t *grape)
         const int64_t elapsed_us = esp_timer_get_time() - fps_start_us;
         if (elapsed_us >= 1000000) {
             const float elapsed_seconds = (float)elapsed_us / 1000000.0f;
-            printf("GPU 3D M2.2b cube 4x MSAA FPS: %.2f\n", (float)frame_count / elapsed_seconds);
+            printf("GPU 3D M2.2c cube 4x MSAA FPS: %.2f\n", (float)frame_count / elapsed_seconds);
             frame_count = 0U;
             fps_start_us += elapsed_us;
         }

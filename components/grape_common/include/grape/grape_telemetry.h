@@ -50,12 +50,13 @@ extern "C" {
     X(GPU_CLIP,             2, "gpu.clip",                  "gpu_clip") \
     X(GPU_RASTER,           2, "gpu.raster",                "gpu_raster") \
     X(GPU_MSAA_PREPARE,     2, "gpu.msaa_prepare",          "gpu_msaa_prepare") \
-    X(GPU_MSAA_TILE_INIT,   2, "gpu.msaa_tile_init",        "gpu_msaa_tile_init") \
-    X(GPU_DEPTH_TILE_INIT,  2, "gpu.depth_tile_init",       "gpu_depth_tile_init") \
+    X(GPU_TILE_EXECUTE,     2, "gpu.tile_execute",           "gpu_tile_execute") \
     X(GPU_TILE_BIN,         2, "gpu.tile_bin",               "gpu_tile_bin") \
-    X(GPU_TILE_RASTER,      2, "gpu.tile_raster",            "gpu_tile_raster") \
-    X(GPU_DEPTH_TILE_STORE, 2, "gpu.depth_tile_store",       "gpu_depth_tile_store") \
-    X(GPU_MSAA_RESOLVE,     2, "gpu.msaa_resolve",          "gpu_msaa_resolve")
+    X(GPU_MSAA_TILE_INIT,   3, "gpu.msaa_tile_init",        "gpu_msaa_tile_init") \
+    X(GPU_DEPTH_TILE_INIT,  3, "gpu.depth_tile_init",       "gpu_depth_tile_init") \
+    X(GPU_TILE_RASTER,      3, "gpu.tile_raster",            "gpu_tile_raster") \
+    X(GPU_DEPTH_TILE_STORE, 3, "gpu.depth_tile_store",       "gpu_depth_tile_store") \
+    X(GPU_MSAA_RESOLVE,     3, "gpu.msaa_resolve",          "gpu_msaa_resolve")
 
 typedef enum {
 #define GRAPE_TELEMETRY_ENUM(name, level, label, csv) GRAPE_TELEMETRY_TIMER_##name,
