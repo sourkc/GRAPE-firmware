@@ -335,6 +335,22 @@ static esp_err_t waveshare_present(grape_display_t *display)
     return ESP_OK;
 }
 
+static esp_err_t waveshare_copy_presented_frame(grape_display_t *display,
+                                                 void *dst,
+                                                 size_t dst_size)
+{
+    waveshare_state_t *state = display ? display->driver_data : NULL;
+    if (!state || !state->front_buffer || !dst) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (dst_size < state->frame_buffer_size) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    memcpy(dst, state->front_buffer, state->frame_buffer_size);
+    return ESP_OK;
+}
+
 static esp_err_t waveshare_set_brightness(grape_display_t *display, uint8_t percent)
 {
     (void)display;
@@ -347,5 +363,6 @@ const grape_display_driver_t grape_display_driver_waveshare_p4_bsp = {
     .close = waveshare_close,
     .begin_frame = waveshare_begin_frame,
     .present = waveshare_present,
+    .copy_presented_frame = waveshare_copy_presented_frame,
     .set_brightness = waveshare_set_brightness,
 };

@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <string.h>
 
 #include "sdkconfig.h"
 #include "grape_display_internal.h"
@@ -87,6 +88,22 @@ static esp_err_t null_present(grape_display_t *display)
     return ESP_OK;
 }
 
+static esp_err_t null_copy_presented_frame(grape_display_t *display,
+                                             void *dst,
+                                             size_t dst_size)
+{
+    null_state_t *state = display ? display->driver_data : NULL;
+    if (!state || !state->frame_buffer || !dst) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (dst_size < state->frame_buffer_size) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    memcpy(dst, state->frame_buffer, state->frame_buffer_size);
+    return ESP_OK;
+}
+
 static esp_err_t null_set_brightness(grape_display_t *display, uint8_t percent)
 {
     (void)display;
@@ -100,5 +117,6 @@ const grape_display_driver_t grape_display_driver_null = {
     .close = null_close,
     .begin_frame = null_begin_frame,
     .present = null_present,
+    .copy_presented_frame = null_copy_presented_frame,
     .set_brightness = null_set_brightness,
 };

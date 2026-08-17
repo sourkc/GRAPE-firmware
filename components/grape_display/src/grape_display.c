@@ -172,6 +172,45 @@ esp_err_t grape_display_present(grape_display_t *display)
     return display->driver->present(display);
 }
 
+esp_err_t grape_display_copy_presented_frame(grape_display_t *display,
+                                              void *dst,
+                                              size_t dst_size)
+{
+    if (!display || !dst) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t bpp;
+    switch (display->info.format) {
+        case GRAPE_PIXEL_FORMAT_RGB565:
+            bpp = 2U;
+            break;
+        case GRAPE_PIXEL_FORMAT_RGB888:
+            bpp = 3U;
+            break;
+        default:
+            return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    if (display->info.width > SIZE_MAX / bpp) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    size_t row_bytes = (size_t)display->info.width * bpp;
+    if (display->info.height > SIZE_MAX / row_bytes) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    size_t required = row_bytes * display->info.height;
+    if (dst_size < required) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    if (!display->driver || !display->driver->copy_presented_frame) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    return display->driver->copy_presented_frame(display, dst, dst_size);
+}
+
 esp_err_t grape_display_set_brightness(grape_display_t *display, uint8_t percent)
 {
     if (!display || percent > 100) {

@@ -9,6 +9,7 @@ idf_component_register(
         "demos/demo_gpu_3d_triangle.c"
         "demos/demo_surface_features.c"
         "demos/demo_aa.c"
+        "demos/demo_screenshot.c"
     INCLUDE_DIRS
         "."
         "demos"

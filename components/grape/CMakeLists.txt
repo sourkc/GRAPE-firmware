@@ -10,6 +10,7 @@ idf_component_register(
         "src/grape_gpu_pipeline.c"
         "src/grape_gpu_raster.c"
         "src/grape_shader.c"
+        "src/grape_screenshot.c"
         "src/grape_path.c"
         "src/grape_font.c"
         "src/grape_glyph_cache.c"
@@ -27,7 +28,7 @@ idf_component_register(
         "../../shaders"
     PRIV_INCLUDE_DIRS "private"
     REQUIRES grape_common grape_display
-    PRIV_REQUIRES heap esp_driver_ppa freertos
+    PRIV_REQUIRES heap esp_driver_ppa esp_driver_jpeg freertos
 )
 
 

@@ -39,6 +39,20 @@ esp_err_t grape_display_begin_frame(grape_display_t *display,
                                     size_t render_rect_count,
                                     grape_display_render_target_t *out_target);
 esp_err_t grape_display_present(grape_display_t *display);
+
+/**
+ * Copies the framebuffer that is currently presented by the display into a
+ * tightly packed caller-owned buffer. The required size is
+ * width * height * bytes_per_pixel for the format reported by
+ * grape_display_get_info().
+ *
+ * The call is synchronous. The caller must provide the same external
+ * synchronization that it would use around grape_display_present().
+ */
+esp_err_t grape_display_copy_presented_frame(grape_display_t *display,
+                                              void *dst,
+                                              size_t dst_size);
+
 esp_err_t grape_display_set_brightness(grape_display_t *display, uint8_t percent);
 
 #ifdef __cplusplus

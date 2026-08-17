@@ -21,8 +21,9 @@
  *   4 - gpu_3d_triangle
  *   5 - surface_features
  *   6 - aa
+ *   7 - screenshot (AA scene + PNG/JPEG to SD)
  */
-#define GRAPE_APP_DEMO 6U
+#define GRAPE_APP_DEMO 7U
 
 /* Benchmark suites used when GRAPE_APP_MODE == GRAPE_APP_MODE_BENCHMARK. */
 #define GRAPE_APP_BENCHMARK_SUITE_MASK GRAPE_BENCHMARK_SUITE_ALL
