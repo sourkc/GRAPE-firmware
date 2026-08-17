@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #define GFXLINK_MAGIC 0x50415247u
-#define GFXLINK_PROTOCOL_VERSION 7u
+#define GFXLINK_PROTOCOL_VERSION 8u
 #define GFXLINK_MAX_PAYLOAD (16u * 1024u)
 #define GFXLINK_MAX_RESOURCE_SIZE (16u * 1024u * 1024u)
 
@@ -33,6 +33,8 @@
 #define GFXLINK_CAP_TEXT (1u << 14)
 #define GFXLINK_CAP_TEXTURE_WRITE_RECT (1u << 15)
 #define GFXLINK_CAP_GPU_SUBMIT (1u << 16)
+#define GFXLINK_CAP_GPU_IMAGES (1u << 17)
+#define GFXLINK_CAP_GPU_DRAW_IMAGE (1u << 18)
 
 #define GFXLINK_RESOURCE_WRITE_HEADER_SIZE 16u
 #define GFXLINK_RESOURCE_CHUNK_SIZE (GFXLINK_MAX_PAYLOAD - GFXLINK_RESOURCE_WRITE_HEADER_SIZE)
@@ -45,6 +47,9 @@
 #define GFXLINK_GPU_SUBMIT_HEADER_SIZE 16u
 #define GFXLINK_GPU_MAX_COMMAND_BYTES \
     (GFXLINK_MAX_PAYLOAD - GFXLINK_GPU_SUBMIT_HEADER_SIZE)
+#define GFXLINK_GPU_IMAGE_WRITE_RECT_HEADER_SIZE 28u
+#define GFXLINK_GPU_IMAGE_WRITE_RECT_CHUNK_SIZE \
+    (GFXLINK_MAX_PAYLOAD - GFXLINK_GPU_IMAGE_WRITE_RECT_HEADER_SIZE)
 
 typedef enum {
     GFXLINK_OP_HELLO = 0x01,
@@ -89,6 +94,9 @@ typedef enum {
     GFXLINK_OP_GPU_CONTEXT_CREATE = 0x70,
     GFXLINK_OP_GPU_CONTEXT_DESTROY = 0x71,
     GFXLINK_OP_GPU_SUBMIT = 0x72,
+    GFXLINK_OP_GPU_IMAGE_CREATE = 0x73,
+    GFXLINK_OP_GPU_IMAGE_DESTROY = 0x74,
+    GFXLINK_OP_GPU_IMAGE_WRITE_RECT = 0x75,
 } gfxlink_opcode_t;
 
 typedef enum {
@@ -431,6 +439,9 @@ typedef struct __attribute__((packed)) {
 
 typedef enum {
     GFXLINK_GPU_CMD_NOP = 0x0000,
+    GFXLINK_GPU_CMD_CLEAR = 0x0001,
+    GFXLINK_GPU_CMD_DRAW_IMAGE = 0x0002,
+    GFXLINK_GPU_CMD_PRESENT = 0x0003,
 } gfxlink_gpu_command_opcode_t;
 
 typedef struct __attribute__((packed)) {
@@ -438,6 +449,34 @@ typedef struct __attribute__((packed)) {
     uint16_t size;
     uint32_t flags;
 } gfxlink_gpu_command_header_t;
+
+typedef struct __attribute__((packed)) {
+    gfxlink_gpu_command_header_t header;
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+    uint8_t a;
+    int32_t z;
+} gfxlink_gpu_clear_command_t;
+
+typedef struct __attribute__((packed)) {
+    gfxlink_gpu_command_header_t header;
+    uint32_t image_handle;
+    uint32_t x_bits;
+    uint32_t y_bits;
+    uint32_t scale_x_bits;
+    uint32_t scale_y_bits;
+    uint32_t rotation_bits;
+    uint32_t origin_x_bits;
+    uint32_t origin_y_bits;
+    int32_t z;
+    uint8_t opacity;
+    uint8_t tint_r;
+    uint8_t tint_g;
+    uint8_t tint_b;
+    uint8_t tint_a;
+    uint8_t reserved[7];
+} gfxlink_gpu_draw_image_command_t;
 
 typedef struct __attribute__((packed)) {
     uint32_t context_handle;
@@ -450,6 +489,34 @@ typedef struct __attribute__((packed)) {
     uint32_t command_count;
     uint64_t submit_id;
 } gfxlink_gpu_submit_response_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t width;
+    uint32_t height;
+    uint32_t format;
+    uint32_t flags;
+} gfxlink_gpu_image_create_request_t;
+
+typedef struct __attribute__((packed)) {
+    int32_t status;
+    uint32_t handle;
+    uint32_t stride;
+    uint32_t size;
+} gfxlink_gpu_image_create_response_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t handle;
+} gfxlink_gpu_image_handle_request_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t image_handle;
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t data_offset;
+    uint32_t data_size;
+} gfxlink_gpu_image_write_rect_request_t;
 
 typedef struct __attribute__((packed)) {
     uint32_t handle;
@@ -469,6 +536,13 @@ _Static_assert(sizeof(gfxlink_gpu_command_header_t) == 8u,
                "GFXLINK GPU command header must remain fixed-size");
 _Static_assert(sizeof(gfxlink_gpu_submit_request_t) == GFXLINK_GPU_SUBMIT_HEADER_SIZE,
                "GFXLINK GPU submit header must match protocol constant");
+_Static_assert(sizeof(gfxlink_gpu_clear_command_t) == 16u,
+               "GFXLINK GPU clear command must remain fixed-size");
+_Static_assert(sizeof(gfxlink_gpu_draw_image_command_t) == 56u,
+               "GFXLINK GPU draw-image command must remain fixed-size");
+_Static_assert(sizeof(gfxlink_gpu_image_write_rect_request_t) ==
+                   GFXLINK_GPU_IMAGE_WRITE_RECT_HEADER_SIZE,
+               "GFXLINK GPU image write header must match protocol constant");
 _Static_assert(sizeof(gfxlink_path_command_t) == 28u,
                "GFXLINK path command must remain fixed-size");
 _Static_assert(GFXLINK_RESOURCE_CHUNK_SIZE > 0u, "GFXLINK resource chunk size must be positive");
@@ -476,3 +550,5 @@ _Static_assert(GFXLINK_TEXTURE_WRITE_RECT_CHUNK_SIZE > 0u,
                "GFXLINK texture write chunk size must be positive");
 _Static_assert(GFXLINK_GPU_MAX_COMMAND_BYTES >= sizeof(gfxlink_gpu_command_header_t),
                "GFXLINK GPU command payload must fit at least one command");
+_Static_assert(GFXLINK_GPU_IMAGE_WRITE_RECT_CHUNK_SIZE > 0u,
+               "GFXLINK GPU image write chunk size must be positive");

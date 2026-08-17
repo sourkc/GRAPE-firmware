@@ -1,4 +1,6 @@
 #include <stdbool.h>
+#include <float.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +35,8 @@
 #define GFXLINK_CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN)
 #define GFXLINK_TX_WAIT_MS 1500U
 #define GFXLINK_FAST_DAMAGE_MAX 16U
+#define GFXLINK_GPU_IMAGE_DAMAGE_MAX 16U
+#define GFXLINK_RENDERER_INTERNAL_GPU_RESET 0xF0U
 
 static const char *TAG = "grape_gfxlink";
 
@@ -76,12 +80,27 @@ typedef struct {
     bool committed;
 } gfxlink_resource_slot_t;
 
+typedef struct gfxlink_gpu_draw_surface {
+    grape_surface_t *surface;
+    uint32_t image_handle;
+    struct gfxlink_gpu_draw_surface *next;
+} gfxlink_gpu_draw_surface_t;
+
 typedef struct gfxlink_gpu_context {
     uint32_t handle;
     uint64_t submissions;
     uint64_t commands_executed;
+    grape_texture_t *clear_texture;
+    grape_surface_t *clear_surface;
+    gfxlink_gpu_draw_surface_t *draw_surfaces;
     struct gfxlink_gpu_context *next;
 } gfxlink_gpu_context_t;
+
+typedef struct gfxlink_gpu_image {
+    uint32_t handle;
+    grape_texture_t *texture;
+    struct gfxlink_gpu_image *next;
+} gfxlink_gpu_image_t;
 
 typedef struct {
     uint32_t texture_handle;
@@ -92,11 +111,20 @@ typedef struct {
 } gfxlink_texture_damage_t;
 
 typedef struct {
+    uint32_t image_handle;
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+} gfxlink_gpu_image_damage_t;
+
+typedef struct {
     uint8_t opcode;
     uint8_t fast_damage_count;
     uint16_t reserved;
     uint32_t sequence;
     uint32_t payload_size;
+    uint8_t *large_payload;
     gfxlink_texture_damage_t fast_damage[GFXLINK_FAST_DAMAGE_MAX];
     uint8_t payload[GFXLINK_RENDERER_MAX_PAYLOAD];
 } gfxlink_renderer_request_t;
@@ -121,10 +149,14 @@ struct grape_gfxlink {
     gfxlink_svg_slot_t svg_documents[GFXLINK_MAX_SVG_DOCUMENTS];
     gfxlink_font_slot_t fonts[GFXLINK_MAX_FONTS];
     gfxlink_gpu_context_t *gpu_contexts;
+    gfxlink_gpu_image_t *gpu_images;
     grape_glyph_cache_t *glyph_cache;
     gfxlink_texture_damage_t fast_damage[GFXLINK_FAST_DAMAGE_MAX];
     uint32_t fast_damage_count;
     gfxlink_status_t fast_write_status;
+    gfxlink_gpu_image_damage_t gpu_image_damage[GFXLINK_GPU_IMAGE_DAMAGE_MAX];
+    uint32_t gpu_image_damage_count;
+    gfxlink_status_t gpu_image_write_status;
 };
 
 static grape_gfxlink_t *s_active_link;
@@ -383,6 +415,11 @@ static bool handle_in_use(const grape_gfxlink_t *link, uint32_t handle)
             return true;
         }
     }
+    for (gfxlink_gpu_image_t *image = link->gpu_images; image; image = image->next) {
+        if (image->handle == handle) {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -575,16 +612,166 @@ static gfxlink_gpu_context_t *find_gpu_context(grape_gfxlink_t *link, uint32_t h
     return NULL;
 }
 
-static void gpu_contexts_clear(grape_gfxlink_t *link)
+static gfxlink_gpu_image_t *find_gpu_image(grape_gfxlink_t *link, uint32_t handle)
 {
-    gfxlink_gpu_context_t *context = link->gpu_contexts;
-
-    while (context) {
-        gfxlink_gpu_context_t *next = context->next;
-        free(context);
-        context = next;
+    if (!handle) {
+        return NULL;
     }
-    link->gpu_contexts = NULL;
+
+    for (gfxlink_gpu_image_t *image = link->gpu_images; image; image = image->next) {
+        if (image->handle == handle) {
+            return image;
+        }
+    }
+    return NULL;
+}
+
+static esp_err_t gpu_context_clear_draw_surfaces(gfxlink_gpu_context_t *context)
+{
+    gfxlink_gpu_draw_surface_t **cursor = &context->draw_surfaces;
+
+    while (*cursor) {
+        gfxlink_gpu_draw_surface_t *draw = *cursor;
+        esp_err_t ret = grape_surface_destroy(draw->surface);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        *cursor = draw->next;
+        free(draw);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t gpu_context_hide_draw_surfaces(gfxlink_gpu_context_t *context)
+{
+    for (gfxlink_gpu_draw_surface_t *draw = context->draw_surfaces;
+         draw; draw = draw->next) {
+        esp_err_t ret = grape_surface_set_visible(draw->surface, false);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+    }
+    return ESP_OK;
+}
+
+static gfxlink_gpu_draw_surface_t *gpu_context_find_draw_surface(
+    gfxlink_gpu_context_t *context, uint32_t image_handle)
+{
+    for (gfxlink_gpu_draw_surface_t *draw = context->draw_surfaces;
+         draw; draw = draw->next) {
+        /* M4.1 keeps one persistent draw surface per image per context. This
+         * makes animation a transform update instead of allocating a surface
+         * every frame. Drawing the same image twice in one frame therefore
+         * collapses to the most recent DRAW_IMAGE; a later GPU backend will
+         * replace this deliberately small bring-up limitation. */
+        if (draw->image_handle == image_handle) {
+            return draw;
+        }
+    }
+    return NULL;
+}
+
+static esp_err_t gpu_context_remove_image_surfaces(gfxlink_gpu_context_t *context,
+                                                   uint32_t image_handle,
+                                                   bool *out_removed)
+{
+    gfxlink_gpu_draw_surface_t **cursor = &context->draw_surfaces;
+
+    while (*cursor) {
+        gfxlink_gpu_draw_surface_t *draw = *cursor;
+        if (draw->image_handle != image_handle) {
+            cursor = &draw->next;
+            continue;
+        }
+        esp_err_t ret = grape_surface_destroy(draw->surface);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        *cursor = draw->next;
+        free(draw);
+        if (out_removed) {
+            *out_removed = true;
+        }
+    }
+    return ESP_OK;
+}
+
+static esp_err_t gpu_context_cleanup(gfxlink_gpu_context_t *context, bool *out_had_scene)
+{
+    bool had_scene = context->draw_surfaces || context->clear_surface;
+    esp_err_t ret = gpu_context_clear_draw_surfaces(context);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (context->clear_surface) {
+        ret = grape_surface_destroy(context->clear_surface);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        context->clear_surface = NULL;
+    }
+    if (context->clear_texture) {
+        ret = grape_texture_destroy(context->clear_texture);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        context->clear_texture = NULL;
+    }
+    if (out_had_scene && had_scene) {
+        *out_had_scene = true;
+    }
+    return ESP_OK;
+}
+
+static void gpu_image_remove_pending_damage(grape_gfxlink_t *link, uint32_t handle)
+{
+    uint32_t out = 0U;
+    for (uint32_t i = 0U; i < link->gpu_image_damage_count; ++i) {
+        if (link->gpu_image_damage[i].image_handle == handle) {
+            continue;
+        }
+        if (out != i) {
+            link->gpu_image_damage[out] = link->gpu_image_damage[i];
+        }
+        out++;
+    }
+    link->gpu_image_damage_count = out;
+}
+
+static gfxlink_status_t gpu_reset_renderer(grape_gfxlink_t *link)
+{
+    bool had_scene = false;
+
+    while (link->gpu_contexts) {
+        gfxlink_gpu_context_t *context = link->gpu_contexts;
+        esp_err_t ret = gpu_context_cleanup(context, &had_scene);
+        if (ret != ESP_OK) {
+            return status_from_esp_err(ret);
+        }
+        link->gpu_contexts = context->next;
+        free(context);
+    }
+
+    while (link->gpu_images) {
+        gfxlink_gpu_image_t *image = link->gpu_images;
+        esp_err_t ret = grape_texture_destroy(image->texture);
+        if (ret != ESP_OK) {
+            return status_from_esp_err(ret);
+        }
+        link->gpu_images = image->next;
+        free(image);
+    }
+    link->gpu_image_damage_count = 0U;
+    link->gpu_image_write_status = GFXLINK_STATUS_OK;
+
+    if (had_scene) {
+        esp_err_t ret = grape_present(link->grape);
+        if (ret != ESP_OK) {
+            return status_from_esp_err(ret);
+        }
+    }
+    return GFXLINK_STATUS_OK;
 }
 
 static gfxlink_status_t gpu_context_create(grape_gfxlink_t *link, uint32_t *out_handle)
@@ -611,15 +798,26 @@ static gfxlink_status_t gpu_context_create(grape_gfxlink_t *link, uint32_t *out_
     return GFXLINK_STATUS_OK;
 }
 
-static gfxlink_status_t gpu_context_destroy(grape_gfxlink_t *link, uint32_t handle)
+static gfxlink_status_t gpu_context_destroy_renderer(grape_gfxlink_t *link, uint32_t handle)
 {
     gfxlink_gpu_context_t **cursor = &link->gpu_contexts;
 
     while (*cursor) {
         gfxlink_gpu_context_t *context = *cursor;
         if (context->handle == handle) {
+            bool had_scene = false;
+            esp_err_t ret = gpu_context_cleanup(context, &had_scene);
+            if (ret != ESP_OK) {
+                return status_from_esp_err(ret);
+            }
             *cursor = context->next;
             free(context);
+            if (had_scene) {
+                ret = grape_present(link->grape);
+                if (ret != ESP_OK) {
+                    return status_from_esp_err(ret);
+                }
+            }
             return GFXLINK_STATUS_OK;
         }
         cursor = &context->next;
@@ -628,7 +826,241 @@ static gfxlink_status_t gpu_context_destroy(grape_gfxlink_t *link, uint32_t hand
     return GFXLINK_STATUS_NOT_FOUND;
 }
 
-static gfxlink_status_t gpu_validate_commands(const uint8_t *commands,
+static gfxlink_status_t gpu_image_create_renderer(grape_gfxlink_t *link,
+                                                  const gfxlink_gpu_image_create_request_t *request,
+                                                  gfxlink_gpu_image_create_response_t *response)
+{
+    uint32_t width = from_le32(request->width);
+    uint32_t height = from_le32(request->height);
+    uint32_t format = from_le32(request->format);
+    uint32_t flags = from_le32(request->flags);
+    size_t bpp = pixel_bytes(format);
+
+    if (!response || flags != 0U || width == 0U || height == 0U || bpp == 0U ||
+        width > 4096U || height > 4096U || width > SIZE_MAX / bpp) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+    size_t stride = (size_t)width * bpp;
+    if (height > SIZE_MAX / stride) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+    size_t total_size = stride * height;
+    if (total_size == 0U || total_size > GFXLINK_MAX_RESOURCE_SIZE || total_size > UINT32_MAX) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+
+    gfxlink_gpu_image_t *image = calloc(1, sizeof(*image));
+    if (!image) {
+        return GFXLINK_STATUS_NO_MEMORY;
+    }
+
+    grape_texture_desc_t desc = {
+        .width = width,
+        .height = height,
+        .format = (grape_pixel_format_t)format,
+        .memory = GRAPE_MEMORY_DEFAULT,
+    };
+    esp_err_t ret = grape_texture_create(link->grape, &desc, &image->texture);
+    if (ret != ESP_OK) {
+        free(image);
+        return status_from_esp_err(ret);
+    }
+
+    uint32_t handle = allocate_handle(link);
+    if (!handle) {
+        grape_texture_destroy(image->texture);
+        free(image);
+        return GFXLINK_STATUS_NO_MEMORY;
+    }
+
+    image->handle = handle;
+    image->next = link->gpu_images;
+    link->gpu_images = image;
+    *response = (gfxlink_gpu_image_create_response_t){
+        .status = (int32_t)to_le32((uint32_t)(int32_t)GFXLINK_STATUS_OK),
+        .handle = to_le32(handle),
+        .stride = to_le32((uint32_t)grape_texture_stride(image->texture)),
+        .size = to_le32((uint32_t)total_size),
+    };
+    return GFXLINK_STATUS_OK;
+}
+
+static gfxlink_status_t gpu_image_destroy_renderer(grape_gfxlink_t *link, uint32_t handle)
+{
+    gfxlink_gpu_image_t **cursor = &link->gpu_images;
+    gfxlink_gpu_image_t *image = NULL;
+    bool removed_surface = false;
+
+    while (*cursor) {
+        if ((*cursor)->handle == handle) {
+            image = *cursor;
+            break;
+        }
+        cursor = &(*cursor)->next;
+    }
+    if (!image) {
+        return GFXLINK_STATUS_NOT_FOUND;
+    }
+
+    for (gfxlink_gpu_context_t *context = link->gpu_contexts; context; context = context->next) {
+        esp_err_t ret = gpu_context_remove_image_surfaces(context, handle, &removed_surface);
+        if (ret != ESP_OK) {
+            return status_from_esp_err(ret);
+        }
+    }
+
+    esp_err_t ret = grape_texture_destroy(image->texture);
+    if (ret != ESP_OK) {
+        return status_from_esp_err(ret);
+    }
+    *cursor = image->next;
+    gpu_image_remove_pending_damage(link, handle);
+    free(image);
+
+    if (removed_surface) {
+        ret = grape_present(link->grape);
+        if (ret != ESP_OK) {
+            return status_from_esp_err(ret);
+        }
+    }
+    return GFXLINK_STATUS_OK;
+}
+
+static gfxlink_status_t record_gpu_image_damage(grape_gfxlink_t *link,
+                                                const gfxlink_gpu_image_damage_t *damage)
+{
+    if (!damage || damage->width == 0U || damage->height == 0U) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+    if (link->gpu_image_damage_count >= GFXLINK_GPU_IMAGE_DAMAGE_MAX) {
+        return GFXLINK_STATUS_BUSY;
+    }
+    link->gpu_image_damage[link->gpu_image_damage_count++] = *damage;
+    return GFXLINK_STATUS_OK;
+}
+
+static gfxlink_status_t write_gpu_image_rect(grape_gfxlink_t *link,
+                                             const uint8_t *payload,
+                                             uint32_t payload_size)
+{
+    if (!payload || payload_size <= sizeof(gfxlink_gpu_image_write_rect_request_t)) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+
+    gfxlink_gpu_image_write_rect_request_t request;
+    memcpy(&request, payload, sizeof(request));
+    uint32_t image_handle = from_le32(request.image_handle);
+    uint32_t x = from_le32(request.x);
+    uint32_t y = from_le32(request.y);
+    uint32_t width = from_le32(request.width);
+    uint32_t height = from_le32(request.height);
+    uint32_t data_offset = from_le32(request.data_offset);
+    uint32_t data_size = from_le32(request.data_size);
+    const uint8_t *data = payload + sizeof(request);
+
+    if (data_size == 0U || data_size != payload_size - sizeof(request) ||
+        data_size > GFXLINK_GPU_IMAGE_WRITE_RECT_CHUNK_SIZE) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+
+    gfxlink_gpu_image_t *image = find_gpu_image(link, image_handle);
+    if (!image) {
+        return GFXLINK_STATUS_NOT_FOUND;
+    }
+
+    grape_texture_t *texture = image->texture;
+    uint32_t texture_width = grape_texture_width(texture);
+    uint32_t texture_height = grape_texture_height(texture);
+    size_t bpp = pixel_bytes((uint32_t)grape_texture_format(texture));
+    if (width == 0U || height == 0U || bpp == 0U ||
+        x > texture_width || y > texture_height ||
+        width > texture_width - x || height > texture_height - y ||
+        width > SIZE_MAX / bpp) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+
+    size_t row_bytes = (size_t)width * bpp;
+    if (height > SIZE_MAX / row_bytes) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+    size_t total_size = row_bytes * height;
+    if ((uint64_t)data_offset + data_size > total_size) {
+        return GFXLINK_STATUS_INVALID_ARGUMENT;
+    }
+
+    uint8_t *dst = grape_texture_pixels(texture);
+    size_t stride = grape_texture_stride(texture);
+    if (!dst || stride < (size_t)(x + width) * bpp) {
+        return GFXLINK_STATUS_INTERNAL;
+    }
+
+    size_t logical_offset = data_offset;
+    size_t remaining = data_size;
+    size_t source_offset = 0U;
+    while (remaining > 0U) {
+        size_t row = logical_offset / row_bytes;
+        size_t column_bytes = logical_offset % row_bytes;
+        size_t copy_size = row_bytes - column_bytes;
+        if (copy_size > remaining) {
+            copy_size = remaining;
+        }
+        memcpy(dst + (size_t)(y + row) * stride + (size_t)x * bpp + column_bytes,
+               data + source_offset,
+               copy_size);
+        logical_offset += copy_size;
+        source_offset += copy_size;
+        remaining -= copy_size;
+    }
+
+    if ((size_t)data_offset + data_size == total_size) {
+        gfxlink_gpu_image_damage_t damage = {
+            .image_handle = image_handle,
+            .x = x,
+            .y = y,
+            .width = width,
+            .height = height,
+        };
+        return record_gpu_image_damage(link, &damage);
+    }
+    return GFXLINK_STATUS_OK;
+}
+
+static gfxlink_status_t gpu_apply_pending_image_damage(grape_gfxlink_t *link)
+{
+    for (uint32_t i = 0U; i < link->gpu_image_damage_count; ++i) {
+        const gfxlink_gpu_image_damage_t *damage = &link->gpu_image_damage[i];
+        gfxlink_gpu_image_t *image = find_gpu_image(link, damage->image_handle);
+        if (!image) {
+            return GFXLINK_STATUS_NOT_FOUND;
+        }
+        esp_err_t ret = grape_texture_invalidate_rect(image->texture,
+                                                      damage->x, damage->y,
+                                                      damage->width, damage->height);
+        if (ret != ESP_OK) {
+            return status_from_esp_err(ret);
+        }
+    }
+    link->gpu_image_damage_count = 0U;
+    return GFXLINK_STATUS_OK;
+}
+
+static bool gpu_draw_transform_valid(const gfxlink_gpu_draw_image_command_t *draw)
+{
+    float x = float_from_le_bits(draw->x_bits);
+    float y = float_from_le_bits(draw->y_bits);
+    float scale_x = float_from_le_bits(draw->scale_x_bits);
+    float scale_y = float_from_le_bits(draw->scale_y_bits);
+    float rotation = float_from_le_bits(draw->rotation_bits);
+    float origin_x = float_from_le_bits(draw->origin_x_bits);
+    float origin_y = float_from_le_bits(draw->origin_y_bits);
+
+    return isfinite(x) && isfinite(y) && isfinite(scale_x) && isfinite(scale_y) &&
+           isfinite(rotation) && isfinite(origin_x) && isfinite(origin_y) &&
+           fabsf(scale_x) >= FLT_EPSILON && fabsf(scale_y) >= FLT_EPSILON;
+}
+
+static gfxlink_status_t gpu_validate_commands(grape_gfxlink_t *link,
+                                               const uint8_t *commands,
                                                uint32_t command_size,
                                                uint32_t *out_command_count)
 {
@@ -651,16 +1083,40 @@ static gfxlink_status_t gpu_validate_commands(const uint8_t *commands,
         uint16_t size = from_le16(header.size);
         uint32_t flags = from_le32(header.flags);
 
-        if (size < sizeof(header) || (size & 7U) != 0U || size > command_size - offset || flags != 0U) {
+        if (size < sizeof(header) || (size & 7U) != 0U ||
+            size > command_size - offset || flags != 0U) {
             return GFXLINK_STATUS_INVALID_PACKET;
         }
 
         switch (opcode) {
             case GFXLINK_GPU_CMD_NOP:
+            case GFXLINK_GPU_CMD_PRESENT:
                 if (size != sizeof(gfxlink_gpu_command_header_t)) {
                     return GFXLINK_STATUS_INVALID_PACKET;
                 }
                 break;
+            case GFXLINK_GPU_CMD_CLEAR:
+                if (size != sizeof(gfxlink_gpu_clear_command_t)) {
+                    return GFXLINK_STATUS_INVALID_PACKET;
+                }
+                break;
+            case GFXLINK_GPU_CMD_DRAW_IMAGE: {
+                if (size != sizeof(gfxlink_gpu_draw_image_command_t)) {
+                    return GFXLINK_STATUS_INVALID_PACKET;
+                }
+                gfxlink_gpu_draw_image_command_t draw;
+                memcpy(&draw, commands + offset, sizeof(draw));
+                if (!find_gpu_image(link, from_le32(draw.image_handle)) ||
+                    !gpu_draw_transform_valid(&draw)) {
+                    return GFXLINK_STATUS_INVALID_ARGUMENT;
+                }
+                for (uint32_t i = 0U; i < sizeof(draw.reserved); ++i) {
+                    if (draw.reserved[i] != 0U) {
+                        return GFXLINK_STATUS_INVALID_PACKET;
+                    }
+                }
+                break;
+            }
             default:
                 return GFXLINK_STATUS_UNSUPPORTED;
         }
@@ -673,10 +1129,165 @@ static gfxlink_status_t gpu_validate_commands(const uint8_t *commands,
     return count ? GFXLINK_STATUS_OK : GFXLINK_STATUS_INVALID_ARGUMENT;
 }
 
-static void gpu_submit(grape_gfxlink_t *link,
-                       const uint8_t *payload,
-                       uint32_t payload_size,
-                       gfxlink_gpu_submit_response_t *response)
+static esp_err_t gpu_ensure_clear_surface(grape_gfxlink_t *link,
+                                          gfxlink_gpu_context_t *context)
+{
+    if (context->clear_surface) {
+        return ESP_OK;
+    }
+
+    grape_texture_desc_t desc = {
+        .width = 1U,
+        .height = 1U,
+        .format = GRAPE_PIXEL_FORMAT_A8,
+        .memory = GRAPE_MEMORY_DEFAULT,
+    };
+    esp_err_t ret = grape_texture_create(link->grape, &desc, &context->clear_texture);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    uint8_t *pixel = grape_texture_pixels(context->clear_texture);
+    if (!pixel) {
+        grape_texture_destroy(context->clear_texture);
+        context->clear_texture = NULL;
+        return ESP_FAIL;
+    }
+    pixel[0] = 255U;
+    ret = grape_texture_invalidate(context->clear_texture);
+    if (ret != ESP_OK) {
+        grape_texture_destroy(context->clear_texture);
+        context->clear_texture = NULL;
+        return ret;
+    }
+
+    ret = grape_surface_create(link->grape, context->clear_texture, &context->clear_surface);
+    if (ret != ESP_OK) {
+        grape_texture_destroy(context->clear_texture);
+        context->clear_texture = NULL;
+        return ret;
+    }
+
+    const grape_display_info_t *display = grape_get_display_info(link->grape);
+    if (!display) {
+        grape_surface_destroy(context->clear_surface);
+        context->clear_surface = NULL;
+        grape_texture_destroy(context->clear_texture);
+        context->clear_texture = NULL;
+        return ESP_FAIL;
+    }
+    ret = grape_surface_set_scale(context->clear_surface,
+                                  (float)display->width,
+                                  (float)display->height);
+    if (ret != ESP_OK) {
+        grape_surface_destroy(context->clear_surface);
+        context->clear_surface = NULL;
+        grape_texture_destroy(context->clear_texture);
+        context->clear_texture = NULL;
+    }
+    return ret;
+}
+
+static esp_err_t gpu_execute_clear(grape_gfxlink_t *link,
+                                   gfxlink_gpu_context_t *context,
+                                   const gfxlink_gpu_clear_command_t *command)
+{
+    esp_err_t ret = gpu_context_hide_draw_surfaces(context);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = gpu_ensure_clear_surface(link, context);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    grape_color_t color = {command->r, command->g, command->b, command->a};
+    ret = grape_surface_set_tint(context->clear_surface, color);
+    if (ret == ESP_OK) {
+        ret = grape_surface_set_opacity(context->clear_surface, 255U);
+    }
+    if (ret == ESP_OK) {
+        ret = grape_surface_set_z(context->clear_surface,
+                                  (int32_t)from_le32((uint32_t)command->z));
+    }
+    if (ret == ESP_OK) {
+        ret = grape_surface_set_visible(context->clear_surface, true);
+    }
+    return ret;
+}
+
+static esp_err_t gpu_execute_draw_image(grape_gfxlink_t *link,
+                                        gfxlink_gpu_context_t *context,
+                                        const gfxlink_gpu_draw_image_command_t *command)
+{
+    uint32_t image_handle = from_le32(command->image_handle);
+    gfxlink_gpu_image_t *image = find_gpu_image(link, image_handle);
+    if (!image) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    gfxlink_gpu_draw_surface_t *draw =
+        gpu_context_find_draw_surface(context, image_handle);
+    bool created = false;
+    if (!draw) {
+        draw = calloc(1, sizeof(*draw));
+        if (!draw) {
+            return ESP_ERR_NO_MEM;
+        }
+
+        esp_err_t ret = grape_surface_create(link->grape, image->texture, &draw->surface);
+        if (ret != ESP_OK) {
+            free(draw);
+            return ret;
+        }
+        draw->image_handle = image_handle;
+        draw->next = context->draw_surfaces;
+        context->draw_surfaces = draw;
+        created = true;
+    }
+
+    grape_transform_t transform = {
+        .x = float_from_le_bits(command->x_bits),
+        .y = float_from_le_bits(command->y_bits),
+        .scale_x = float_from_le_bits(command->scale_x_bits),
+        .scale_y = float_from_le_bits(command->scale_y_bits),
+        .rotation = float_from_le_bits(command->rotation_bits),
+        .origin_x = float_from_le_bits(command->origin_x_bits),
+        .origin_y = float_from_le_bits(command->origin_y_bits),
+    };
+    esp_err_t ret = grape_surface_set_transform(draw->surface, &transform);
+    if (ret == ESP_OK) {
+        ret = grape_surface_set_z(draw->surface,
+                                  (int32_t)from_le32((uint32_t)command->z));
+    }
+    if (ret == ESP_OK) {
+        ret = grape_surface_set_opacity(draw->surface, command->opacity);
+    }
+    if (ret == ESP_OK) {
+        grape_color_t tint = {
+            command->tint_r,
+            command->tint_g,
+            command->tint_b,
+            command->tint_a,
+        };
+        ret = grape_surface_set_tint(draw->surface, tint);
+    }
+    if (ret == ESP_OK) {
+        ret = grape_surface_set_visible(draw->surface, true);
+    }
+    if (ret != ESP_OK && created) {
+        /* Remove a half-created binding so later submissions do not reuse it. */
+        context->draw_surfaces = draw->next;
+        grape_surface_destroy(draw->surface);
+        free(draw);
+    }
+    return ret;
+}
+
+static void gpu_submit_renderer(grape_gfxlink_t *link,
+                                const uint8_t *payload,
+                                uint32_t payload_size,
+                                gfxlink_gpu_submit_response_t *response)
 {
     memset(response, 0, sizeof(*response));
 
@@ -687,7 +1298,6 @@ static void gpu_submit(grape_gfxlink_t *link,
 
     gfxlink_gpu_submit_request_t request;
     memcpy(&request, payload, sizeof(request));
-
     uint32_t context_handle = from_le32(request.context_handle);
     uint32_t command_size = from_le32(request.command_size);
     uint64_t submit_id = from_le64(request.submit_id);
@@ -705,15 +1315,56 @@ static void gpu_submit(grape_gfxlink_t *link,
         return;
     }
 
+    gfxlink_status_t status = gpu_apply_pending_image_damage(link);
     uint32_t command_count = 0U;
-    gfxlink_status_t status = gpu_validate_commands(payload + sizeof(request),
-                                                    command_size,
-                                                    &command_count);
+    const uint8_t *commands = payload + sizeof(request);
+    if (status == GFXLINK_STATUS_OK) {
+        status = gpu_validate_commands(link, commands, command_size, &command_count);
+    }
+
+    if (status == GFXLINK_STATUS_OK) {
+        uint32_t offset = 0U;
+        while (offset < command_size) {
+            gfxlink_gpu_command_header_t header;
+            memcpy(&header, commands + offset, sizeof(header));
+            uint16_t opcode = from_le16(header.opcode);
+            uint16_t size = from_le16(header.size);
+            esp_err_t ret = ESP_OK;
+
+            switch (opcode) {
+                case GFXLINK_GPU_CMD_NOP:
+                    break;
+                case GFXLINK_GPU_CMD_CLEAR: {
+                    gfxlink_gpu_clear_command_t command;
+                    memcpy(&command, commands + offset, sizeof(command));
+                    ret = gpu_execute_clear(link, context, &command);
+                    break;
+                }
+                case GFXLINK_GPU_CMD_DRAW_IMAGE: {
+                    gfxlink_gpu_draw_image_command_t command;
+                    memcpy(&command, commands + offset, sizeof(command));
+                    ret = gpu_execute_draw_image(link, context, &command);
+                    break;
+                }
+                case GFXLINK_GPU_CMD_PRESENT:
+                    ret = grape_present(link->grape);
+                    break;
+                default:
+                    ret = ESP_ERR_NOT_SUPPORTED;
+                    break;
+            }
+            if (ret != ESP_OK) {
+                status = status_from_esp_err(ret);
+                break;
+            }
+            offset += size;
+        }
+    }
+
     if (status == GFXLINK_STATUS_OK) {
         context->submissions++;
         context->commands_executed += command_count;
     }
-
     response->status = (int32_t)to_le32((uint32_t)(int32_t)status);
     response->command_count = to_le32(command_count);
 }
@@ -1722,6 +2373,73 @@ static void execute_renderer_request(grape_gfxlink_t *link,
     esp_err_t ret = ESP_ERR_NOT_SUPPORTED;
 
     switch (request->opcode) {
+        case GFXLINK_RENDERER_INTERNAL_GPU_RESET: {
+            if (request->payload_size != 0U) {
+                set_status_response(response, GFXLINK_STATUS_INVALID_ARGUMENT);
+                return;
+            }
+            set_status_response(response, gpu_reset_renderer(link));
+            return;
+        }
+
+        case GFXLINK_OP_GPU_CONTEXT_DESTROY: {
+            if (request->payload_size != sizeof(gfxlink_gpu_context_handle_request_t)) {
+                set_status_response(response, GFXLINK_STATUS_INVALID_ARGUMENT);
+                return;
+            }
+            gfxlink_gpu_context_handle_request_t payload;
+            memcpy(&payload, request->payload, sizeof(payload));
+            set_status_response(response,
+                                gpu_context_destroy_renderer(link,
+                                                             from_le32(payload.handle)));
+            return;
+        }
+
+        case GFXLINK_OP_GPU_IMAGE_CREATE: {
+            if (request->payload_size != sizeof(gfxlink_gpu_image_create_request_t)) {
+                set_status_response(response, GFXLINK_STATUS_INVALID_ARGUMENT);
+                return;
+            }
+            gfxlink_gpu_image_create_request_t payload;
+            gfxlink_gpu_image_create_response_t result = {0};
+            memcpy(&payload, request->payload, sizeof(payload));
+            gfxlink_status_t status = gpu_image_create_renderer(link, &payload, &result);
+            if (status != GFXLINK_STATUS_OK) {
+                set_status_response(response, status);
+                return;
+            }
+            memcpy(response->payload, &result, sizeof(result));
+            response->payload_size = sizeof(result);
+            return;
+        }
+
+        case GFXLINK_OP_GPU_IMAGE_DESTROY: {
+            if (request->payload_size != sizeof(gfxlink_gpu_image_handle_request_t)) {
+                set_status_response(response, GFXLINK_STATUS_INVALID_ARGUMENT);
+                return;
+            }
+            gfxlink_gpu_image_handle_request_t payload;
+            memcpy(&payload, request->payload, sizeof(payload));
+            set_status_response(response,
+                                gpu_image_destroy_renderer(link,
+                                                           from_le32(payload.handle)));
+            return;
+        }
+
+        case GFXLINK_OP_GPU_SUBMIT: {
+            if (!request->large_payload ||
+                request->payload_size < sizeof(gfxlink_gpu_submit_request_t)) {
+                set_status_response(response, GFXLINK_STATUS_INVALID_ARGUMENT);
+                return;
+            }
+            gfxlink_gpu_submit_response_t result;
+            gpu_submit_renderer(link, request->large_payload,
+                                request->payload_size, &result);
+            memcpy(response->payload, &result, sizeof(result));
+            response->payload_size = sizeof(result);
+            return;
+        }
+
         case GFXLINK_OP_PRESENT:
             if (request->payload_size != 0U) {
                 set_status_response(response, GFXLINK_STATUS_INVALID_ARGUMENT);
@@ -2336,6 +3054,10 @@ static bool is_renderer_opcode(uint8_t opcode)
         case GFXLINK_OP_FONT_CREATE:
         case GFXLINK_OP_FONT_DESTROY:
         case GFXLINK_OP_TEXT_RASTERIZE:
+        case GFXLINK_OP_GPU_CONTEXT_DESTROY:
+        case GFXLINK_OP_GPU_IMAGE_CREATE:
+        case GFXLINK_OP_GPU_IMAGE_DESTROY:
+        case GFXLINK_OP_GPU_SUBMIT:
             return true;
         default:
             return false;
@@ -2354,7 +3076,32 @@ static void dispatch_packet(grape_gfxlink_t *link,
             send_status(header->opcode, sequence, GFXLINK_STATUS_INVALID_ARGUMENT);
             return;
         }
-        gpu_contexts_clear(link);
+        gfxlink_renderer_request_t reset_request = {
+            .opcode = GFXLINK_RENDERER_INTERNAL_GPU_RESET,
+            .sequence = sequence,
+            .payload_size = 0U,
+        };
+        if (xQueueSend(link->renderer_requests, &reset_request,
+                       pdMS_TO_TICKS(250)) != pdTRUE) {
+            send_status(header->opcode, sequence, GFXLINK_STATUS_BUSY);
+            return;
+        }
+        gfxlink_renderer_response_t reset_response;
+        if (xQueueReceive(link->renderer_responses, &reset_response,
+                          pdMS_TO_TICKS(5000)) != pdTRUE ||
+            reset_response.opcode != GFXLINK_RENDERER_INTERNAL_GPU_RESET ||
+            reset_response.sequence != sequence ||
+            reset_response.payload_size != sizeof(gfxlink_status_response_t)) {
+            send_status(header->opcode, sequence, GFXLINK_STATUS_INTERNAL);
+            return;
+        }
+        gfxlink_status_response_t reset_status;
+        memcpy(&reset_status, reset_response.payload, sizeof(reset_status));
+        if ((int32_t)from_le32((uint32_t)reset_status.status) != GFXLINK_STATUS_OK) {
+            send_status(header->opcode, sequence,
+                        (gfxlink_status_t)(int32_t)from_le32((uint32_t)reset_status.status));
+            return;
+        }
         gfxlink_hello_response_t response = {
             .status = (int32_t)to_le32((uint32_t)GFXLINK_STATUS_OK),
             .protocol_version = GFXLINK_PROTOCOL_VERSION,
@@ -2376,7 +3123,9 @@ static void dispatch_packet(grape_gfxlink_t *link,
                 GFXLINK_CAP_FONTS |
                 GFXLINK_CAP_TEXT |
                 GFXLINK_CAP_TEXTURE_WRITE_RECT |
-                GFXLINK_CAP_GPU_SUBMIT
+                GFXLINK_CAP_GPU_SUBMIT |
+                GFXLINK_CAP_GPU_IMAGES |
+                GFXLINK_CAP_GPU_DRAW_IMAGE
             ),
             .max_payload = to_le32(GFXLINK_MAX_PAYLOAD),
             .max_resource_size = to_le32(GFXLINK_MAX_RESOURCE_SIZE),
@@ -2434,28 +3183,6 @@ static void dispatch_packet(grape_gfxlink_t *link,
         };
         if (send_response(header->opcode, sequence, &response, sizeof(response)) != ESP_OK) {
             ESP_LOGE(TAG, "Failed to send GPU context create response");
-        }
-        return;
-    }
-
-    if (header->opcode == GFXLINK_OP_GPU_CONTEXT_DESTROY) {
-        if (payload_size != sizeof(gfxlink_gpu_context_handle_request_t)) {
-            send_status(header->opcode, sequence, GFXLINK_STATUS_INVALID_ARGUMENT);
-            return;
-        }
-
-        gfxlink_gpu_context_handle_request_t request;
-        memcpy(&request, payload, sizeof(request));
-        send_status(header->opcode, sequence,
-                    gpu_context_destroy(link, from_le32(request.handle)));
-        return;
-    }
-
-    if (header->opcode == GFXLINK_OP_GPU_SUBMIT) {
-        gfxlink_gpu_submit_response_t response;
-        gpu_submit(link, payload, payload_size, &response);
-        if (send_response(header->opcode, sequence, &response, sizeof(response)) != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to send GPU submit response");
         }
         return;
     }
@@ -2520,6 +3247,30 @@ static void dispatch_packet(grape_gfxlink_t *link,
         return;
     }
 
+    if (header->opcode == GFXLINK_OP_GPU_IMAGE_WRITE_RECT) {
+        gfxlink_status_t status = link->gpu_image_write_status;
+        if (status == GFXLINK_STATUS_OK) {
+            status = write_gpu_image_rect(link, payload, payload_size);
+        }
+
+        if ((from_le16(header->flags) & GFXLINK_FLAG_NO_RESPONSE) != 0U) {
+            if (status != GFXLINK_STATUS_OK &&
+                link->gpu_image_write_status == GFXLINK_STATUS_OK) {
+                link->gpu_image_write_status = status;
+            }
+        } else {
+            if (link->gpu_image_write_status != GFXLINK_STATUS_OK) {
+                status = link->gpu_image_write_status;
+            }
+            link->gpu_image_write_status = GFXLINK_STATUS_OK;
+            if (status != GFXLINK_STATUS_OK) {
+                link->gpu_image_damage_count = 0U;
+            }
+            send_status(header->opcode, sequence, status);
+        }
+        return;
+    }
+
     if (header->opcode == GFXLINK_OP_TEXTURE_WRITE_RECT) {
         gfxlink_status_t status = link->fast_write_status;
         if (status == GFXLINK_STATUS_OK) {
@@ -2550,7 +3301,8 @@ static void dispatch_packet(grape_gfxlink_t *link,
         send_status(header->opcode, sequence, GFXLINK_STATUS_UNSUPPORTED);
         return;
     }
-    if (payload_size > GFXLINK_RENDERER_MAX_PAYLOAD) {
+    if (payload_size > GFXLINK_RENDERER_MAX_PAYLOAD &&
+        header->opcode != GFXLINK_OP_GPU_SUBMIT) {
         send_status(header->opcode, sequence, GFXLINK_STATUS_INVALID_ARGUMENT);
         return;
     }
@@ -2560,7 +3312,14 @@ static void dispatch_packet(grape_gfxlink_t *link,
         .sequence = sequence,
         .payload_size = payload_size,
     };
-    if (payload_size > 0U) {
+    if (header->opcode == GFXLINK_OP_GPU_SUBMIT) {
+        request.large_payload = malloc(payload_size);
+        if (!request.large_payload) {
+            send_status(header->opcode, sequence, GFXLINK_STATUS_NO_MEMORY);
+            return;
+        }
+        memcpy(request.large_payload, payload, payload_size);
+    } else if (payload_size > 0U) {
         memcpy(request.payload, payload, payload_size);
     }
     if (header->opcode == GFXLINK_OP_PRESENT && link->fast_damage_count > 0U) {
@@ -2572,12 +3331,14 @@ static void dispatch_packet(grape_gfxlink_t *link,
     }
 
     if (xQueueSend(link->renderer_requests, &request, pdMS_TO_TICKS(250)) != pdTRUE) {
+        free(request.large_payload);
         send_status(header->opcode, sequence, GFXLINK_STATUS_BUSY);
         return;
     }
 
     gfxlink_renderer_response_t response;
     if (xQueueReceive(link->renderer_responses, &response, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        /* CPU0 owns large_payload after a successful queue send. */
         send_status(header->opcode, sequence, GFXLINK_STATUS_INTERNAL);
         return;
     }
@@ -2731,7 +3492,7 @@ esp_err_t grape_gfxlink_start(grape_context_t *grape, grape_gfxlink_t **out_link
 
     *out_link = link;
     ESP_LOGI(TAG,
-             "GFXLINK v%u started on USB HS; max payload=%u, resources=%u, fast texture writes + GPU submit enabled",
+             "GFXLINK v%u started on USB HS; max payload=%u, resources=%u, fast texture writes + M4.1 GPU images/draw enabled",
              GFXLINK_PROTOCOL_VERSION,
              GFXLINK_MAX_PAYLOAD,
              GFXLINK_MAX_RESOURCES);
@@ -2751,6 +3512,11 @@ esp_err_t grape_gfxlink_process(grape_gfxlink_t *link, TickType_t timeout_ticks)
 
     gfxlink_renderer_response_t response;
     execute_renderer_request(link, &request, &response);
+    /* A queued request transfers ownership of large_payload to CPU0. Free it
+     * here, after execution, so a CPU1 response timeout can never free memory
+     * that CPU0 may still be using. */
+    free(request.large_payload);
+    request.large_payload = NULL;
     if (xQueueSend(link->renderer_responses, &response, portMAX_DELAY) != pdTRUE) {
         return ESP_FAIL;
     }
