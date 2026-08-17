@@ -224,6 +224,17 @@ static void raster_surface_a8(grape_context_t *context, const grape_surface_t *s
     const grape_texture_t *texture = surface->texture;
     const float texture_width = (float)texture->width;
     const float texture_height = (float)texture->height;
+    const int32_t raster_width = clipped.width;
+    const float local_x_step = surface->local_x_from_screen_x;
+    const float local_y_step = surface->local_y_from_screen_x;
+    const uint8_t *texture_pixels = texture->pixels;
+    const size_t texture_stride = texture->stride;
+    const uint8_t tint_r = surface->tint.r;
+    const uint8_t tint_g = surface->tint.g;
+    const uint8_t tint_b = surface->tint.b;
+    const uint8_t tint_a = surface->tint.a;
+    const uint8_t opacity = surface->opacity;
+    const grape_pixel_format_t output_format = context->display_info.format;
     (void)damage_rect;
 
     for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) { // Iterate over rows
@@ -233,7 +244,7 @@ static void raster_surface_a8(grape_context_t *context, const grape_surface_t *s
 
         uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp);
 
-        for (int32_t x = 0; x < clipped.width; ++x) { // Iterate over columns
+        for (int32_t x = 0; x < raster_width; ++x) { // Iterate over columns
             if (local_x >= 0.0f && local_y >= 0.0f &&
                 local_x < texture_width && local_y < texture_height) { // If in bounds
 
@@ -241,23 +252,23 @@ static void raster_surface_a8(grape_context_t *context, const grape_surface_t *s
                 int32_t tx = (int32_t)local_x;
                 int32_t ty = (int32_t)local_y;
                 // and find the corresponding texel in memory
-                const uint8_t *row = texture->pixels + (size_t)ty * texture->stride;
+                const uint8_t *row = texture_pixels + (size_t)ty * texture_stride;
                 uint8_t alpha = row[tx];
 
                 if (alpha != 0) {
                     rgba8_t source = {
-                        .r = surface->tint.r,
-                        .g = surface->tint.g,
-                        .b = surface->tint.b,
-                        .a = mul8(mul8(alpha, surface->tint.a), surface->opacity),
+                        .r = tint_r,
+                        .g = tint_g,
+                        .b = tint_b,
+                        .a = mul8(mul8(alpha, tint_a), opacity),
                     }; // Apply tint and transparency
-                    composite_source_pixel(dst, context->display_info.format, source);
+                    composite_source_pixel(dst, output_format, source);
                 }
             }
 
             // Move the local coordinates by the affine transform constants
-            local_x += surface->local_x_from_screen_x;
-            local_y += surface->local_y_from_screen_x;
+            local_x += local_x_step;
+            local_y += local_y_step;
             dst += bpp;
         }
     }
@@ -284,6 +295,15 @@ static void raster_surface_rgb565(grape_context_t *context, const grape_surface_
     const grape_texture_t *texture = surface->texture;
     const float texture_width = (float)texture->width;
     const float texture_height = (float)texture->height;
+    const int32_t raster_width = clipped.width;
+    const float local_x_step = surface->local_x_from_screen_x;
+    const float local_y_step = surface->local_y_from_screen_x;
+    const uint8_t *texture_pixels = texture->pixels;
+    const size_t texture_stride = texture->stride;
+    const uint8_t tint_r = surface->tint.r;
+    const uint8_t tint_g = surface->tint.g;
+    const uint8_t tint_b = surface->tint.b;
+    const grape_pixel_format_t output_format = context->display_info.format;
     (void)damage_rect;
     const uint8_t surface_alpha = mul8(surface->opacity, surface->tint.a);
 
@@ -298,7 +318,7 @@ static void raster_surface_rgb565(grape_context_t *context, const grape_surface_
 
         uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp);
 
-        for (int32_t x = 0; x < clipped.width; ++x) { // Iterate over columns
+        for (int32_t x = 0; x < raster_width; ++x) { // Iterate over columns
             if (local_x >= 0.0f && local_y >= 0.0f &&
                 local_x < texture_width && local_y < texture_height) { // If in bounds
 
@@ -306,7 +326,7 @@ static void raster_surface_rgb565(grape_context_t *context, const grape_surface_
                 int32_t tx = (int32_t)local_x;
                 int32_t ty = (int32_t)local_y;
                 // and find the corresponding texel in memory
-                const uint8_t *row = texture->pixels + (size_t)ty * texture->stride;
+                const uint8_t *row = texture_pixels + (size_t)ty * texture_stride;
                 uint16_t pixel = ((const uint16_t *)row)[tx];
 
                 // Split RGB565 pixel into its R5, G6 and B5 components
@@ -315,18 +335,18 @@ static void raster_surface_rgb565(grape_context_t *context, const grape_surface_
                 uint8_t b5 = (uint8_t)(pixel & 0x1F);
 
                 rgba8_t source = {
-                    .r = mul8((uint8_t)((r5 << 3) | (r5 >> 2)), surface->tint.r),
-                    .g = mul8((uint8_t)((g6 << 2) | (g6 >> 4)), surface->tint.g),
-                    .b = mul8((uint8_t)((b5 << 3) | (b5 >> 2)), surface->tint.b),
+                    .r = mul8((uint8_t)((r5 << 3) | (r5 >> 2)), tint_r),
+                    .g = mul8((uint8_t)((g6 << 2) | (g6 >> 4)), tint_g),
+                    .b = mul8((uint8_t)((b5 << 3) | (b5 >> 2)), tint_b),
                     .a = surface_alpha,
                 }; // Apply tint and transparency
 
-                composite_source_pixel(dst, context->display_info.format, source);
+                composite_source_pixel(dst, output_format, source);
             }
 
             // Move the local coordinates by the affine transform constants
-            local_x += surface->local_x_from_screen_x;
-            local_y += surface->local_y_from_screen_x;
+            local_x += local_x_step;
+            local_y += local_y_step;
             dst += bpp;
         }
     }
@@ -353,6 +373,15 @@ static void raster_surface_rgb888(grape_context_t *context, const grape_surface_
     const grape_texture_t *texture = surface->texture;
     const float texture_width = (float)texture->width;
     const float texture_height = (float)texture->height;
+    const int32_t raster_width = clipped.width;
+    const float local_x_step = surface->local_x_from_screen_x;
+    const float local_y_step = surface->local_y_from_screen_x;
+    const uint8_t *texture_pixels = texture->pixels;
+    const size_t texture_stride = texture->stride;
+    const uint8_t tint_r = surface->tint.r;
+    const uint8_t tint_g = surface->tint.g;
+    const uint8_t tint_b = surface->tint.b;
+    const grape_pixel_format_t output_format = context->display_info.format;
     (void)damage_rect;
     const uint8_t surface_alpha = mul8(surface->opacity, surface->tint.a);
 
@@ -367,7 +396,7 @@ static void raster_surface_rgb888(grape_context_t *context, const grape_surface_
 
         uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp);
 
-        for (int32_t x = 0; x < clipped.width; ++x) { // Iterate over columns
+        for (int32_t x = 0; x < raster_width; ++x) { // Iterate over columns
             if (local_x >= 0.0f && local_y >= 0.0f &&
                 local_x < texture_width && local_y < texture_height) { // If in bounds
 
@@ -375,22 +404,22 @@ static void raster_surface_rgb888(grape_context_t *context, const grape_surface_
                 int32_t tx = (int32_t)local_x;
                 int32_t ty = (int32_t)local_y;
                 // and find the corresponding texel in memory
-                const uint8_t *row = texture->pixels + (size_t)ty * texture->stride;
+                const uint8_t *row = texture_pixels + (size_t)ty * texture_stride;
                 const uint8_t *pixel = row + (size_t)tx * 3U;
 
                 rgba8_t source = {
-                    .r = mul8(pixel[0], surface->tint.r),
-                    .g = mul8(pixel[1], surface->tint.g),
-                    .b = mul8(pixel[2], surface->tint.b),
+                    .r = mul8(pixel[0], tint_r),
+                    .g = mul8(pixel[1], tint_g),
+                    .b = mul8(pixel[2], tint_b),
                     .a = surface_alpha,
                 }; // Apply tint and transparency
 
-                composite_source_pixel(dst, context->display_info.format, source);
+                composite_source_pixel(dst, output_format, source);
             }
 
             // Move the local coordinates by the affine transform constants
-            local_x += surface->local_x_from_screen_x;
-            local_y += surface->local_y_from_screen_x;
+            local_x += local_x_step;
+            local_y += local_y_step;
             dst += bpp;
         }
     }
