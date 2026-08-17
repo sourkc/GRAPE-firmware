@@ -1,12 +1,22 @@
 idf_component_register(
-    SRCS "main.c"
-    INCLUDE_DIRS "."
+    SRCS
+        "main.c"
+        "demos/demo_registry.c"
+        "demos/demo_moving_squares.c"
+        "demos/demo_shader_raymarch.c"
+        "demos/demo_font.c"
+        "demos/demo_vector_svg.c"
+        "demos/demo_gpu_3d_triangle.c"
+    INCLUDE_DIRS
+        "."
+        "demos"
     EMBED_TXTFILES "grape_demo.svg"
     REQUIRES
-    grape
-    grape_benchmark
-    grape_storage
-    esp_timer
-    esp_hw_support
-    heap
+        grape
+        grape_benchmark
+        grape_gfxlink
+        grape_storage
+        esp_timer
+        esp_hw_support
+        heap
 )

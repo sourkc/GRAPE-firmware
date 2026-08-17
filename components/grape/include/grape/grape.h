@@ -1,6 +1,7 @@
 #pragma once
 
 #include "grape/grape_surface.h"
+#include "grape/grape_gpu.h"
 #include "grape/grape_shader.h"
 #include "grape/grape_display.h"
 #include "grape/grape_debug.h"

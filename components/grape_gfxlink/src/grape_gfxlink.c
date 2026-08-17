@@ -97,6 +97,7 @@ typedef struct gfxlink_gpu_draw_surface {
 
 typedef struct gfxlink_gpu_context {
     uint32_t handle;
+    grape_gpu_context_t *gpu;
     uint64_t submissions;
     uint64_t commands_executed;
     grape_texture_t *clear_texture;
@@ -728,6 +729,13 @@ static esp_err_t gpu_context_cleanup(gfxlink_gpu_context_t *context, bool *out_h
         }
         context->clear_texture = NULL;
     }
+    if (context->gpu) {
+        ret = grape_gpu_context_destroy(context->gpu);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        context->gpu = NULL;
+    }
     if (out_had_scene && had_scene) {
         *out_had_scene = true;
     }
@@ -799,6 +807,12 @@ static gfxlink_status_t gpu_context_create(grape_gfxlink_t *link, uint32_t *out_
     if (!handle) {
         free(context);
         return GFXLINK_STATUS_NO_MEMORY;
+    }
+
+    esp_err_t ret = grape_gpu_context_create(link->grape, &context->gpu);
+    if (ret != ESP_OK) {
+        free(context);
+        return status_from_esp_err(ret);
     }
 
     context->handle = handle;

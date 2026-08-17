@@ -1,23 +1,28 @@
 #pragma once
 
 /*
- * Set to 1 to run the automated GRAPE benchmark at boot.
- * Set to 0 to run the existing interactive/demo animation in main.c.
+ * Application operating mode:
+ *   0 - GFXLINK server
+ *   1 - benchmark suite
+ *   2 - demo registry
  */
-#define GRAPE_APP_RUN_BENCHMARK 1
+#define GRAPE_APP_MODE_GFXLINK   0U
+#define GRAPE_APP_MODE_BENCHMARK 1U
+#define GRAPE_APP_MODE_DEMO      2U
+
+#define GRAPE_APP_MODE GRAPE_APP_MODE_DEMO
+
+/*
+ * Demo ID used when GRAPE_APP_MODE == GRAPE_APP_MODE_DEMO:
+ *   0 - moving_squares
+ *   1 - shader_raymarch
+ *   2 - font
+ *   3 - vector_svg
+ *   4 - gpu_3d_triangle
+ */
+#define GRAPE_APP_DEMO 4U
+
+/* Benchmark suites used when GRAPE_APP_MODE == GRAPE_APP_MODE_BENCHMARK. */
 #define GRAPE_APP_BENCHMARK_SUITE_MASK GRAPE_BENCHMARK_SUITE_ALL
-
-
-/* Shader language demo (animated SDF raymarcher). */
-#define GRAPE_APP_RUN_SHADER_DEMO 0
-
-/* First TrueType glyph proof of life. */
-#define GRAPE_APP_RUN_FONT_DEMO 0
-
-/* SVG document proof of life. */
-#define GRAPE_APP_RUN_VECTOR_DEMO 0
-
-/* Demo diagnostics. */
-#define GRAPE_APP_DAMAGE_STATS_INTERVAL_MS 5000
 
 #define EXPERIMENTAL_SET_CLOCK_400_MHZ 0
