@@ -418,6 +418,43 @@ static grape_rect_t texture_rect_surface_bounds(const grape_surface_t *surface,
     };
 }
 
+/* Recompute only cells intersecting a caller-declared texel update. Damage is
+ * marked geometrically before this call, so removing the last alpha in a cell
+ * cannot erase the information needed to repair previously visible pixels. */
+static void texture_update_occupancy_rect(grape_texture_t *texture,
+    uint32_t x, uint32_t y, uint32_t width, uint32_t height)
+{
+    const uint32_t cell = CONFIG_GRAPE_TEXTURE_OCCUPANCY_CELL_SIZE;
+    const uint32_t cx1 = (x + width - 1U) / cell;
+    const uint32_t cy1 = (y + height - 1U) / cell;
+    for (uint32_t cy = y / cell; cy <= cy1; ++cy) {
+        uint32_t y0 = cy * cell, y1 = y0 + cell;
+        if (y1 > texture->height) y1 = texture->height;
+        for (uint32_t cx = x / cell; cx <= cx1; ++cx) {
+            uint32_t x0 = cx * cell, x1 = x0 + cell;
+            if (x1 > texture->width) x1 = texture->width;
+            bool occupied = false;
+            for (uint32_t py = y0; py < y1 && !occupied; ++py) {
+                const uint8_t *row = texture->pixels + (size_t)py * texture->stride;
+                for (uint32_t px = x0; px < x1; ++px) {
+                    if (texture_alpha_at(texture, row, px)) { occupied = true; break; }
+                }
+            }
+            const size_t index = occupancy_index(texture, cx, cy);
+            const uint8_t mask = (uint8_t)(1U << (index & 7U));
+            uint8_t *bits = &texture->occupancy[index >> 3U];
+            bool was_occupied = (*bits & mask) != 0U;
+            if (occupied != was_occupied) {
+                if (occupied) { *bits |= mask; ++texture->occupancy_occupied_count; }
+                else { *bits &= (uint8_t)~mask; --texture->occupancy_occupied_count; }
+            }
+        }
+    }
+    texture->occupancy_all_empty = texture->occupancy_occupied_count == 0U;
+    texture->occupancy_all_full = texture->occupancy_occupied_count ==
+        (size_t)texture->occupancy_columns * texture->occupancy_rows;
+}
+
 esp_err_t grape_texture_invalidate_rect(grape_texture_t *texture,
                                         uint32_t x,
                                         uint32_t y,
@@ -430,8 +467,13 @@ esp_err_t grape_texture_invalidate_rect(grape_texture_t *texture,
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (texture_format_has_alpha(texture->format)) {
+    const bool alpha = texture_format_has_alpha(texture->format);
+    /* Full CLEAR passes benefit from the old/new occupancy coverage union:
+     * damaging their entire geometric target would enlarge sparse 3D redraws. */
+    if (alpha && x == 0U && y == 0U && width == texture->width && height == texture->height)
         return grape_texture_invalidate(texture);
+    if (alpha && (!texture->occupancy || texture->occupancy_bitmap_size == 0U)) {
+        return ESP_ERR_INVALID_STATE;
     }
 
     for (grape_surface_t *surface = texture->context->surfaces;
@@ -445,14 +487,17 @@ esp_err_t grape_texture_invalidate_rect(grape_texture_t *texture,
         esp_err_t ret;
         if (surface->shader_count > 0U ||
             !surface->texture_mapping_identity ||
-            surface->texture_filter == GRAPE_TEXTURE_FILTER_LINEAR) {
+            surface->texture_filter == GRAPE_TEXTURE_FILTER_LINEAR ||
+            surface->aa != GRAPE_SURFACE_AA_NONE) {
             /*
              * Linear sampling gives each texel a one-texel neighbourhood of
              * influence. Until partial invalidation understands that footprint,
              * conservatively damage the surface instead of leaving stale edge
              * pixels around an updated rectangle.
              */
-            ret = grape_damage_add_surface_coverage(surface);
+            /* Bounds, not occupancy: the edited alpha may have appeared in a
+             * formerly empty cell or disappeared from a formerly occupied one. */
+            ret = grape_damage_add(texture->context, surface->bounds);
         } else {
             ret = grape_damage_add(
                 texture->context,
@@ -464,6 +509,7 @@ esp_err_t grape_texture_invalidate_rect(grape_texture_t *texture,
         }
     }
 
+    if (alpha) texture_update_occupancy_rect(texture, x, y, width, height);
     return ESP_OK;
 }
 

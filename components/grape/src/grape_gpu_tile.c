@@ -810,7 +810,7 @@ static esp_err_t gpu_raster_tile_shaded_i32(grape_gpu_context_t *context,
             }
 
             color += samples;
-            depth += samples;
+            if (depth) depth += samples;
             e0 += primitive->edge_step_x[0];
             e1 += primitive->edge_step_x[1];
             e2 += primitive->edge_step_x[2];
@@ -1342,7 +1342,7 @@ static esp_err_t gpu_raster_tile_shaded_fallback(grape_gpu_context_t *context,
             }
 
             color += samples;
-            depth += samples;
+            if (depth) depth += samples;
             e0 += setup->e0_step_x;
             e1 += setup->e1_step_x;
             e2 += setup->e2_step_x;

@@ -431,6 +431,13 @@ void grape_surface_insert_sorted(grape_context_t *context, grape_surface_t *surf
  * resolve to the texture's native dimensions. The resolved surface size is
  * independent from the texture afterwards.
  */
+static bool surface_transform_finite(const grape_transform_t *t)
+{
+    return isfinite(t->x) && isfinite(t->y) && isfinite(t->scale_x) &&
+        isfinite(t->scale_y) && isfinite(t->rotation) &&
+        isfinite(t->origin_x) && isfinite(t->origin_y);
+}
+
 esp_err_t grape_surface_create(grape_context_t *context,
                                const grape_surface_desc_t *desc,
                                grape_surface_t **out_surface)
@@ -441,6 +448,7 @@ esp_err_t grape_surface_create(grape_context_t *context,
         !surface_aa_valid(desc->aa) ||
         (desc->texture && desc->texture->context != context) ||
         (desc->shader_count > 0U && !desc->shaders) ||
+        !surface_transform_finite(&desc->transform) ||
         fabsf(desc->transform.scale_x) < FLT_EPSILON ||
         fabsf(desc->transform.scale_y) < FLT_EPSILON) {
         return ESP_ERR_INVALID_ARG;
@@ -767,10 +775,17 @@ esp_err_t grape_surface_update_shader_uniforms(grape_surface_t *surface,
  */
 esp_err_t grape_surface_set_transform(grape_surface_t *surface, const grape_transform_t *transform)
 {
-    if (!surface || !transform || fabsf(transform->scale_x) < FLT_EPSILON || fabsf(transform->scale_y) < FLT_EPSILON) {
+    if (!surface || !transform || !surface_transform_finite(transform) || fabsf(transform->scale_x) < FLT_EPSILON || fabsf(transform->scale_y) < FLT_EPSILON) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    const grape_transform_t *old = &surface->transform;
+    if (old->x == transform->x && old->y == transform->y &&
+        old->scale_x == transform->scale_x && old->scale_y == transform->scale_y &&
+        old->rotation == transform->rotation &&
+        old->origin_x == transform->origin_x && old->origin_y == transform->origin_y) {
+        return ESP_OK;
+    }
     GRAPE_TIME_SCOPE(SURFACE_TRANSFORM);
 
     esp_err_t ret = mark_surface_coverage(surface);

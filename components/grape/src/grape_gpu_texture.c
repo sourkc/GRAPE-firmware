@@ -23,6 +23,9 @@ static inline int32_t gpu_clamp_index(int32_t value, int32_t limit)
 
 static inline int32_t gpu_wrap_index(int32_t value, int32_t limit)
 {
+    /* Conversion to unsigned is defined for negative indices as well. */
+    const uint32_t size = (uint32_t)limit;
+    if ((size & (size - 1U)) == 0U) return (int32_t)((uint32_t)value & (size - 1U));
     int32_t wrapped = value % limit;
     return wrapped < 0 ? wrapped + limit : wrapped;
 }
@@ -120,6 +123,16 @@ static inline grape_color_t gpu_mix_bilinear(grape_color_t c00,
     return (grape_color_t) {(uint8_t)r, (uint8_t)g, (uint8_t)b, alpha};
 }
 
+static inline grape_color_t gpu_mix_opaque_bilinear(grape_color_t a, grape_color_t b,
+    grape_color_t c, grape_color_t d, uint32_t wa, uint32_t wb, uint32_t wc, uint32_t wd)
+{
+#define OPAQUE_MIX(channel) (uint8_t)(((uint32_t)a.channel * wa + \
+    (uint32_t)b.channel * wb + (uint32_t)c.channel * wc + (uint32_t)d.channel * wd + 32768U) >> 16U)
+    grape_color_t result = { OPAQUE_MIX(r), OPAQUE_MIX(g), OPAQUE_MIX(b), 255U };
+#undef OPAQUE_MIX
+    return result;
+}
+
 esp_err_t grape_gpu_sample_texture(const grape_texture_t *texture,
                                    const grape_gpu_sampler_desc_t *sampler,
                                    float u,
@@ -172,16 +185,14 @@ esp_err_t grape_gpu_sample_texture(const grape_texture_t *texture,
     const int32_t y0 = gpu_address_index(y0_raw, height, sampler->address_v);
     const int32_t y1 = gpu_address_index(y1_raw, height, sampler->address_v);
 
-    *out_color = gpu_mix_bilinear(
-        gpu_read_texel(texture, x0, y0),
-        gpu_read_texel(texture, x1, y0),
-        gpu_read_texel(texture, x0, y1),
-        gpu_read_texel(texture, x1, y1),
-        ix * iy,
-        fx * iy,
-        ix * fy,
-        fx * fy
-    );
+    const grape_color_t a = gpu_read_texel(texture, x0, y0);
+    const grape_color_t b = gpu_read_texel(texture, x1, y0);
+    const grape_color_t c = gpu_read_texel(texture, x0, y1);
+    const grape_color_t d = gpu_read_texel(texture, x1, y1);
+    if (texture->format == GRAPE_PIXEL_FORMAT_RGB565 || texture->format == GRAPE_PIXEL_FORMAT_RGB888)
+        *out_color = gpu_mix_opaque_bilinear(a, b, c, d, ix * iy, fx * iy, ix * fy, fx * fy);
+    else
+        *out_color = gpu_mix_bilinear(a, b, c, d, ix * iy, fx * iy, ix * fy, fx * fy);
     return ESP_OK;
 }
 

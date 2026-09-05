@@ -3,8 +3,10 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
 
 #define GRAPE_SHADER_PROCEDURAL_STRIP_ROWS 8
+#define GRAPE_SHADER_PROCEDURAL_BUDGET_US 2000
 
 esp_err_t grape_shader_render_procedural_to_texture(grape_texture_t *target,
                                                      const grape_shader_program_t *shader,
@@ -39,6 +41,7 @@ esp_err_t grape_shader_render_procedural_to_texture(grape_texture_t *target,
         .local_y_offset = 0.0f,
     };
 
+    int64_t budget_start = esp_timer_get_time();
     for (uint32_t y = 0U; y < target->height; y += GRAPE_SHADER_PROCEDURAL_STRIP_ROWS) {
         uint32_t rows = target->height - y;
         if (rows > GRAPE_SHADER_PROCEDURAL_STRIP_ROWS) {
@@ -49,8 +52,12 @@ esp_err_t grape_shader_render_procedural_to_texture(grape_texture_t *target,
         args.clipped.height = (int32_t)rows;
         shader->kernel(&args, uniforms);
 
-        if (y + rows < target->height) {
+        if (y + rows < target->height &&
+            esp_timer_get_time() - budget_start >= GRAPE_SHADER_PROCEDURAL_BUDGET_US) {
+            /* Allow idle/lower-priority tasks to run after actual work, rather
+             * than sleeping after every eight rows of even the cheapest shader. */
             vTaskDelay(1);
+            budget_start = esp_timer_get_time();
         }
     }
 

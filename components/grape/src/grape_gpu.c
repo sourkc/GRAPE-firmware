@@ -268,6 +268,7 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
     }
 
     context->color_attachment = desc->color_attachment;
+    ++context->color_attachment->ref_count;
     context->depth_attachment = desc->depth_attachment;
     context->sample_count = sample_count;
     context->bound_pipeline = NULL;
@@ -300,6 +301,7 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
         ret = grape_gpu_tile_begin(context, desc->color_load_op, desc->clear_color);
         if (ret != ESP_OK) {
             context->render_pass_active = false;
+            --context->color_attachment->ref_count;
             context->color_attachment = NULL;
             context->depth_attachment = NULL;
             context->sample_count = GRAPE_GPU_SAMPLE_COUNT_1;
@@ -329,6 +331,7 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
             );
             if (ret != ESP_OK) {
                 context->render_pass_active = false;
+                --context->color_attachment->ref_count;
                 context->color_attachment = NULL;
                 context->depth_attachment = NULL;
                 context->sample_count = GRAPE_GPU_SAMPLE_COUNT_1;
@@ -374,6 +377,7 @@ esp_err_t grape_gpu_end_render_pass(grape_gpu_context_t *context)
     }
 
     context->render_pass_active = false;
+    --context->color_attachment->ref_count;
     context->color_attachment = NULL;
     context->depth_attachment = NULL;
     context->sample_count = GRAPE_GPU_SAMPLE_COUNT_1;

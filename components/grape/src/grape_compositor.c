@@ -1,4 +1,5 @@
 #include <math.h>
+#include <string.h>
 
 #include "grape_internal.h"
 #include "grape_shader_runtime.h"
@@ -883,9 +884,64 @@ static void raster_surface_a8(grape_context_t *context, const grape_surface_t *s
  * @param clipped Intersection of the dirty region and the surface's bounds
  * @param bpp Bytes per pixel in the render target format
  */
+/* Exact 1x/2x opaque RGB565 copies. The bounded half-integer offsets and
+ * binary-exact increments preserve the generic affine loop's pixel choices.
+ * Other states retain the existing rasterizer, including fractional placement. */
+static bool raster_rgb565_copy(grape_context_t *context, const grape_surface_t *surface,
+                                grape_rect_t clipped, size_t bpp)
+{
+    const grape_texture_t *texture = surface->texture;
+    const float sx = surface->local_x_from_screen_x;
+    const float sy = surface->local_y_from_screen_y;
+    const float ox = surface->local_x_offset, oy = surface->local_y_offset;
+    if (context->display_info.format != GRAPE_PIXEL_FORMAT_RGB565 || bpp != 2U ||
+        texture->format != GRAPE_PIXEL_FORMAT_RGB565 ||
+        !surface->texture_mapping_identity || surface->shader_count != 0U ||
+        surface->texture_filter != GRAPE_TEXTURE_FILTER_NEAREST || surface->aa != GRAPE_SURFACE_AA_NONE ||
+        surface->opacity != 255U || surface->tint.r != 255U || surface->tint.g != 255U ||
+        surface->tint.b != 255U || surface->tint.a != 255U ||
+        surface->local_x_from_screen_y != 0.0f || surface->local_y_from_screen_x != 0.0f ||
+        !(sx == 1.0f || sx == 0.5f) || !(sy == 1.0f || sy == 0.5f) ||
+        !isfinite(ox) || !isfinite(oy) || fabsf(ox) > 8192.0f || fabsf(oy) > 8192.0f ||
+        texture->width > 8192U || texture->height > 8192U ||
+        clipped.x < 0 || clipped.y < 0 || clipped.width <= 0 || clipped.height <= 0 ||
+        clipped.x > 8192 || clipped.y > 8192 ||
+        clipped.width > 8192 - clipped.x || clipped.height > 8192 - clipped.y) return false;
+    if (ox * 2.0f != (float)(int32_t)(ox * 2.0f) ||
+        oy * 2.0f != (float)(int32_t)(oy * 2.0f)) return false;
+    float first_x, first_y, last_x, last_y;
+    affine_row_start(surface, clipped.x, clipped.y, &first_x, &first_y);
+    affine_row_start(surface, clipped.x + clipped.width - 1, clipped.y + clipped.height - 1,
+                     &last_x, &last_y);
+    if (first_x < 0.0f || first_y < 0.0f ||
+        last_x >= (float)texture->width || last_y >= (float)texture->height) return false;
+    const uint32_t tx = (uint32_t)first_x;
+    const uint32_t phase = (uint32_t)(first_x * 2.0f) & 1U;
+    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
+        float lx, ly;
+        affine_row_start(surface, clipped.x, y, &lx, &ly);
+        const uint8_t *src = texture->pixels + (size_t)(uint32_t)ly * texture->stride + (size_t)tx * 2U;
+        uint8_t *dst = target_pixel_address(context, clipped.x, y, 2U);
+        if (sx == 1.0f) {
+            memcpy(dst, src, (size_t)clipped.width * 2U);
+        } else {
+            uint32_t remaining = (uint32_t)clipped.width;
+            uint32_t run = 2U - phase;
+            while (remaining) {
+                if (run > remaining) run = remaining;
+                const uint8_t lo = src[0], hi = src[1];
+                for (uint32_t i = 0; i < run; ++i) { dst[0] = lo; dst[1] = hi; dst += 2U; }
+                remaining -= run; src += 2U; run = 2U;
+            }
+        }
+    }
+    return true;
+}
+
 static void raster_surface_rgb565(grape_context_t *context, const grape_surface_t *surface,
                                   grape_rect_t damage_rect, grape_rect_t clipped, size_t bpp)
 {
+    if (raster_rgb565_copy(context, surface, clipped, bpp)) return;
     const grape_texture_t *texture = surface->texture;
     const float texture_width = (float)texture->width;
     const float texture_height = (float)texture->height;
