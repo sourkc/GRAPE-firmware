@@ -80,6 +80,20 @@ typedef struct {
     bool raster_i32_valid;
 } grape_gpu_prepared_triangle_t;
 
+typedef struct {
+    uint32_t tile_x;
+    uint32_t tile_y;
+    uint32_t ref_begin;
+    uint32_t ref_end;
+} grape_gpu_tile_job_t;
+
+typedef struct {
+    uint32_t *tile_color;
+    uint16_t *tile_depth;
+    size_t tile_color_capacity;
+    size_t tile_depth_capacity;
+} grape_gpu_worker_t;
+
 struct grape_gpu_buffer {
     grape_gpu_context_t *context;
     struct grape_gpu_buffer *next;
@@ -137,14 +151,15 @@ struct grape_gpu_context {
     uint32_t *tile_counts;
     uint32_t *tile_offsets;
     uint32_t *tile_refs;
+    grape_gpu_tile_job_t *tile_jobs;
     size_t tile_meta_capacity;
     size_t tile_ref_capacity;
+    size_t tile_job_count;
+    size_t tile_job_capacity;
+    size_t tile_job_next;
     uint32_t tile_cols;
     uint32_t tile_rows;
-    uint32_t *tile_color;
-    uint16_t *tile_depth;
-    size_t tile_color_capacity;
-    size_t tile_depth_capacity;
+    grape_gpu_worker_t primary_worker;
     grape_gpu_load_op_t tile_color_load_op;
     grape_color_t tile_clear_color;
     grape_gpu_sample_count_t sample_count;

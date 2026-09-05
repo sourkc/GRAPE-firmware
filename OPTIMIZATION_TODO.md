@@ -7,8 +7,14 @@
   - Stage timings: pass, vertex transform, clip, triangle setup, tile bin, tile raster, resolve.
   - Work counters: draw/input/post-clip/rasterized triangles, culls/degenerates, active tiles, tile refs, bbox pixels.
   - Deterministic `gpu3d` benchmark suite with M3 textured cube and 12-cube 4x MSAA stress case.
-- [ ] **MC2 / tile-job abstraction**: CPU0 still executes all jobs; output must remain pixel-identical.
-- [ ] **MC3 / worker-local tile scratch**: remove shared tile scratch state.
+- [x] **MC2 / tile-job abstraction**
+  - Active binned tiles are materialized as immutable `grape_gpu_tile_job_t` records.
+  - CPU0 consumes jobs through a single claim seam; execution remains strictly single-core.
+  - Shared tile scratch is intentionally unchanged until MC3, preserving raster behavior.
+- [x] **MC3 / worker-local tile scratch**
+  - `grape_gpu_worker_t` now owns color/depth tile scratch and its allocation lifetime.
+  - Tile init, raster, depth, and resolve paths receive an explicit worker instead of shared context scratch.
+  - CPU0 still drains all jobs through one primary worker; no concurrency or scheduling change yet.
 - [ ] **MC4 / opportunistic CPU1 GPU worker**: low priority under TinyUSB/GFXLINK.
 - [ ] **MC5 / preemption torture test**.
 - [ ] **MC6 / asynchronous GFXLINK request/completion path**.
