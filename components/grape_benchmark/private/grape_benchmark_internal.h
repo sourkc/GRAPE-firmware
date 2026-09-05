@@ -99,6 +99,8 @@ struct grape_benchmark_case {
     grape_benchmark_before_measurement_fn before_measurement;
     grape_benchmark_collect_metrics_fn collect_metrics;
     grape_benchmark_teardown_fn teardown;
+    /* Called only in a fresh, untimed replay after ALL timed cases finish. */
+    grape_benchmark_iteration_fn capture_reference;
     grape_benchmark_param_t params[GRAPE_BENCHMARK_MAX_PARAMS];
 };
 
@@ -139,8 +141,12 @@ struct grape_benchmark_runtime {
     grape_benchmark_text_buffer_t samples_buffer;
     grape_benchmark_text_buffer_t metadata_buffer;
     grape_benchmark_text_buffer_t function_profile_buffer;
+    grape_benchmark_text_buffer_t references_buffer;
     esp_err_t report_error;
     uint32_t stack_min_free_bytes;
+    int64_t service_last_us;
+    char report_directory[256];
+    bool references_pending;
 };
 
 typedef const grape_benchmark_case_t *(*grape_benchmark_case_provider_fn)(
@@ -154,12 +160,20 @@ typedef struct {
 } grape_benchmark_suite_t;
 
 uint32_t grape_benchmark_hash_u32(uint32_t value);
+const grape_benchmark_case_t *grape_benchmark_baseline_cases(size_t *out_count);
+esp_err_t grape_benchmark_report_reference(grape_benchmark_runtime_t *runtime,
+    const grape_benchmark_case_t *bench_case, uint32_t frame, const char *plane,
+    const char *format, uint32_t width, uint32_t height, uint32_t samples,
+    const void *pixels, size_t stride, size_t row_bytes);
+esp_err_t grape_benchmark_capture_display(grape_benchmark_runtime_t *runtime,
+    const grape_benchmark_case_t *bench_case, void *state, uint32_t frame);
 float grape_benchmark_unit_f32(uint32_t seed, uint32_t index);
 float grape_benchmark_fixed_time_s(const grape_benchmark_runtime_t *runtime,
                                    uint32_t sequence_iteration);
 
 esp_err_t grape_benchmark_report_open(grape_benchmark_runtime_t *runtime);
 void grape_benchmark_report_close(grape_benchmark_runtime_t *runtime);
+void grape_benchmark_report_references_complete(grape_benchmark_runtime_t *runtime);
 esp_err_t grape_benchmark_report_save_wait(grape_benchmark_runtime_t *runtime);
 void grape_benchmark_report_metadata(grape_benchmark_runtime_t *runtime);
 void grape_benchmark_report_case(

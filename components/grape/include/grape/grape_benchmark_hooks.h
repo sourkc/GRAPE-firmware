@@ -78,6 +78,12 @@ esp_err_t grape_benchmark_render_rects(
 );
 
 size_t grape_benchmark_shear_scratch_bytes(const grape_context_t *context);
+esp_err_t grape_benchmark_copy_presented(const grape_context_t *context,
+    void *dst, size_t size);
+/* Dense little-endian D16, row-major, samples interleaved within each pixel.
+ * Reads logical clear values without changing lazy-clear metadata. */
+esp_err_t grape_benchmark_copy_depth(const grape_gpu_depth_buffer_t *buffer,
+    void *dst, size_t size);
 
 bool grape_benchmark_function_profile_enabled(void);
 size_t grape_benchmark_function_profile_capacity(void);

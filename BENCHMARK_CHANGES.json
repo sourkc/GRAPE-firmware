@@ -1,0 +1,104 @@
+{
+  "input_zip_sha256": "dbf9d0978cae1931bbed5eb824f8c110bf47c36d55457064c39cae35bcad3d13",
+  "scope": "Benchmark harness and read-only captures; renderer optimizations deliberately deferred.",
+  "modified_files": [
+    {
+      "path": "components/grape/include/grape/grape_benchmark_hooks.h",
+      "original_sha256": "3e162c807410f294a6afa410cea190d624cedd9b785ebf19c510d617c8a38b99",
+      "updated_sha256": "9a6e102d903a9349ca13a8c356e61eae2a62a028fa8ac3566359499309b7257d"
+    },
+    {
+      "path": "components/grape/src/grape_benchmark_hooks.c",
+      "original_sha256": "81ce81871922f6d5847e9dde1713da0097f70bf21f8eb1097e709963468c7ba6",
+      "updated_sha256": "cfabdcb3e770530ffa948ea5ae9a393e35e677cb4a01d0994b6304717468ef4c"
+    },
+    {
+      "path": "components/grape_benchmark/CMakeLists.txt",
+      "original_sha256": "2ef73601ec29a276c1deca774270be8b2b0a1c7fcda85d8677c3324404c80b0e",
+      "updated_sha256": "deb38176c9b7ae6b7c45c8f6e58f8551d4fd8277a2ef30c7b0eb2495cf3e1510"
+    },
+    {
+      "path": "components/grape_benchmark/include/grape/grape_benchmark.h",
+      "original_sha256": "15418686bb5efd02deada09afdf4d9f2e6ad4a2c4519e483f2d7337524d92131",
+      "updated_sha256": "86b92bf0322891b115f08b218c0be65abd45371eacc881fe338a6531d71863c8"
+    },
+    {
+      "path": "components/grape_benchmark/include/grape/grape_benchmark_config.h",
+      "original_sha256": "7c26f87aa59def2f006b2fdd98a8e5b829fd6b189f7869dce16beb66e65518c8",
+      "updated_sha256": "a20308daa7a9a2caaf98b98ca0e385146c38f0205fcd0659396d9b0bf4446bea"
+    },
+    {
+      "path": "components/grape_benchmark/private/grape_benchmark_internal.h",
+      "original_sha256": "56f93b3d2f860f9b899f6c9b769a929a192eaeebcf2d2d3e92bbf79ddd1486ad",
+      "updated_sha256": "3e9411f298602813d69d92fd7e8df66c132ad874ac1f9422b627dd64ad9d8fa7"
+    },
+    {
+      "path": "components/grape_benchmark/src/cases/grape_benchmark_gpu3d.c",
+      "original_sha256": "723f7679dfc4394ab0e7625b81da73a1b3b1de268e12c59758fb18bcee93d98a",
+      "updated_sha256": "b842ffefc5afaa92c3290d4589995f581d9406b9be7278c6a6ade4ce78123ca0"
+    },
+    {
+      "path": "components/grape_benchmark/src/grape_benchmark.c",
+      "original_sha256": "90a96d2504b466020113137403c86efc0571d74c58891b3660ca05856faa20b4",
+      "updated_sha256": "0583c8954c2d4ad929193d56ad8405f23c923557a48f860746e2899f391fb4aa"
+    },
+    {
+      "path": "components/grape_benchmark/src/grape_benchmark_registry.c",
+      "original_sha256": "899c1e9e66bae685c083917b462052b4713951a46984b1ca5b4e75560d107c08",
+      "updated_sha256": "08529c53f1e80ca9260b6ee5a6eaef00f5155c9137fd4f1c2b2d8a771e6ba898"
+    },
+    {
+      "path": "components/grape_benchmark/src/grape_benchmark_report.c",
+      "original_sha256": "01cb37a007547bba249d2d9c49033322ab15cfe9552abd4eab04aba724cea3d1",
+      "updated_sha256": "fecd0144a0644da286398635f3e346eb7defecb86cdc9fb076b2d8cd522368de"
+    },
+    {
+      "path": "main/app_config.h",
+      "original_sha256": "13bbb1c26d69a6ebe2b4a6488e7903878981b332e904fec759d571a4c75576be",
+      "updated_sha256": "d78737ef5585a71214fa047cc117db51cacb439f35ae0624ba610eb9f2673b9d"
+    }
+  ],
+  "added_files": [
+    {
+      "path": "BENCHMARK_BASELINE.md",
+      "sha256": "137aa039de1e16df9eb6648d7f8f3fe05320c8f83f6c5089894d64ac8833f5ad"
+    },
+    {
+      "path": "components/grape_benchmark/src/cases/grape_benchmark_baseline.c",
+      "sha256": "6a193b14f68528c47ba89013ba209f5e5ab34c9ef5a31d5d710a275a22ab5276"
+    },
+    {
+      "path": "tools/benchmark_compare.py",
+      "sha256": "96df668fc2db6d060439a99699257b9ac639c158b233868a4a2214fd912eeb1e"
+    },
+    {
+      "path": "tools/tests/test_benchmark_compare.py",
+      "sha256": "bda3b48f74118f4550c82bfe5dc6e19d4d5c9ecf9cecf00ad5e59b6eae02dc29"
+    }
+  ],
+  "validation": {
+    "firmware": "ESP-IDF 5.5.4 ESP32-P4 full compile/link and partition check passed",
+    "verified_compiler_flags": {
+      "grape_gpu_tile.c": [
+        "-Og"
+      ],
+      "grape_compositor.c": [
+        "-Og"
+      ],
+      "grape_benchmark_baseline.c": [
+        "-Og"
+      ]
+    },
+    "comparison_tool_tests_passed": 15,
+    "hardware_run": "Not flashed or measured",
+    "app_binary_bytes": 742016
+  },
+  "baseline": {
+    "cases": 26,
+    "warmup": 16,
+    "measured": 128,
+    "reference_frames": 4,
+    "gpu_stats": false,
+    "compiler_optimization_changed": false
+  }
+}

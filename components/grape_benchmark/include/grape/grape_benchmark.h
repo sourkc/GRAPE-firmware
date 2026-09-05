@@ -26,7 +26,8 @@ typedef enum {
     GRAPE_BENCHMARK_SUITE_TEXT             = 1u << 12,
     GRAPE_BENCHMARK_SUITE_FONT             = 1u << 13,
     GRAPE_BENCHMARK_SUITE_GPU3D            = 1u << 14,
-    GRAPE_BENCHMARK_SUITE_ALL              = (1u << 15) - 1u,
+    GRAPE_BENCHMARK_SUITE_BASELINE         = 1u << 15,
+    GRAPE_BENCHMARK_SUITE_ALL              = (1u << 16) - 1u,
 } grape_benchmark_suite_mask_t;
 
 typedef struct {

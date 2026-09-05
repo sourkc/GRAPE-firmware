@@ -6,8 +6,10 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "esp_chip_info.h"
+#include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
@@ -275,6 +277,10 @@ esp_err_t grape_benchmark_report_open(grape_benchmark_runtime_t *runtime)
         return ret;
     }
 
+    ret = buffer_init(&runtime->references_buffer, true, 8192U);
+    if (ret != ESP_OK) { grape_benchmark_report_close(runtime); return ret; }
+    report_printf(runtime, &runtime->references_buffer,
+        "group,name,frame,plane,format,width,height,samples,bytes,crc32,file\n");
     write_summary_header(runtime);
     write_samples_header(runtime);
     report_printf(
@@ -302,6 +308,7 @@ void grape_benchmark_report_close(grape_benchmark_runtime_t *runtime)
     buffer_free(&runtime->samples_buffer);
     buffer_free(&runtime->metadata_buffer);
     buffer_free(&runtime->function_profile_buffer);
+    buffer_free(&runtime->references_buffer);
 }
 
 void grape_benchmark_report_metadata(grape_benchmark_runtime_t *runtime)
@@ -316,11 +323,50 @@ void grape_benchmark_report_metadata(grape_benchmark_runtime_t *runtime)
     const grape_display_info_t *display = grape_get_display_info(runtime->grape);
 
     report_printf(runtime, buffer, "benchmark_build=%s\n", GRAPE_BENCHMARK_BUILD_LABEL);
+    report_printf(runtime, buffer, "schema_version=5\nrun_label=%s\ncompiler=%s\n",
+                  GRAPE_BENCHMARK_RUN_LABEL, __VERSION__);
+    const esp_app_desc_t *app = esp_app_get_description();
+    report_printf(runtime, buffer, "app_version=%s\napp_build_date=%s\napp_build_time=%s\nelf_sha256=",
+                  app->version, app->date, app->time);
+    for (size_t i = 0; i < sizeof(app->app_elf_sha256); ++i)
+        report_printf(runtime, buffer, "%02x", app->app_elf_sha256[i]);
+    report_printf(runtime, buffer, "\n");
+#if CONFIG_COMPILER_OPTIMIZATION_PERF
+    report_printf(runtime, buffer, "optimization_config=performance_O2\n");
+#elif CONFIG_COMPILER_OPTIMIZATION_DEBUG
+    report_printf(runtime, buffer, "optimization_config=debug_Og\n");
+#elif CONFIG_COMPILER_OPTIMIZATION_NONE
+    report_printf(runtime, buffer, "optimization_config=none_O0\n");
+#else
+    report_printf(runtime, buffer, "optimization_config=size_or_other\n");
+#endif
+#ifdef CONFIG_SPIRAM_SPEED
+    report_printf(runtime, buffer, "psram_frequency_mhz=%u\n", (unsigned)CONFIG_SPIRAM_SPEED);
+#endif
+#ifdef CONFIG_CACHE_L2_CACHE_SIZE
+    report_printf(runtime, buffer, "l2_cache_bytes=%u\n", (unsigned)CONFIG_CACHE_L2_CACHE_SIZE);
+#endif
+#if CONFIG_GRAPE_GPU_MULTICORE && !CONFIG_FREERTOS_UNICORE && !CONFIG_GRAPE_FUNCTION_PROFILING
+    report_printf(runtime, buffer, "gpu_multicore_build=1\n");
+#else
+    report_printf(runtime, buffer, "gpu_multicore_build=0\n");
+#endif
+    report_printf(runtime, buffer,
+        "profile=%u\ngpu_stats=%u\nrefresh_wait_available=%u\n"
+        "reference_frames=%u\nservice_interval_us=%u\nservice_delay_ticks=1\n"
+        "references_complete=0\n",
+        (unsigned)GRAPE_BENCHMARK_PROFILE, (unsigned)GRAPE_BENCHMARK_GPU_STATS,
+        GRAPE_TELEMETRY_LEVEL >= 2 ? 1U : 0U,
+        (unsigned)GRAPE_BENCHMARK_REFERENCE_FRAMES,
+        (unsigned)GRAPE_BENCHMARK_SERVICE_INTERVAL_US);
     report_printf(runtime, buffer, "idf_version=%s\n", esp_get_idf_version());
     report_printf(runtime, buffer, "idf_target=%s\n", CONFIG_IDF_TARGET);
     report_printf(runtime, buffer, "chip_model=%d\n", (int)chip.model);
     report_printf(runtime, buffer, "chip_revision=%u\n", chip.revision);
     report_printf(runtime, buffer, "chip_cores=%u\n", chip.cores);
+    report_printf(runtime, buffer, "ppa_fill_available=%u\nppa_blend_available=%u\n",
+        grape_feature_is_available(runtime->grape, GRAPE_FEATURE_PPA_FILL) ? 1U : 0U,
+        grape_feature_is_available(runtime->grape, GRAPE_FEATURE_PPA_A8_BLEND) ? 1U : 0U);
     report_printf(runtime, buffer, "cpu_frequency_mhz=%d\n", CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
     report_printf(runtime, buffer, "psram_total_bytes=%u\n",
                   (unsigned)heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
@@ -614,6 +660,23 @@ static esp_err_t write_buffer_file(const char *directory,
 
 static esp_err_t write_all_reports(grape_benchmark_runtime_t *runtime)
 {
+    if (!runtime->report_directory[0]) {
+        char path[256];
+        bool created = false;
+        for (unsigned run = 1; run <= 9999; ++run) {
+            int n = snprintf(path, sizeof(path), "%s/grape_run_%04u",
+                             runtime->config.output_directory, run);
+            if (n < 0 || (size_t)n >= sizeof(path)) return ESP_ERR_INVALID_SIZE;
+            if (mkdir(path, 0777) == 0) { created = true; break; }
+            if (errno != EEXIST) return ESP_FAIL;
+        }
+        if (!created) return ESP_ERR_NO_MEM;
+        memcpy(runtime->report_directory, path, strlen(path) + 1);
+        runtime->config.output_directory = runtime->report_directory;
+        report_printf(runtime, &runtime->metadata_buffer,
+                      "result_directory=%s\n", runtime->report_directory);
+        ESP_LOGI(TAG, "New run directory: %s", runtime->report_directory);
+    }
     esp_err_t ret = write_buffer_file(
         runtime->config.output_directory,
         "grape_benchmark_metadata.txt",
@@ -640,6 +703,8 @@ static esp_err_t write_all_reports(grape_benchmark_runtime_t *runtime)
             &runtime->function_profile_buffer
         );
     }
+    if (ret == ESP_OK) ret = write_buffer_file(runtime->config.output_directory,
+        "grape_benchmark_references.csv", &runtime->references_buffer);
     return ret;
 }
 
@@ -688,7 +753,10 @@ esp_err_t grape_benchmark_report_save_wait(grape_benchmark_runtime_t *runtime)
                 ESP_LOGW(TAG, "Reports saved, but SD unmount failed: %s",
                          esp_err_to_name(unmount_ret));
             } else {
-                ESP_LOGI(TAG, "Benchmark results saved; SD card is safe to remove");
+                if (runtime->references_pending)
+                    ESP_LOGI(TAG, "Timing results saved; keep SD inserted for reference replay");
+                else
+                    ESP_LOGI(TAG, "Benchmark results saved; SD card is safe to remove");
             }
             return ESP_OK;
         }
@@ -698,4 +766,104 @@ esp_err_t grape_benchmark_report_save_wait(grape_benchmark_runtime_t *runtime)
         grape_storage_sd_unmount();
         vTaskDelay(pdMS_TO_TICKS(GRAPE_BENCHMARK_SD_RETRY_MS));
     }
+}
+
+
+void grape_benchmark_report_references_complete(grape_benchmark_runtime_t *runtime)
+{
+    runtime->references_pending = false;
+    report_printf(runtime, &runtime->metadata_buffer, "references_complete=%u\n",
+                  GRAPE_BENCHMARK_CAPTURE_REFERENCES ? 1U : 0U);
+}
+
+/* IEEE CRC32 over tightly packed rows, independent of padding or allocation. */
+static uint32_t reference_crc32(const uint8_t *pixels, size_t stride,
+                                size_t row_bytes, uint32_t height)
+{
+    uint32_t crc = UINT32_MAX;
+    for (uint32_t y = 0; y < height; ++y) {
+        const uint8_t *row = pixels + y * stride;
+        for (size_t x = 0; x < row_bytes; ++x) {
+            crc ^= row[x];
+            for (unsigned b = 0; b < 8; ++b)
+                crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+        }
+        if ((y & 63U) == 63U) vTaskDelay(1);
+    }
+    return ~crc;
+}
+
+esp_err_t grape_benchmark_report_reference(grape_benchmark_runtime_t *runtime,
+    const grape_benchmark_case_t *bc, uint32_t frame, const char *plane,
+    const char *format, uint32_t width, uint32_t height, uint32_t samples,
+    const void *pixels, size_t stride, size_t row_bytes)
+{
+    if (!runtime || !bc || !pixels || !height || !row_bytes || stride < row_bytes)
+        return ESP_ERR_INVALID_ARG;
+    if (row_bytes > SIZE_MAX / height) return ESP_ERR_INVALID_SIZE;
+    char name[160], path[256];
+    int n = snprintf(name, sizeof(name), "%s_%s_f%u_%s.raw",
+                     bc->group, bc->name, (unsigned)frame, plane);
+    if (n < 0 || (size_t)n >= sizeof(name) ||
+        !make_path(path, sizeof(path), runtime->config.output_directory, name))
+        return ESP_ERR_INVALID_SIZE;
+    bool uses_sd = strncmp(runtime->config.output_directory,
+        GRAPE_STORAGE_SD_MOUNT_POINT, strlen(GRAPE_STORAGE_SD_MOUNT_POINT)) == 0;
+    uint32_t crc = reference_crc32(pixels, stride, row_bytes, height);
+    for (;;) {
+        if (uses_sd && !grape_storage_sd_is_mounted()) {
+            esp_err_t ret = grape_storage_sd_mount();
+            if (ret != ESP_OK) {
+                ESP_LOGW(TAG, "Insert SD card to save references");
+                vTaskDelay(pdMS_TO_TICKS(GRAPE_BENCHMARK_SD_RETRY_MS));
+                continue;
+            }
+        }
+        FILE *file = fopen(path, "wb");
+        bool ok = file != NULL;
+        if (file) {
+            for (uint32_t y = 0; y < height && ok; ++y) {
+                ok = fwrite((const uint8_t *)pixels + y * stride, 1, row_bytes, file) == row_bytes;
+                if ((y & 63U) == 63U) vTaskDelay(1);
+            }
+            if (fflush(file) != 0) ok = false;
+            if (fclose(file) != 0) ok = false;
+        }
+        if (ok) break;
+        if (!uses_sd) return ESP_FAIL;
+        ESP_LOGW(TAG, "Reference write failed; free space/check SD; retrying %s", name);
+        grape_storage_sd_unmount();
+        vTaskDelay(pdMS_TO_TICKS(GRAPE_BENCHMARK_SD_RETRY_MS));
+    }
+    report_printf(runtime, &runtime->references_buffer,
+        "%s,%s,%u,%s,%s,%u,%u,%u,%u,%08" PRIx32 ",%s\n",
+        bc->group, bc->name, (unsigned)frame, plane, format,
+        (unsigned)width, (unsigned)height, (unsigned)samples,
+        (unsigned)(row_bytes * height), crc, name);
+    return runtime->report_error;
+}
+
+esp_err_t grape_benchmark_capture_display(grape_benchmark_runtime_t *runtime,
+    const grape_benchmark_case_t *bc, void *state, uint32_t frame)
+{
+    (void)state;
+    const grape_display_info_t *d = grape_get_display_info(runtime->grape);
+    if (!d) return ESP_ERR_INVALID_STATE;
+    const char *format;
+    size_t bpp;
+    switch (d->format) {
+        case GRAPE_PIXEL_FORMAT_RGB565: format = "rgb565le"; bpp = 2; break;
+        case GRAPE_PIXEL_FORMAT_RGB888: format = "rgb888"; bpp = 3; break;
+        case GRAPE_PIXEL_FORMAT_RGBA8888: format = "rgba8888"; bpp = 4; break;
+        default: return ESP_ERR_NOT_SUPPORTED;
+    }
+    size_t stride = (size_t)d->width * bpp;
+    if (d->height == 0 || stride > SIZE_MAX / d->height) return ESP_ERR_INVALID_SIZE;
+    void *pixels = heap_caps_malloc(stride * d->height, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!pixels) return ESP_ERR_NO_MEM;
+    esp_err_t ret = grape_benchmark_copy_presented(runtime->grape, pixels, stride * d->height);
+    if (ret == ESP_OK) ret = grape_benchmark_report_reference(runtime, bc, frame,
+        "display", format, d->width, d->height, 1, pixels, stride, stride);
+    heap_caps_free(pixels);
+    return ret;
 }

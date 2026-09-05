@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include "esp_heap_caps.h"
 
 #define GPU_BENCH_WIDTH 320U
 #define GPU_BENCH_HEIGHT 240U
@@ -16,10 +17,14 @@
 typedef struct {
     grape_gpu_sample_count_t sample_count;
     uint32_t instances;
+    uint32_t shape; /* 0 cube/grid, 1 thin, 2 overdraw, 3 small, 4 near clip */
+    bool present;
+    bool alternate_load;
 } gpu_case_config_t;
 
 typedef struct {
     grape_texture_t *color_target;
+    grape_surface_t *surface;
     grape_texture_t *texture;
     grape_gpu_context_t *gpu;
     grape_gpu_depth_buffer_t *depth;
@@ -202,6 +207,7 @@ static void destroy_state(gpu_case_state_t *state)
     if (!state) {
         return;
     }
+    if (state->surface) grape_surface_destroy(state->surface);
     if (state->pipeline) {
         grape_gpu_pipeline_destroy(state->pipeline);
     }
@@ -264,7 +270,7 @@ static esp_err_t gpu_setup(grape_benchmark_runtime_t *runtime,
 
     ret = grape_gpu_context_create(runtime->grape, &state->gpu);
     if (ret != ESP_OK) goto fail;
-    grape_gpu_set_stats_enabled(state->gpu, true);
+    grape_gpu_set_stats_enabled(state->gpu, GRAPE_BENCHMARK_GPU_STATS != 0);
 
     const grape_gpu_depth_buffer_desc_t depth_desc = {
         .width = GPU_BENCH_WIDTH,
@@ -334,6 +340,18 @@ static esp_err_t gpu_setup(grape_benchmark_runtime_t *runtime,
         GPU_BENCH_FAR
     );
 
+    if (config->present) {
+        grape_surface_desc_t desc = GRAPE_SURFACE_DESC_TEXTURE(state->color_target);
+        desc.transform.scale_x = 2.0f;
+        desc.transform.scale_y = 2.0f;
+        ret = grape_surface_create(runtime->grape, &desc, &state->surface);
+        if (ret != ESP_OK) goto fail;
+        for (unsigned i = 0; i < 2; ++i) {
+            ret = grape_invalidate_all(runtime->grape);
+            if (ret == ESP_OK) ret = grape_present(runtime->grape);
+            if (ret != ESP_OK) goto fail;
+        }
+    }
     *out_state = state;
     return ESP_OK;
 
@@ -393,10 +411,12 @@ static esp_err_t gpu_iteration(grape_benchmark_runtime_t *runtime,
 
     const grape_gpu_render_pass_desc_t pass = {
         .color_attachment = state->color_target,
-        .color_load_op = GRAPE_GPU_LOAD_OP_CLEAR,
+        .color_load_op = state->config->alternate_load && (sequence_iteration & 1U)
+            ? GRAPE_GPU_LOAD_OP_LOAD : GRAPE_GPU_LOAD_OP_CLEAR,
         .clear_color = {0U,0U,0U,0U},
         .depth_attachment = state->depth,
-        .depth_load_op = GRAPE_GPU_LOAD_OP_CLEAR,
+        .depth_load_op = state->config->alternate_load && (sequence_iteration & 1U)
+            ? GRAPE_GPU_LOAD_OP_LOAD : GRAPE_GPU_LOAD_OP_CLEAR,
         .clear_depth = 1.0f,
         .sample_count = state->config->sample_count,
     };
@@ -423,12 +443,26 @@ static esp_err_t gpu_iteration(grape_benchmark_runtime_t *runtime,
             z = 5.35f + 0.12f * (float)(instance % 3U);
         }
 
+        if (state->config->shape == 2U) {
+            x = y = 0.0f; z = 3.4f + instance * 0.02f;
+        } else if (state->config->shape == 3U) {
+            x = ((float)(instance % 8U) - 3.5f) * 1.1f;
+            y = ((float)(instance / 8U) - 2.5f) * 1.1f;
+            z = 10.0f;
+        } else if (state->config->shape == 4U) {
+            z = 1.15f;
+        }
         const float phase = t + (float)instance * 0.173f;
         const grape_gpu_mat4_t rotation = mat4_multiply(
             mat4_rotation_y(phase * 0.91f),
             mat4_rotation_x(phase * 1.17f)
         );
-        const grape_gpu_mat4_t model = mat4_multiply(mat4_translation(x, y, z), rotation);
+        grape_gpu_mat4_t scale = mat4_identity();
+        if (state->config->shape == 1U) { scale.m[0] = 0.025f; scale.m[5] = 2.0f; }
+        if (state->config->shape == 3U) { scale.m[0] = scale.m[5] = scale.m[10] = 0.25f; }
+        const grape_gpu_mat4_t model = state->config->shape == 1U || state->config->shape == 3U
+            ? mat4_multiply(mat4_translation(x, y, z), mat4_multiply(rotation, scale))
+            : mat4_multiply(mat4_translation(x, y, z), rotation);
         const grape_gpu_mat4_t mvp = mat4_multiply(state->projection, model);
 
         ret = grape_gpu_set_push_constants(
@@ -450,6 +484,7 @@ static esp_err_t gpu_iteration(grape_benchmark_runtime_t *runtime,
         return end_ret;
     }
 
+    if (!GRAPE_BENCHMARK_GPU_STATS) return ESP_OK;
     grape_gpu_stats_t stats;
     ret = grape_gpu_get_stats(state->gpu, &stats);
     if (ret != ESP_OK) {
@@ -511,57 +546,51 @@ static void gpu_teardown(grape_benchmark_runtime_t *runtime,
     destroy_state(opaque);
 }
 
-static const gpu_case_config_t s_cube_4x = {
-    .sample_count = GRAPE_GPU_SAMPLE_COUNT_4,
-    .instances = 1U,
-};
+static esp_err_t gpu_capture(grape_benchmark_runtime_t *runtime,
+    const grape_benchmark_case_t *bc, void *opaque, uint32_t frame)
+{
+    gpu_case_state_t *state = opaque;
+    esp_err_t ret = grape_benchmark_report_reference(runtime, bc, frame, "color", "rgba8888",
+        GPU_BENCH_WIDTH, GPU_BENCH_HEIGHT, 1, grape_texture_pixels(state->color_target),
+        grape_texture_stride(state->color_target), GPU_BENCH_WIDTH * 4U);
+    if (ret != ESP_OK) return ret;
+    size_t stride = GPU_BENCH_WIDTH * (size_t)state->config->sample_count * 2U;
+    size_t size = stride * GPU_BENCH_HEIGHT;
+    void *depth = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!depth) return ESP_ERR_NO_MEM;
+    ret = grape_benchmark_copy_depth(state->depth, depth, size);
+    if (ret == ESP_OK) ret = grape_benchmark_report_reference(runtime, bc, frame, "depth", "d16le",
+        GPU_BENCH_WIDTH, GPU_BENCH_HEIGHT, (uint32_t)state->config->sample_count, depth, stride, stride);
+    heap_caps_free(depth);
+    if (ret == ESP_OK && state->config->present)
+        ret = grape_benchmark_capture_display(runtime, bc, opaque, frame);
+    return ret;
+}
 
-static const gpu_case_config_t s_grid12_4x = {
-    .sample_count = GRAPE_GPU_SAMPLE_COUNT_4,
-    .instances = 12U,
-};
-
+#define GPU_CASE(n, samples_, instances_, shape_, present_, load_) \
+    { .group="gpu3d", .name=n, .kind=GRAPE_BENCHMARK_KIND_PIPELINE, \
+      .flags=(present_ ? GRAPE_BENCHMARK_CASE_PRESENT : 0), \
+      .user_data=&(const gpu_case_config_t){samples_, instances_, shape_, present_, load_}, \
+      .setup=gpu_setup, .iteration=gpu_iteration, .before_measurement=gpu_before_measurement, \
+      .collect_metrics=gpu_collect_metrics, .teardown=gpu_teardown, .capture_reference=gpu_capture, \
+      .params={{"width",GPU_BENCH_WIDTH},{"height",GPU_BENCH_HEIGHT},{"samples",samples_}, \
+               {"instances",instances_},{"shape",shape_},{"alternate_load",load_}} }
 static const grape_benchmark_case_t s_cases[] = {
-    {
-        .group = "gpu3d",
-        .name = "textured_cube_4x_msaa",
-        .kind = GRAPE_BENCHMARK_KIND_PIPELINE,
-        .user_data = &s_cube_4x,
-        .setup = gpu_setup,
-        .iteration = gpu_iteration,
-        .before_measurement = gpu_before_measurement,
-        .collect_metrics = gpu_collect_metrics,
-        .teardown = gpu_teardown,
-        .params = {
-            { "width", GPU_BENCH_WIDTH },
-            { "height", GPU_BENCH_HEIGHT },
-            { "samples", 4.0 },
-            { "instances", 1.0 },
-        },
-    },
-    {
-        .group = "gpu3d",
-        .name = "textured_grid12_4x_msaa",
-        .kind = GRAPE_BENCHMARK_KIND_PIPELINE,
-        .user_data = &s_grid12_4x,
-        .setup = gpu_setup,
-        .iteration = gpu_iteration,
-        .before_measurement = gpu_before_measurement,
-        .collect_metrics = gpu_collect_metrics,
-        .teardown = gpu_teardown,
-        .params = {
-            { "width", GPU_BENCH_WIDTH },
-            { "height", GPU_BENCH_HEIGHT },
-            { "samples", 4.0 },
-            { "instances", 12.0 },
-        },
-    },
+    GPU_CASE("textured_cube_1x", GRAPE_GPU_SAMPLE_COUNT_1,1,0,false,false),
+    GPU_CASE("textured_cube_2x", GRAPE_GPU_SAMPLE_COUNT_2,1,0,false,false),
+    GPU_CASE("textured_cube_4x_msaa", GRAPE_GPU_SAMPLE_COUNT_4,1,0,false,false),
+    GPU_CASE("textured_grid12_4x_msaa", GRAPE_GPU_SAMPLE_COUNT_4,12,0,false,false),
+    GPU_CASE("thin_grid12_4x", GRAPE_GPU_SAMPLE_COUNT_4,12,1,false,false),
+    GPU_CASE("overdraw12_4x", GRAPE_GPU_SAMPLE_COUNT_4,12,2,false,false),
+    GPU_CASE("small_grid48_4x", GRAPE_GPU_SAMPLE_COUNT_4,48,3,false,false),
+    GPU_CASE("near_clip_4x", GRAPE_GPU_SAMPLE_COUNT_4,1,4,false,false),
+    GPU_CASE("alternating_load_4x", GRAPE_GPU_SAMPLE_COUNT_4,1,0,false,true),
+    GPU_CASE("cube_4x_present_2x", GRAPE_GPU_SAMPLE_COUNT_4,1,0,true,false),
 };
+#undef GPU_CASE
 
 const grape_benchmark_case_t *grape_benchmark_gpu3d_cases(size_t *out_count)
 {
-    if (out_count) {
-        *out_count = sizeof(s_cases) / sizeof(s_cases[0]);
-    }
+    if (out_count) *out_count = sizeof(s_cases) / sizeof(s_cases[0]);
     return s_cases;
 }

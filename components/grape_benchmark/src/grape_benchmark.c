@@ -418,6 +418,15 @@ static esp_err_t execute_iteration(
     return ESP_OK;
 }
 
+static void benchmark_service(grape_benchmark_runtime_t *runtime)
+{
+    int64_t now = esp_timer_get_time();
+    if (now - runtime->service_last_us >= GRAPE_BENCHMARK_SERVICE_INTERVAL_US) {
+        vTaskDelay(1);
+        runtime->service_last_us = esp_timer_get_time();
+    }
+}
+
 static esp_err_t run_warmup(
     grape_benchmark_runtime_t *runtime,
     const grape_benchmark_case_t *bench_case,
@@ -426,6 +435,7 @@ static esp_err_t run_warmup(
 )
 {
     for (uint32_t i = 0; i < warmup_iterations; ++i) {
+        benchmark_service(runtime);
         esp_err_t ret = execute_iteration(
             runtime,
             bench_case,
@@ -457,6 +467,7 @@ static esp_err_t run_measured(
 
     uint64_t measured_elapsed_us = 0;
     for (uint32_t i = 0; i < measured_iterations; ++i) {
+        benchmark_service(runtime);
         uint32_t sequence = warmup_iterations + i;
 
         esp_err_t ret = execute_iteration(
@@ -557,6 +568,7 @@ static esp_err_t run_case(
         goto cleanup;
     }
 
+    runtime->service_last_us = esp_timer_get_time();
     ret = run_warmup(runtime, bench_case, state, warmup_iterations);
     benchmark_note_stack_headroom(runtime, bench_case, "warmup");
     if (ret != ESP_OK) {
@@ -647,6 +659,39 @@ cleanup:
     return ret;
 }
 
+static esp_err_t capture_references(grape_benchmark_runtime_t *runtime)
+{
+    if (!GRAPE_BENCHMARK_CAPTURE_REFERENCES) return ESP_OK;
+    ESP_LOGI(TAG, "Timing complete. Starting separate deterministic reference replay.");
+    size_t suite_count = 0;
+    const grape_benchmark_suite_t *suites = grape_benchmark_suites(&suite_count);
+    for (size_t s = 0; s < suite_count; ++s) {
+        if (!(runtime->config.suite_mask & suites[s].mask)) continue;
+        size_t count = 0;
+        const grape_benchmark_case_t *cases = suites[s].cases(&count);
+        for (size_t c = 0; c < count; ++c) {
+            const grape_benchmark_case_t *bc = &cases[c];
+            if (!bc->capture_reference) continue;
+            ESP_LOGI(TAG, "Reference replay: %s/%s", bc->group, bc->name);
+            void *state = NULL;
+            esp_err_t ret = bc->setup ? bc->setup(runtime, bc, &state) : ESP_OK;
+            if (ret == ESP_ERR_NOT_SUPPORTED) continue;
+            if (ret != ESP_OK) return ret;
+            for (uint32_t frame = 0; frame < GRAPE_BENCHMARK_REFERENCE_FRAMES; ++frame) {
+                ret = execute_iteration(runtime, bc, state, frame, false, NULL);
+                if (ret == ESP_OK) ret = bc->capture_reference(runtime, bc, state, frame);
+                if (ret != ESP_OK) break;
+                vTaskDelay(1);
+            }
+            if (bc->teardown) bc->teardown(runtime, bc, state);
+            if (ret != ESP_OK) return ret;
+            ret = reset_between_cases(runtime);
+            if (ret != ESP_OK) return ret;
+        }
+    }
+    return ESP_OK;
+}
+
 esp_err_t grape_benchmark_run(
     grape_context_t *grape,
     const grape_benchmark_config_t *config
@@ -660,6 +705,7 @@ esp_err_t grape_benchmark_run(
         .grape = grape,
         .config = GRAPE_BENCHMARK_CONFIG_DEFAULT(),
         .stack_min_free_bytes = UINT32_MAX,
+        .references_pending = GRAPE_BENCHMARK_CAPTURE_REFERENCES != 0,
     };
     if (config) {
         runtime.config = *config;
@@ -754,8 +800,12 @@ esp_err_t grape_benchmark_run(
              "Benchmark minimum main-task stack headroom: %" PRIu32 " bytes",
              runtime.stack_min_free_bytes);
 
-    restore_environment(&runtime, &environment);
+    /* Save timings before any optional reference replay can fail. */
     ret = grape_benchmark_report_save_wait(&runtime);
+    if (ret == ESP_OK) ret = capture_references(&runtime);
+    if (ret == ESP_OK) grape_benchmark_report_references_complete(&runtime);
+    if (ret == ESP_OK) ret = grape_benchmark_report_save_wait(&runtime);
+    restore_environment(&runtime, &environment);
     grape_benchmark_report_close(&runtime);
     return ret;
 }

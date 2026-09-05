@@ -2,9 +2,10 @@
 
 #include <string.h>
 
-enum { GRAPE_BENCHMARK_FROZEN_SUITE_COUNT = 15 };
+enum { GRAPE_BENCHMARK_FROZEN_SUITE_COUNT = 16 };
 
 static const grape_benchmark_suite_t s_suites[] = {
+    { "baseline", GRAPE_BENCHMARK_SUITE_BASELINE, grape_benchmark_baseline_cases },
     { "damage_mark", GRAPE_BENCHMARK_SUITE_DAMAGE_MARK, grape_benchmark_damage_mark_cases },
     { "damage_plan", GRAPE_BENCHMARK_SUITE_DAMAGE_PLAN, grape_benchmark_damage_plan_cases },
     { "compositor", GRAPE_BENCHMARK_SUITE_COMPOSITOR, grape_benchmark_compositor_cases },

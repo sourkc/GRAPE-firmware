@@ -1,6 +1,8 @@
 #include "grape/grape_benchmark_hooks.h"
 
 #include "grape_internal.h"
+#include "grape_gpu_internal.h"
+#include <string.h>
 
 esp_err_t grape_benchmark_damage_grid_info(
     const grape_context_t *context,
@@ -93,4 +95,37 @@ size_t grape_benchmark_shear_scratch_bytes(const grape_context_t *context)
         return 0;
     }
     return context->shear_buffer_a_size + context->shear_buffer_b_size;
+}
+
+esp_err_t grape_benchmark_copy_presented(const grape_context_t *context,
+                                        void *dst, size_t size)
+{
+    if (!context) return ESP_ERR_INVALID_ARG;
+    return grape_display_copy_presented_frame(context->display, dst, size);
+}
+
+esp_err_t grape_benchmark_copy_depth(const grape_gpu_depth_buffer_t *buffer,
+                                    void *dst, size_t size)
+{
+    if (!buffer || !dst) return ESP_ERR_INVALID_ARG;
+    if (buffer->context->render_pass_active) return ESP_ERR_INVALID_STATE;
+    size_t row_bytes = (size_t)buffer->width * (size_t)buffer->sample_count * 2U;
+    if (size < row_bytes * buffer->height) return ESP_ERR_INVALID_SIZE;
+    for (uint32_t y = 0; y < buffer->height; ++y) {
+        uint8_t *row = (uint8_t *)dst + y * row_bytes;
+        for (uint32_t x = 0; x < buffer->width; ++x) {
+            size_t tile = (size_t)(y / GRAPE_GPU_MSAA_TILE_SIZE) * buffer->tile_cols +
+                          x / GRAPE_GPU_MSAA_TILE_SIZE;
+            bool clear = buffer->lazy_clear_active && !buffer->lazy_tiles[tile];
+            for (uint32_t s = 0; s < (uint32_t)buffer->sample_count; ++s) {
+                size_t offset = ((size_t)x * buffer->sample_count + s) * 2U;
+                uint16_t value;
+                if (clear) value = buffer->lazy_clear_value;
+                else memcpy(&value, (const uint8_t *)buffer->data + y * buffer->stride + offset, 2);
+                row[offset] = (uint8_t)value;
+                row[offset + 1U] = (uint8_t)(value >> 8);
+            }
+        }
+    }
+    return ESP_OK;
 }
