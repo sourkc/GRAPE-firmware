@@ -1,6 +1,15 @@
 #pragma once
 
 #include "grape/grape_gpu.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+
+#if CONFIG_GRAPE_GPU_MULTICORE && !CONFIG_FREERTOS_UNICORE && !CONFIG_GRAPE_FUNCTION_PROFILING
+#define GRAPE_GPU_MULTICORE 1
+#else
+#define GRAPE_GPU_MULTICORE 0
+#endif
 
 #define GRAPE_GPU_MAX_CLIPPED_VERTICES 12U
 #define GRAPE_GPU_MSAA_TILE_SIZE 16U
@@ -92,6 +101,12 @@ typedef struct {
     uint16_t *tile_depth;
     size_t tile_color_capacity;
     size_t tile_depth_capacity;
+    /* Written only by this worker; CPU0 merges after the batch fence. */
+    uint64_t tile_raster_us;
+    uint64_t resolve_us;
+    grape_rect_t dirty_rect;
+    bool dirty_valid;
+    esp_err_t result;
 } grape_gpu_worker_t;
 
 struct grape_gpu_buffer {
@@ -156,10 +171,18 @@ struct grape_gpu_context {
     size_t tile_ref_capacity;
     size_t tile_job_count;
     size_t tile_job_capacity;
-    size_t tile_job_next;
+    size_t tile_job_next; /* Atomic while a batch is active. */
+    bool tile_jobs_cancelled; /* Atomic; stops new claims after an error. */
     uint32_t tile_cols;
     uint32_t tile_rows;
     grape_gpu_worker_t primary_worker;
+#if GRAPE_GPU_MULTICORE
+    grape_gpu_worker_t secondary_worker;
+    TaskHandle_t secondary_task;
+    SemaphoreHandle_t secondary_wake;
+    SemaphoreHandle_t secondary_done;
+    bool secondary_stop; /* Published through secondary_wake. */
+#endif
     grape_gpu_load_op_t tile_color_load_op;
     grape_color_t tile_clear_color;
     grape_gpu_sample_count_t sample_count;

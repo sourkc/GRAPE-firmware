@@ -1,5 +1,16 @@
 menu "GRAPE"
 
+    config GRAPE_GPU_MULTICORE
+        bool "Use opportunistic Core 1 GPU tile worker"
+        depends on !FREERTOS_UNICORE && !GRAPE_FUNCTION_PROFILING
+        default y
+        help
+            Keep GPU command processing and the primary worker on Core 0.
+            A priority-1 helper on Core 1 drains prepared MSAA tile jobs,
+            below GFXLINK (4) and TinyUSB (5), and sleeps between batches.
+            Disable for single-worker comparisons. Function profiling uses
+            a single-writer table, so it retains the single-worker path.
+
     config GRAPE_MAX_DAMAGE_RECTS
         int "Maximum render damage rectangles"
         range 1 128

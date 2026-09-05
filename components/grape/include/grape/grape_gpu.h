@@ -211,7 +211,10 @@ typedef struct {
  * are reset at begin_render_pass() and the most recently completed pass is
  * exposed through grape_gpu_get_stats().
  *
- * Timings are wall-clock microseconds spent inside the named GPU stages.
+ * Timings are elapsed microseconds spent inside the named GPU stages.
+ * tile_raster_us and resolve_us sum per-tile elapsed time across both workers
+ * (including preemption); they are not parallel batch wall time. Use pass_us
+ * and benchmark work time for single/dual-core speedup comparisons.
  * Structural counters are exact for the submitted pass. triangle_bbox_pixels
  * is deliberately an overdraw/work estimate: it sums the screen-space bounding
  * box area of triangles that reached raster setup and is not a fragment count.
@@ -237,6 +240,9 @@ typedef struct {
     uint64_t triangle_bbox_pixels;
 } grape_gpu_stats_t;
 
+/* GPU APIs remain externally serialized on CPU0, including resource mutation,
+ * stats access and destruction. Only prepared MSAA tiles run on the helper;
+ * end_render_pass joins it before returning, also on failure. */
 esp_err_t grape_gpu_context_create(grape_context_t *grape, grape_gpu_context_t **out_context);
 esp_err_t grape_gpu_context_destroy(grape_gpu_context_t *context);
 

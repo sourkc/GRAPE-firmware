@@ -566,17 +566,20 @@ static esp_err_t gpu_build_jobs(grape_gpu_context_t *context)
     return ESP_OK;
 }
 
-/*
- * MC2 deliberately keeps this single-threaded. MC4 can make this claim
- * operation atomic without changing how jobs are produced or consumed.
+/* Jobs and their inputs are immutable from wake until both workers finish.
+ * The relaxed atomic only assigns ownership; semaphore handoffs publish inputs
+ * and completed framebuffer writes. No raster work runs under a scheduler lock.
  */
 static bool gpu_claim_tile_job(grape_gpu_context_t *context, grape_gpu_tile_job_t *out_job)
 {
-    if (!context || !out_job || context->tile_job_next >= context->tile_job_count) {
+    if (__atomic_load_n(&context->tile_jobs_cancelled, __ATOMIC_RELAXED)) {
         return false;
     }
-
-    *out_job = context->tile_jobs[context->tile_job_next++];
+    const size_t index = __atomic_fetch_add(&context->tile_job_next, 1U, __ATOMIC_RELAXED);
+    if (index >= context->tile_job_count) {
+        return false;
+    }
+    *out_job = context->tile_jobs[index];
     return true;
 }
 
@@ -1738,7 +1741,7 @@ static esp_err_t gpu_render_tile(grape_gpu_context_t *context,
         }
     }
     if (profile) {
-        context->current_stats.tile_raster_us +=
+        worker->tile_raster_us +=
             (uint64_t)(esp_timer_get_time() - raster_start_us);
     }
 
@@ -1754,15 +1757,18 @@ static esp_err_t gpu_render_tile(grape_gpu_context_t *context,
         const int64_t resolve_start_us = profile ? esp_timer_get_time() : 0;
         gpu_resolve_tile(context, worker, tile_x, tile_y, tile_width, tile_height);
         if (profile) {
-            context->current_stats.resolve_us +=
+            worker->resolve_us +=
                 (uint64_t)(esp_timer_get_time() - resolve_start_us);
         }
-        grape_gpu_dirty_add(context, (grape_rect_t) {
+        const grape_rect_t dirty = {
             .x = (int32_t)x0,
             .y = (int32_t)y0,
             .width = (int32_t)tile_width,
             .height = (int32_t)tile_height,
-        });
+        };
+        worker->dirty_rect = worker->dirty_valid
+            ? grape_rect_union(worker->dirty_rect, dirty) : dirty;
+        worker->dirty_valid = true;
     }
     return ESP_OK;
 }
@@ -1775,11 +1781,106 @@ static esp_err_t gpu_worker_drain_jobs(grape_gpu_context_t *context,
     while (gpu_claim_tile_job(context, &job)) {
         ret = gpu_render_tile(context, worker, &job);
         if (ret != ESP_OK) {
+            __atomic_store_n(&context->tile_jobs_cancelled, true, __ATOMIC_RELAXED);
             break;
         }
     }
     return ret;
 }
+
+static void gpu_worker_reset_batch(grape_gpu_worker_t *worker)
+{
+    worker->tile_raster_us = 0U;
+    worker->resolve_us = 0U;
+    worker->dirty_valid = false;
+    worker->result = ESP_OK;
+}
+
+static void gpu_worker_merge_batch(grape_gpu_context_t *context,
+                                    const grape_gpu_worker_t *worker)
+{
+    context->current_stats.tile_raster_us += worker->tile_raster_us;
+    context->current_stats.resolve_us += worker->resolve_us;
+    if (worker->dirty_valid) {
+        grape_gpu_dirty_add(context, worker->dirty_rect);
+    }
+}
+
+#if GRAPE_GPU_MULTICORE
+#define GPU_SECONDARY_STACK_BYTES 6144U
+#define GPU_SECONDARY_PRIORITY 1U
+
+_Static_assert(__atomic_always_lock_free(sizeof(size_t), 0),
+               "GPU job claims require lock-free native atomics");
+
+static void gpu_secondary_task(void *arg)
+{
+    grape_gpu_context_t *context = arg;
+    const SemaphoreHandle_t wake = context->secondary_wake;
+    const SemaphoreHandle_t done = context->secondary_done;
+    for (;;) {
+        xSemaphoreTake(wake, portMAX_DELAY);
+        if (context->secondary_stop) {
+            /* Last context access. The owner may free it after this ack. */
+            xSemaphoreGive(done);
+            vTaskDelete(NULL);
+            return;
+        }
+        context->secondary_worker.result =
+            gpu_worker_drain_jobs(context, &context->secondary_worker);
+        xSemaphoreGive(done);
+    }
+}
+
+static bool gpu_secondary_prepare(grape_gpu_context_t *context)
+{
+    /* Allocation is on CPU0, before publishing the batch. Failure leaves a
+     * usable single-worker renderer; a later batch may retry. */
+    if (gpu_ensure_worker_workspace(context, &context->secondary_worker) != ESP_OK) {
+        return false;
+    }
+    if (context->secondary_task) {
+        return true;
+    }
+    context->secondary_wake = xSemaphoreCreateBinary();
+    context->secondary_done = xSemaphoreCreateBinary();
+    if (context->secondary_wake && context->secondary_done &&
+        xTaskCreatePinnedToCore(gpu_secondary_task, "grape_gpu1",
+                               GPU_SECONDARY_STACK_BYTES, context,
+                               GPU_SECONDARY_PRIORITY, &context->secondary_task, 1) == pdPASS) {
+        return true;
+    }
+    if (context->secondary_wake) {
+        vSemaphoreDelete(context->secondary_wake);
+    }
+    if (context->secondary_done) {
+        vSemaphoreDelete(context->secondary_done);
+    }
+    context->secondary_wake = NULL;
+    context->secondary_done = NULL;
+    context->secondary_task = NULL;
+    gpu_worker_release(&context->secondary_worker);
+    return false;
+}
+
+static void gpu_secondary_release(grape_gpu_context_t *context)
+{
+    if (context->secondary_task) {
+        /* Every execute, including errors, joins before returning. Therefore
+         * no batch is in flight here and this ack belongs only to shutdown. */
+        context->secondary_stop = true;
+        xSemaphoreGive(context->secondary_wake);
+        xSemaphoreTake(context->secondary_done, portMAX_DELAY);
+        vSemaphoreDelete(context->secondary_wake);
+        vSemaphoreDelete(context->secondary_done);
+        context->secondary_task = NULL;
+        context->secondary_wake = NULL;
+        context->secondary_done = NULL;
+        context->secondary_stop = false;
+    }
+    gpu_worker_release(&context->secondary_worker);
+}
+#endif
 
 static void gpu_release_primitive_textures(grape_gpu_context_t *context)
 {
@@ -1817,7 +1918,29 @@ esp_err_t grape_gpu_tile_execute(grape_gpu_context_t *context)
         return ret;
     }
 
+    gpu_worker_reset_batch(&context->primary_worker);
+    __atomic_store_n(&context->tile_job_next, 0U, __ATOMIC_RELAXED);
+    __atomic_store_n(&context->tile_jobs_cancelled, false, __ATOMIC_RELAXED);
+#if GRAPE_GPU_MULTICORE
+    const bool use_secondary = context->tile_job_count > 1U && gpu_secondary_prepare(context);
+    if (use_secondary) {
+        gpu_worker_reset_batch(&context->secondary_worker);
+        xSemaphoreGive(context->secondary_wake);
+    }
+#endif
     ret = gpu_worker_drain_jobs(context, &context->primary_worker);
+#if GRAPE_GPU_MULTICORE
+    if (use_secondary) {
+        /* Queue exhaustion is not completion: Core 1 may still own a tile.
+         * Block even on error, before merging, resetting, or releasing inputs. */
+        xSemaphoreTake(context->secondary_done, portMAX_DELAY);
+        if (ret == ESP_OK) {
+            ret = context->secondary_worker.result;
+        }
+        gpu_worker_merge_batch(context, &context->secondary_worker);
+    }
+#endif
+    gpu_worker_merge_batch(context, &context->primary_worker);
 
     gpu_release_primitive_textures(context);
     context->tile_primitive_count = 0U;
@@ -1832,6 +1955,9 @@ void grape_gpu_tile_release(grape_gpu_context_t *context)
         return;
     }
 
+#if GRAPE_GPU_MULTICORE
+    gpu_secondary_release(context);
+#endif
     gpu_release_primitive_textures(context);
     free(context->tile_primitives);
     context->tile_primitives = NULL;

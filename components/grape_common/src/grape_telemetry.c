@@ -2,6 +2,11 @@
 
 #include <stddef.h>
 #include <string.h>
+#include "freertos/FreeRTOS.h"
+
+/* Per-tile timers can now finish on either core. Keep locks short; never log
+ * or query the timer clock while holding this lock. */
+static portMUX_TYPE s_stats_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static const char *const s_timer_names[GRAPE_TELEMETRY_TIMER_COUNT] = {
 #define GRAPE_TELEMETRY_NAME(name, level, label, csv) \
@@ -82,12 +87,14 @@ void grape_telemetry_record(grape_telemetry_timer_t timer, int64_t elapsed_us)
     grape_telemetry_stat_t *stat = &s_stats[timer];
     uint64_t value = (uint64_t)elapsed_us;
 
+    portENTER_CRITICAL(&s_stats_lock);
     stat->total_us += value;
     s_cumulative_total_us[timer] += value;
     stat->calls++;
     if (value > stat->max_us) {
         stat->max_us = value;
     }
+    portEXIT_CRITICAL(&s_stats_lock);
 #else
     (void)timer;
     (void)elapsed_us;
@@ -117,13 +124,19 @@ void grape_telemetry_report_if_due(void)
              (double)window_us / 1000.0,
              GRAPE_TELEMETRY_LEVEL);
 
+    grape_telemetry_snapshot_t snapshot;
+    portENTER_CRITICAL(&s_stats_lock);
+    memcpy(snapshot.timers, s_stats, sizeof(s_stats));
+    memset(s_stats, 0, sizeof(s_stats));
+    portEXIT_CRITICAL(&s_stats_lock);
+
     for (int i = 0; i < GRAPE_TELEMETRY_TIMER_COUNT; ++i) {
         if (grape_telemetry_timer_level((grape_telemetry_timer_t)i) >
             GRAPE_TELEMETRY_LEVEL) {
             continue;
         }
 
-        grape_telemetry_stat_t *stat = &s_stats[i];
+        const grape_telemetry_stat_t *stat = &snapshot.timers[i];
         if (stat->calls == 0) {
             continue;
         }
@@ -151,7 +164,9 @@ void grape_telemetry_report_if_due(void)
 
 void grape_telemetry_reset(void)
 {
+    portENTER_CRITICAL(&s_stats_lock);
     memset(s_stats, 0, sizeof(s_stats));
+    portEXIT_CRITICAL(&s_stats_lock);
 }
 
 void grape_telemetry_snapshot(grape_telemetry_snapshot_t *out_snapshot)
@@ -160,7 +175,9 @@ void grape_telemetry_snapshot(grape_telemetry_snapshot_t *out_snapshot)
         return;
     }
 
+    portENTER_CRITICAL(&s_stats_lock);
     memcpy(out_snapshot->timers, s_stats, sizeof(s_stats));
+    portEXIT_CRITICAL(&s_stats_lock);
 }
 
 void grape_telemetry_set_auto_report(bool enabled)
@@ -185,6 +202,9 @@ uint64_t grape_telemetry_timer_cumulative_us(grape_telemetry_timer_t timer)
         return 0;
     }
 
-    return s_cumulative_total_us[timer];
+    portENTER_CRITICAL(&s_stats_lock);
+    const uint64_t total = s_cumulative_total_us[timer];
+    portEXIT_CRITICAL(&s_stats_lock);
+    return total;
 }
 #endif

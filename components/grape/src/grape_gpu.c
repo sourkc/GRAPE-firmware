@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "grape_gpu_internal.h"
 #include "grape_internal.h"
 
@@ -159,7 +160,9 @@ esp_err_t grape_gpu_context_create(grape_context_t *grape, grape_gpu_context_t *
         return ESP_ERR_INVALID_ARG;
     }
 
-    grape_gpu_context_t *context = calloc(1, sizeof(*context));
+    /* The shared tile cursor uses native atomics and must not live in PSRAM. */
+    grape_gpu_context_t *context = heap_caps_calloc(
+        1, sizeof(*context), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!context) {
         return ESP_ERR_NO_MEM;
     }
