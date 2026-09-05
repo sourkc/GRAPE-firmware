@@ -32,7 +32,7 @@ idf_component_register(
         "../../shaders"
     PRIV_INCLUDE_DIRS "private"
     REQUIRES grape_common grape_display
-    PRIV_REQUIRES heap esp_driver_ppa esp_driver_jpeg freertos
+    PRIV_REQUIRES heap esp_driver_ppa esp_driver_jpeg freertos esp_timer
 )
 
 

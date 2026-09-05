@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "grape_gpu_internal.h"
 #include "grape_internal.h"
 
@@ -418,6 +419,8 @@ esp_err_t grape_gpu_tile_enqueue(grape_gpu_context_t *context,
 static esp_err_t gpu_build_bins(grape_gpu_context_t *context)
 {
     GRAPE_TIME_SCOPE(GPU_TILE_BIN);
+    const bool profile = context->stats_enabled;
+    const int64_t bin_start_us = profile ? esp_timer_get_time() : 0;
 
     const size_t tile_count = (size_t)context->tile_cols * context->tile_rows;
     if (context->tile_cols != 0U && tile_count / context->tile_cols != context->tile_rows) {
@@ -456,8 +459,12 @@ static esp_err_t gpu_build_bins(grape_gpu_context_t *context)
     }
 
     uint32_t running = 0U;
+    uint32_t active_tiles = 0U;
     for (size_t tile = 0U; tile < tile_count; ++tile) {
         context->tile_offsets[tile] = running;
+        if (profile && context->tile_counts[tile] != 0U) {
+            ++active_tiles;
+        }
         running += context->tile_counts[tile];
         context->tile_counts[tile] = 0U;
     }
@@ -477,6 +484,13 @@ static esp_err_t gpu_build_bins(grape_gpu_context_t *context)
                 context->tile_refs[dst] = i;
             }
         }
+    }
+
+    if (profile) {
+        context->current_stats.tile_bin_us +=
+            (uint64_t)(esp_timer_get_time() - bin_start_us);
+        context->current_stats.active_tiles = active_tiles;
+        context->current_stats.tile_references = running;
     }
 
     return ESP_OK;
@@ -1555,6 +1569,8 @@ static esp_err_t gpu_render_tile(grape_gpu_context_t *context,
 
     bool color_dirty = false;
     bool depth_dirty = false;
+    const bool profile = context->stats_enabled;
+    const int64_t raster_start_us = profile ? esp_timer_get_time() : 0;
     GRAPE_TIME_BLOCK(GPU_TILE_RASTER) {
         for (uint32_t ref = ref_begin; ref < ref_end; ++ref) {
             const grape_gpu_prepared_triangle_t *primitive =
@@ -1625,6 +1641,10 @@ static esp_err_t gpu_render_tile(grape_gpu_context_t *context,
             color_dirty |= wrote;
         }
     }
+    if (profile) {
+        context->current_stats.tile_raster_us +=
+            (uint64_t)(esp_timer_get_time() - raster_start_us);
+    }
 
     if (depth_dirty) {
         grape_gpu_depth_store_tile(context->depth_attachment,
@@ -1635,7 +1655,12 @@ static esp_err_t gpu_render_tile(grape_gpu_context_t *context,
     }
 
     if (color_dirty) {
+        const int64_t resolve_start_us = profile ? esp_timer_get_time() : 0;
         gpu_resolve_tile(context, tile_x, tile_y, tile_width, tile_height);
+        if (profile) {
+            context->current_stats.resolve_us +=
+                (uint64_t)(esp_timer_get_time() - resolve_start_us);
+        }
         grape_gpu_dirty_add(context, (grape_rect_t) {
             .x = (int32_t)x0,
             .y = (int32_t)y0,

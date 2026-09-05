@@ -395,7 +395,6 @@ static esp_err_t capture_jpeg(grape_context_t *context,
         .image_quality = desc->jpeg_quality,
         .width = info->width,
         .height = info->height,
-        .pixel_reverse = false,
     };
 
     uint32_t encoded_size = 0U;

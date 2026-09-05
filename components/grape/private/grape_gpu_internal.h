@@ -149,6 +149,10 @@ struct grape_gpu_context {
     grape_color_t tile_clear_color;
     grape_gpu_sample_count_t sample_count;
     grape_rect_t dirty_rect;
+    grape_gpu_stats_t current_stats;
+    grape_gpu_stats_t last_stats;
+    int64_t stats_pass_start_us;
+    bool stats_enabled;
     bool render_pass_active;
     bool dirty_valid;
 };

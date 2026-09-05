@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_timer.h"
 #include "grape_gpu_internal.h"
 #include "grape_internal.h"
 
@@ -184,6 +185,35 @@ esp_err_t grape_gpu_context_destroy(grape_gpu_context_t *context)
     return ESP_OK;
 }
 
+void grape_gpu_set_stats_enabled(grape_gpu_context_t *context, bool enabled)
+{
+    if (!context) {
+        return;
+    }
+
+    context->stats_enabled = enabled;
+    if (!enabled) {
+        context->stats_pass_start_us = 0;
+        memset(&context->current_stats, 0, sizeof(context->current_stats));
+    }
+}
+
+bool grape_gpu_stats_enabled(const grape_gpu_context_t *context)
+{
+    return context && context->stats_enabled;
+}
+
+esp_err_t grape_gpu_get_stats(const grape_gpu_context_t *context,
+                              grape_gpu_stats_t *out_stats)
+{
+    if (!context || !out_stats) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *out_stats = context->last_stats;
+    return ESP_OK;
+}
+
 esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
                                       const grape_gpu_render_pass_desc_t *desc)
 {
@@ -227,6 +257,11 @@ esp_err_t grape_gpu_begin_render_pass(grape_gpu_context_t *context,
              desc->clear_depth < 0.0f || desc->clear_depth > 1.0f)) {
             return ESP_ERR_INVALID_ARG;
         }
+    }
+
+    if (context->stats_enabled) {
+        memset(&context->current_stats, 0, sizeof(context->current_stats));
+        context->stats_pass_start_us = esp_timer_get_time();
     }
 
     context->color_attachment = desc->color_attachment;
@@ -323,6 +358,16 @@ esp_err_t grape_gpu_end_render_pass(grape_gpu_context_t *context)
             (uint32_t)dirty.width,
             (uint32_t)dirty.height
         );
+    }
+
+    if (context->stats_enabled) {
+        const int64_t end_us = esp_timer_get_time();
+        if (context->stats_pass_start_us > 0 && end_us >= context->stats_pass_start_us) {
+            context->current_stats.pass_us =
+                (uint64_t)(end_us - context->stats_pass_start_us);
+        }
+        context->last_stats = context->current_stats;
+        context->stats_pass_start_us = 0;
     }
 
     context->render_pass_active = false;
@@ -487,6 +532,11 @@ esp_err_t grape_gpu_draw(grape_gpu_context_t *context,
         return ESP_ERR_INVALID_ARG;
     }
 
+    if (context->stats_enabled) {
+        ++context->current_stats.draw_calls;
+        context->current_stats.input_triangles += vertex_count / 3U;
+    }
+
     return grape_gpu_raster_draw(context, first_vertex, vertex_count);
 }
 
@@ -505,6 +555,11 @@ esp_err_t grape_gpu_draw_indexed(grape_gpu_context_t *context,
     }
     if (index_count == 0U || index_count % 3U != 0U) {
         return ESP_ERR_INVALID_ARG;
+    }
+
+    if (context->stats_enabled) {
+        ++context->current_stats.draw_calls;
+        context->current_stats.input_triangles += index_count / 3U;
     }
 
     return grape_gpu_raster_draw_indexed(context, first_index, index_count, vertex_offset);

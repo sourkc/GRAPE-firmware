@@ -472,8 +472,6 @@ esp_err_t grape_ppa_rotate_a8(
         .rgb_swap = false,
         .byte_swap = false,
         .alpha_update_mode = PPA_ALPHA_NO_CHANGE,
-        .alpha_fix_val = 0,
-        .alpha_scale_ratio = 1.0f,
         .mode = PPA_TRANS_MODE_BLOCKING,
         .user_data = NULL,
     };

@@ -193,6 +193,7 @@ const grape_benchmark_case_t *grape_benchmark_svg_cases(size_t *out_count);
 const grape_benchmark_case_t *grape_benchmark_font_cases(size_t *out_count);
 const grape_benchmark_case_t *grape_benchmark_glyph_cache_cases(size_t *out_count);
 const grape_benchmark_case_t *grape_benchmark_text_cases(size_t *out_count);
+const grape_benchmark_case_t *grape_benchmark_gpu3d_cases(size_t *out_count);
 
 esp_err_t grape_benchmark_fixture_font_load(grape_font_t **out_font);
 esp_err_t grape_benchmark_validate_registry(void);

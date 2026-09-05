@@ -1,5 +1,20 @@
 # Optimization TODO
 
+## GPU M3.5 optimization track
+
+- [x] **MC1 / measurement baseline**
+  - Opt-in per-pass GPU stats (normal rendering remains uninstrumented).
+  - Stage timings: pass, vertex transform, clip, triangle setup, tile bin, tile raster, resolve.
+  - Work counters: draw/input/post-clip/rasterized triangles, culls/degenerates, active tiles, tile refs, bbox pixels.
+  - Deterministic `gpu3d` benchmark suite with M3 textured cube and 12-cube 4x MSAA stress case.
+- [ ] **MC2 / tile-job abstraction**: CPU0 still executes all jobs; output must remain pixel-identical.
+- [ ] **MC3 / worker-local tile scratch**: remove shared tile scratch state.
+- [ ] **MC4 / opportunistic CPU1 GPU worker**: low priority under TinyUSB/GFXLINK.
+- [ ] **MC5 / preemption torture test**.
+- [ ] **MC6 / asynchronous GFXLINK request/completion path**.
+- [ ] **MC7 / transport backpressure**.
+- [ ] **MC8 / resource lifetime + command ordering hardening**.
+
 * **CPU raster/compositor**
 
     * Eliminate `rgba8_t` temporary stack traffic; keep source/destination/result channels in registers.

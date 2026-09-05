@@ -205,8 +205,45 @@ typedef struct {
     float max_depth;
 } grape_gpu_viewport_t;
 
+/*
+ * Optional per-render-pass GPU profiling. Profiling is disabled by default so
+ * normal rendering does not pay timer/counter overhead. When enabled, stats
+ * are reset at begin_render_pass() and the most recently completed pass is
+ * exposed through grape_gpu_get_stats().
+ *
+ * Timings are wall-clock microseconds spent inside the named GPU stages.
+ * Structural counters are exact for the submitted pass. triangle_bbox_pixels
+ * is deliberately an overdraw/work estimate: it sums the screen-space bounding
+ * box area of triangles that reached raster setup and is not a fragment count.
+ */
+typedef struct {
+    uint64_t pass_us;
+    uint64_t vertex_transform_us;
+    uint64_t clip_us;
+    uint64_t triangle_setup_us;
+    uint64_t tile_bin_us;
+    uint64_t tile_raster_us;
+    uint64_t resolve_us;
+
+    uint32_t draw_calls;
+    uint32_t input_triangles;
+    uint32_t clipped_away_triangles;
+    uint32_t post_clip_triangles;
+    uint32_t culled_triangles;
+    uint32_t degenerate_triangles;
+    uint32_t rasterized_triangles;
+    uint32_t active_tiles;
+    uint32_t tile_references;
+    uint64_t triangle_bbox_pixels;
+} grape_gpu_stats_t;
+
 esp_err_t grape_gpu_context_create(grape_context_t *grape, grape_gpu_context_t **out_context);
 esp_err_t grape_gpu_context_destroy(grape_gpu_context_t *context);
+
+void grape_gpu_set_stats_enabled(grape_gpu_context_t *context, bool enabled);
+bool grape_gpu_stats_enabled(const grape_gpu_context_t *context);
+esp_err_t grape_gpu_get_stats(const grape_gpu_context_t *context,
+                              grape_gpu_stats_t *out_stats);
 
 esp_err_t grape_gpu_buffer_create(grape_gpu_context_t *context,
                                   const grape_gpu_buffer_desc_t *desc,

@@ -18,6 +18,7 @@ idf_component_register(
         "src/cases/grape_benchmark_font.c"
         "src/cases/grape_benchmark_glyph_cache.c"
         "src/cases/grape_benchmark_text.c"
+        "src/cases/grape_benchmark_gpu3d.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "private"
     REQUIRES grape grape_common grape_storage esp_timer

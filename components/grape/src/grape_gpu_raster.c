@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "esp_timer.h"
 #include "grape_gpu_internal.h"
 #include "grape_internal.h"
 
@@ -618,13 +619,35 @@ esp_err_t grape_gpu_raster_triangle(grape_gpu_context_t *context,
                                     const grape_gpu_clip_vertex_t triangle[3])
 {
     GRAPE_TIME_SCOPE(GPU_RASTER);
+    const bool profile = context->stats_enabled;
+    const int64_t setup_start_us = profile ? esp_timer_get_time() : 0;
+
     if (grape_gpu_triangle_culled(context->bound_pipeline, triangle)) {
+        if (profile) {
+            context->current_stats.triangle_setup_us +=
+                (uint64_t)(esp_timer_get_time() - setup_start_us);
+            ++context->current_stats.culled_triangles;
+        }
         return ESP_OK;
     }
 
     grape_gpu_triangle_setup_t setup;
     if (!gpu_setup_triangle(context, triangle, &setup)) {
+        if (profile) {
+            context->current_stats.triangle_setup_us +=
+                (uint64_t)(esp_timer_get_time() - setup_start_us);
+            ++context->current_stats.degenerate_triangles;
+        }
         return ESP_OK;
+    }
+
+    if (profile) {
+        context->current_stats.triangle_setup_us +=
+            (uint64_t)(esp_timer_get_time() - setup_start_us);
+        ++context->current_stats.rasterized_triangles;
+        context->current_stats.triangle_bbox_pixels +=
+            (uint64_t)(setup.max_x - setup.min_x + 1) *
+            (uint64_t)(setup.max_y - setup.min_y + 1);
     }
 
     const grape_gpu_pipeline_t *pipeline = context->bound_pipeline;
@@ -662,7 +685,9 @@ esp_err_t grape_gpu_raster_triangle(grape_gpu_context_t *context,
 static esp_err_t gpu_process_triangle(grape_gpu_context_t *context,
                                       const uint32_t indices[3])
 {
+    const bool profile = context->stats_enabled;
     grape_gpu_clip_vertex_t input[3];
+    const int64_t transform_start_us = profile ? esp_timer_get_time() : 0;
     GRAPE_TIME_BLOCK(GPU_VERTEX_TRANSFORM) {
         for (uint32_t i = 0U; i < 3U; ++i) {
             esp_err_t ret = grape_gpu_vertex_fetch_transform(context, indices[i], &input[i]);
@@ -671,14 +696,29 @@ static esp_err_t gpu_process_triangle(grape_gpu_context_t *context,
             }
         }
     }
+    if (profile) {
+        context->current_stats.vertex_transform_us +=
+            (uint64_t)(esp_timer_get_time() - transform_start_us);
+    }
 
     grape_gpu_clip_vertex_t clipped[GRAPE_GPU_MAX_CLIPPED_VERTICES];
     uint32_t clipped_count = 0;
+    const int64_t clip_start_us = profile ? esp_timer_get_time() : 0;
     GRAPE_TIME_BLOCK(GPU_CLIP) {
         clipped_count = grape_gpu_clip_triangle(input, clipped);
     }
+    if (profile) {
+        context->current_stats.clip_us +=
+            (uint64_t)(esp_timer_get_time() - clip_start_us);
+    }
     if (clipped_count < 3U) {
+        if (profile) {
+            ++context->current_stats.clipped_away_triangles;
+        }
         return ESP_OK;
+    }
+    if (profile) {
+        context->current_stats.post_clip_triangles += clipped_count - 2U;
     }
 
     for (uint32_t i = 1U; i + 1U < clipped_count; ++i) {

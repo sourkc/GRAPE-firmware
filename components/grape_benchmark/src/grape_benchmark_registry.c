@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-enum { GRAPE_BENCHMARK_FROZEN_SUITE_COUNT = 14 };
+enum { GRAPE_BENCHMARK_FROZEN_SUITE_COUNT = 15 };
 
 static const grape_benchmark_suite_t s_suites[] = {
     { "damage_mark", GRAPE_BENCHMARK_SUITE_DAMAGE_MARK, grape_benchmark_damage_mark_cases },
@@ -19,6 +19,7 @@ static const grape_benchmark_suite_t s_suites[] = {
     { "font", GRAPE_BENCHMARK_SUITE_FONT, grape_benchmark_font_cases },
     { "glyph_cache", GRAPE_BENCHMARK_SUITE_GLYPH_CACHE, grape_benchmark_glyph_cache_cases },
     { "text", GRAPE_BENCHMARK_SUITE_TEXT, grape_benchmark_text_cases },
+    { "gpu3d", GRAPE_BENCHMARK_SUITE_GPU3D, grape_benchmark_gpu3d_cases },
 };
 
 _Static_assert(
