@@ -813,9 +813,48 @@ static __attribute__((always_inline)) inline void affine_row_start(const grape_s
  * @param clipped Intersection of the dirty region and the surface's bounds
  * @param bpp Bytes per pixel in the render target format
  */
+/* Axis-aligned A8 into RGB565 with unattenuated tint alpha. Keep the exact
+ * affine X stepping and RGB expansion/blend rounding of the general loop.
+ * Local Y is constant across each row, so its bounds and address are hoisted. */
+static bool raster_a8_rgb565_rows(grape_context_t *context,
+                                  const grape_surface_t *surface,
+                                  grape_rect_t clipped, size_t bpp)
+{
+    if (context->display_info.format != GRAPE_PIXEL_FORMAT_RGB565 || bpp != 2U ||
+        surface->texture->format != GRAPE_PIXEL_FORMAT_A8 ||
+        surface->opacity != 255U || surface->tint.a != 255U ||
+        surface->local_y_from_screen_x != 0.0f ||
+        !surface->texture_mapping_identity || surface->shader_count != 0U ||
+        surface->texture_filter != GRAPE_TEXTURE_FILTER_NEAREST ||
+        surface->aa != GRAPE_SURFACE_AA_NONE) return false;
+
+    const grape_texture_t *texture = surface->texture;
+    const float width = (float)texture->width, height = (float)texture->height;
+    const float step = surface->local_x_from_screen_x;
+    rgba8_t source = {surface->tint.r, surface->tint.g, surface->tint.b, 255U};
+    for (int32_t y = clipped.y; y < clipped.y + clipped.height; ++y) {
+        float local_x, local_y;
+        affine_row_start(surface, clipped.x, y, &local_x, &local_y);
+        if (!(local_y >= 0.0f && local_y < height)) continue;
+        const uint8_t *row = texture->pixels + (size_t)(int32_t)local_y * texture->stride;
+        uint8_t *dst = target_pixel_address(context, clipped.x, y, bpp);
+        for (int32_t x = 0; x < clipped.width; ++x) {
+            if (local_x >= 0.0f && local_x < width) {
+                source.a = row[(int32_t)local_x];
+                if (source.a == 255U) write_rgb565(dst, source);
+                else if (source.a != 0U) write_rgb565(dst, blend_over(read_rgb565(dst), source));
+            }
+            local_x += step;
+            dst += 2U;
+        }
+    }
+    return true;
+}
+
 static void raster_surface_a8(grape_context_t *context, const grape_surface_t *surface,
                               grape_rect_t damage_rect, grape_rect_t clipped, size_t bpp)
 {
+    if (raster_a8_rgb565_rows(context, surface, clipped, bpp)) return;
     const grape_texture_t *texture = surface->texture;
     const float texture_width = (float)texture->width;
     const float texture_height = (float)texture->height;
@@ -941,7 +980,10 @@ static bool raster_rgb565_copy(grape_context_t *context, const grape_surface_t *
 static void raster_surface_rgb565(grape_context_t *context, const grape_surface_t *surface,
                                   grape_rect_t damage_rect, grape_rect_t clipped, size_t bpp)
 {
-    if (raster_rgb565_copy(context, surface, clipped, bpp)) return;
+    /* Translucent surfaces cannot use an opaque copy. Reject them before
+     * entering the larger transform/format eligibility check. */
+    if (surface->opacity == 255U && surface->tint.a == 255U &&
+        raster_rgb565_copy(context, surface, clipped, bpp)) return;
     const grape_texture_t *texture = surface->texture;
     const float texture_width = (float)texture->width;
     const float texture_height = (float)texture->height;

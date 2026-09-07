@@ -291,10 +291,8 @@ grape_rect_t grape_surface_calculate_bounds(const grape_surface_t *surface)
  *
  * @param surface GRAPE surface
  */
-void grape_surface_recache(grape_surface_t *surface)
+static void surface_recache_transform(grape_surface_t *surface)
 {
-    GRAPE_TIME_SCOPE(SURFACE_RECACHE);
-
     // Cache sine and cosine of rotation
     surface->cos_rotation = cosf(surface->transform.rotation);
     surface->sin_rotation = sinf(surface->transform.rotation);
@@ -356,8 +354,13 @@ void grape_surface_recache(grape_surface_t *surface)
     }
 
     surface->bounds = grape_surface_calculate_bounds(surface);
-    surface_recache_texture_mapping(surface);
+}
 
+void grape_surface_recache(grape_surface_t *surface)
+{
+    GRAPE_TIME_SCOPE(SURFACE_RECACHE);
+    surface_recache_transform(surface);
+    surface_recache_texture_mapping(surface);
 }
 
 /**
@@ -766,6 +769,21 @@ esp_err_t grape_surface_update_shader_uniforms(grape_surface_t *surface,
     return ESP_OK;
 }
 
+/* Translation preserves the linear transform, AA offsets and texture mapping.
+ * Recompute offsets from absolute coordinates to avoid cumulative rounding drift.
+ * Bounds use the original corner calculation, including its AA padding. */
+static void surface_recache_translation(grape_surface_t *surface)
+{
+    GRAPE_TIME_SCOPE(SURFACE_RECACHE);
+    surface->local_x_offset = surface->transform.origin_x
+                       - surface->local_x_from_screen_x * surface->transform.x
+                       - surface->local_x_from_screen_y * surface->transform.y;
+    surface->local_y_offset = surface->transform.origin_y
+                       - surface->local_y_from_screen_x * surface->transform.x
+                       - surface->local_y_from_screen_y * surface->transform.y;
+    surface->bounds = grape_surface_calculate_bounds(surface);
+}
+
 /**
  * Sets the transform of a GRAPE surface
  *
@@ -786,12 +804,23 @@ esp_err_t grape_surface_set_transform(grape_surface_t *surface, const grape_tran
         old->origin_x == transform->origin_x && old->origin_y == transform->origin_y) {
         return ESP_OK;
     }
+    /* Bit equality also preserves signed-zero behavior in cached coefficients. */
+    const bool translation_only =
+        memcmp(&old->rotation, &transform->rotation, sizeof(float)) == 0 &&
+        memcmp(&old->scale_x, &transform->scale_x, sizeof(float)) == 0 &&
+        memcmp(&old->scale_y, &transform->scale_y, sizeof(float)) == 0 &&
+        memcmp(&old->origin_x, &transform->origin_x, sizeof(float)) == 0 &&
+        memcmp(&old->origin_y, &transform->origin_y, sizeof(float)) == 0;
     GRAPE_TIME_SCOPE(SURFACE_TRANSFORM);
 
     esp_err_t ret = mark_surface_coverage(surface);
     if (ret == ESP_OK) {
         surface->transform = *transform;
-        grape_surface_recache(surface);
+        if (translation_only) surface_recache_translation(surface);
+        else {
+            GRAPE_TIME_SCOPE(SURFACE_RECACHE);
+            surface_recache_transform(surface);
+        }
         ret = mark_surface_coverage(surface);
     }
 

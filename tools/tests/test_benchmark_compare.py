@@ -51,6 +51,19 @@ class CompareTest(unittest.TestCase):
                    crc32=f"{zlib.crc32(data):08x}", file="frame.raw")
         write_csv(folder / "grape_benchmark_references.csv", [row])
 
+    def test_case_selection_mismatch(self):
+        p = self.b / "grape_benchmark_metadata.txt"
+        p.write_text(p.read_text() + "case_selection=regressions-v1\n")
+        self.assertIn("case_selection", str(module.compare(self.a, self.b)["settings_mismatch"]))
+
+    def test_legacy_selection_defaults_to_all(self):
+        for folder in (self.a, self.b):
+            p = folder / "grape_benchmark_metadata.txt"
+            p.write_text("\n".join(line for line in p.read_text().splitlines()
+                                   if not line.startswith("case_selection=")) + "\n")
+        self.assertEqual(module.metadata(self.a)["case_selection"], "all")
+        self.assertEqual(module.compare(self.a, self.b)["settings_mismatch"], [])
+
     def test_speedup_and_exact_reference(self):
         result = module.compare(self.a, self.b)
         self.assertEqual(result["timings"][0]["total"]["speedup"], 2)

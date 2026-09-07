@@ -1,5 +1,27 @@
 menu "GRAPE"
 
+    config GRAPE_PPA_TRIANGLE_COMPUTE
+        bool "Compile experimental DMA2D/PPA triangle coverage backend"
+        depends on IDF_TARGET_ESP32P4 && !DMA2D_ISR_IRAM_SAFE
+        default y
+        help
+            Adds ppa.triangle_edges to the feature API, DISABLED by default.
+            The custom CSC bridge is supported only with ESP-IDF 5.5.4.
+            Initially handles opaque, flat, single-sample, no-depth triangles.
+            Uses two hardware passes and a CPU commit; this is a correctness
+            experiment, not an established performance optimization.
+
+    config GRAPE_PPA_TRIANGLE_VALIDATE
+        bool "Compare every experimental coverage mask against CPU edges"
+        depends on GRAPE_PPA_TRIANGLE_COMPUTE
+        default y
+        help
+            Reject mismatches before committing a tile, disable the hardware
+            feature, and redraw with the unchanged CPU rasterizer. Keep on
+            during board bring-up. Validation adds substantial CPU overhead.
+            The ppa.triangle_validate feature can disable it at runtime for
+            timing while keeping this diagnostic compiled in.
+
     config GRAPE_GPU_MULTICORE
         bool "Use opportunistic Core 1 GPU tile worker"
         depends on !FREERTOS_UNICORE && !GRAPE_FUNCTION_PROFILING

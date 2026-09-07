@@ -323,6 +323,8 @@ void grape_benchmark_report_metadata(grape_benchmark_runtime_t *runtime)
     const grape_display_info_t *display = grape_get_display_info(runtime->grape);
 
     report_printf(runtime, buffer, "benchmark_build=%s\n", GRAPE_BENCHMARK_BUILD_LABEL);
+    report_printf(runtime, buffer, "case_selection=%s\n",
+                  GRAPE_BENCHMARK_REGRESSION_FOCUS ? "regressions-v1" : "all");
     report_printf(runtime, buffer, "schema_version=5\nrun_label=%s\ncompiler=%s\n",
                   GRAPE_BENCHMARK_RUN_LABEL, __VERSION__);
     const esp_app_desc_t *app = esp_app_get_description();

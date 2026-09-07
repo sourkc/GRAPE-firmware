@@ -5,6 +5,7 @@
 
 #include "esp_timer.h"
 #include "grape_gpu_internal.h"
+#include "grape_gpu_ppa.h"
 #include "grape_internal.h"
 
 #define GRAPE_GPU_SUBPIXEL_BITS 3
@@ -356,6 +357,12 @@ static esp_err_t gpu_rasterize_color_only(grape_gpu_context_t *context,
     return ESP_OK;
 }
 
+esp_err_t grape_gpu_raster_color_block(grape_gpu_context_t *context,
+    const grape_gpu_triangle_setup_t *setup, grape_color_t color)
+{
+    return gpu_rasterize_color_only(context, setup, color);
+}
+
 static bool gpu_depth_compare(grape_gpu_compare_op_t op, uint16_t incoming, uint16_t stored)
 {
     switch (op) {
@@ -653,6 +660,9 @@ esp_err_t grape_gpu_raster_triangle(grape_gpu_context_t *context,
     const grape_gpu_pipeline_t *pipeline = context->bound_pipeline;
     const grape_color_t color = gpu_fragment_color(context);
     const grape_gpu_depth_state_t *depth = &pipeline->desc.depth;
+
+    /* Optional feature backend. Every existing rasterizer remains the fallback. */
+    if (grape_gpu_ppa_try_triangle(context, &setup, color)) return ESP_OK;
 
     if (context->sample_count != GRAPE_GPU_SAMPLE_COUNT_1) {
         return grape_gpu_tile_enqueue(

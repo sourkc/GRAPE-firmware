@@ -671,7 +671,7 @@ static esp_err_t capture_references(grape_benchmark_runtime_t *runtime)
         const grape_benchmark_case_t *cases = suites[s].cases(&count);
         for (size_t c = 0; c < count; ++c) {
             const grape_benchmark_case_t *bc = &cases[c];
-            if (!bc->capture_reference) continue;
+            if (!grape_benchmark_case_selected(bc) || !bc->capture_reference) continue;
             ESP_LOGI(TAG, "Reference replay: %s/%s", bc->group, bc->name);
             void *state = NULL;
             esp_err_t ret = bc->setup ? bc->setup(runtime, bc, &state) : ESP_OK;
@@ -745,8 +745,9 @@ esp_err_t grape_benchmark_run(
             continue;
         }
         size_t case_count = 0;
-        suites[suite_index].cases(&case_count);
-        selected_case_count += case_count;
+        const grape_benchmark_case_t *cases = suites[suite_index].cases(&case_count);
+        for (size_t i = 0; i < case_count; ++i)
+            if (grape_benchmark_case_selected(&cases[i])) ++selected_case_count;
     }
 
     ESP_LOGI(TAG,
@@ -777,9 +778,14 @@ esp_err_t grape_benchmark_run(
 
         size_t case_count = 0;
         const grape_benchmark_case_t *cases = suite->cases(&case_count);
-        ESP_LOGI(TAG, "Suite %s: %u cases", suite->name, (unsigned)case_count);
+        size_t selected_in_suite = 0;
+        for (size_t i = 0; i < case_count; ++i)
+            if (grape_benchmark_case_selected(&cases[i])) ++selected_in_suite;
+        ESP_LOGI(TAG, "Suite %s: %u selected of %u cases", suite->name,
+                 (unsigned)selected_in_suite, (unsigned)case_count);
 
         for (size_t case_index = 0; case_index < case_count; ++case_index) {
+            if (!grape_benchmark_case_selected(&cases[case_index])) continue;
             ++global_case_index;
             ESP_LOGI(TAG,
                      "[%u/%u] %s/%s",

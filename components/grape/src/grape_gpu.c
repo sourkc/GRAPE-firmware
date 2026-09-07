@@ -7,6 +7,7 @@
 #include "esp_heap_caps.h"
 #include "grape_gpu_internal.h"
 #include "grape_internal.h"
+#include "grape_gpu_ppa.h"
 
 static void gpu_unbind_textures(grape_gpu_context_t *context)
 {
@@ -184,6 +185,7 @@ esp_err_t grape_gpu_context_destroy(grape_gpu_context_t *context)
 
     gpu_unbind_textures(context);
     grape_gpu_tile_release(context);
+    grape_gpu_ppa_release(context);
     free(context);
     return ESP_OK;
 }

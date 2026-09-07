@@ -141,9 +141,17 @@ def main():
     code=PRELUDE+'\n'+reference+'\n'
     for source,names in [(gpu,['gpu_wrap_index','gpu_mix_opaque_bilinear']),
                          (tex,['texture_update_occupancy_rect']),
-                         (comp,['raster_rgb565_copy'])]:
+                         (comp,['raster_rgb565_copy','raster_a8_rgb565_rows','raster_surface_a8'])]:
         for name in names: code+=function(source,name)+'\n'
+    code+=(Path(__file__).parent/'fixtures/raster_a8_before.c').read_text()
     code+=WRAPPERS
+    code+=r'''
+API int test_a8(grape_context_t *c, grape_surface_t *s, grape_rect_t *r, int mode) {
+        if (mode==1) return raster_a8_rgb565_rows(c,s,*r,2);
+        if (mode==2) raster_surface_a8(c,s,*r,*r,2);
+        else raster_surface_a8_before(c,s,*r,*r,2);
+        return 0;
+    }''' 
     build=args.build_dir.resolve();build.mkdir(parents=True,exist_ok=True)
     (build/'test.c').write_text(code)
     subprocess.run([str(args.clang),'--target=x86_64-pc-windows-msvc','-O2','-ffreestanding',
@@ -218,6 +226,41 @@ def main():
     assert accepted>1000 and rejected>1000
     counts['rgb565_accepted_comparisons']=accepted
     counts['rgb565_rejected_untouched']=rejected
+    accepted=0
+    for i in range(3000):
+        stride=20
+        pixels=(ct.c_uint8*(stride*16))(*[rng.choice([0,255,rng.randrange(256)]) for _ in range(stride*16)])
+        texture=Texture(pixels,stride,16,16,2,None,0,0,0,0,False,True)
+        surface=Surface(ct.pointer(texture),rng.choice([1,.5,2,-1,1.25]),0,rng.uniform(-4,20),
+            0,rng.choice([1,.5,2,-1]),rng.uniform(-4,20),Color(235,230,255,255),255,True,0,0,0)
+        if i%7==0: surface.opacity=128
+        if i%11==0: surface.tint.a=128
+        if i%13==0: surface.local_y_from_screen_x=.25
+        if i%17==0: surface.texture_mapping_identity=False
+        if i%19==0: surface.shader_count=1
+        if i%23==0: surface.texture_filter=1
+        if i%29==0: surface.aa=1
+        a=(ct.c_uint8*(72*32))(*[rng.randrange(256) for _ in range(72*32)])
+        b=(ct.c_uint8*len(a)).from_buffer_copy(a)
+        c=(ct.c_uint8*len(a)).from_buffer_copy(a)
+        ca=Context(Target(ct.addressof(a),72),Display(0))
+        cb=Context(Target(ct.addressof(b),72),Display(0))
+        cc=Context(Target(ct.addressof(c),72),Display(0))
+        x,y=rng.randrange(8),rng.randrange(8)
+        rect=Rect(x,y,rng.randint(1,32-x),rng.randint(1,32-y))
+        initial=bytes(a)
+        used=dll.test_a8(ct.byref(ca),ct.byref(surface),ct.byref(rect),1)
+        dll.test_a8(ct.byref(cb),ct.byref(surface),ct.byref(rect),0)
+        dll.test_a8(ct.byref(cc),ct.byref(surface),ct.byref(rect),2)
+        assert bytes(b)==bytes(c),('A8 dispatch',i)
+        if used:
+            assert bytes(a)==bytes(b),('A8 fast',i)
+            accepted+=1
+        else:
+            assert bytes(a)==initial,('A8 rejection modified output',i)
+    assert 1000<accepted<3000
+    counts['a8_dispatch_comparisons']=3000
+    counts['a8_accepted_comparisons']=accepted
     print(json.dumps(counts,indent=2))
     (build/'results.json').write_text(json.dumps(counts,indent=2)+'\n')
 

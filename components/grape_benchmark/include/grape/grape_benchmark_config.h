@@ -20,6 +20,11 @@
 #error Invalid GRAPE_BENCHMARK_PROFILE
 #endif
 
+#ifndef GRAPE_BENCHMARK_REGRESSION_FOCUS
+/* 1: run the regression-v1 selection; 0: restore normal suite selection. */
+#define GRAPE_BENCHMARK_REGRESSION_FOCUS 1
+#endif
+
 #define GRAPE_BENCHMARK_OUTPUT_DIRECTORY "/sdcard"
 #define GRAPE_BENCHMARK_CASE_COOLDOWN_MS 20U
 #define GRAPE_BENCHMARK_FIXED_DT_US 16667U

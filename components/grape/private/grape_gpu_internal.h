@@ -148,6 +148,8 @@ struct grape_gpu_pipeline {
 
 struct grape_gpu_context {
     grape_context_t *grape;
+    void *ppa_triangle_state;
+    grape_gpu_ppa_triangle_stats_t ppa_triangle_stats;
     grape_gpu_buffer_t *buffers;
     grape_gpu_depth_buffer_t *depth_buffers;
     grape_gpu_pipeline_t *pipelines;

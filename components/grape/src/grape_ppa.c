@@ -3,6 +3,7 @@
 
 #include "esp_log.h"
 #include "grape_internal.h"
+#include "grape_gpu_ppa.h"
 
 static ppa_blend_color_mode_t blend_color_mode(grape_pixel_format_t format)
 {
@@ -108,6 +109,8 @@ void grape_ppa_init(grape_context_t *context)
     if (!context) {
         return;
     }
+
+    grape_gpu_ppa_feature_init(context);
 
     init_ppa_client_feature(
         context,

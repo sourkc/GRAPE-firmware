@@ -6,6 +6,8 @@ idf_component_register(
         "src/grape_function_profile.c"
         "src/grape_texture.c"
         "src/grape_gpu.c"
+        "src/grape_gpu_ppa.c"
+        "src/grape_ppa_edge_math.c"
         "src/grape_gpu_buffer.c"
         "src/grape_gpu_depth.c"
         "src/grape_gpu_texture.c"
@@ -32,7 +34,7 @@ idf_component_register(
         "../../shaders"
     PRIV_INCLUDE_DIRS "private"
     REQUIRES grape_common grape_display
-    PRIV_REQUIRES heap esp_driver_ppa esp_driver_jpeg freertos esp_timer
+    PRIV_REQUIRES heap esp_driver_ppa esp_driver_jpeg freertos esp_timer esp_hw_support esp_mm
 )
 
 
@@ -43,4 +45,9 @@ if(CONFIG_GRAPE_FUNCTION_PROFILING)
         "src/grape_benchmark_hooks.c"
         PROPERTIES COMPILE_OPTIONS "-fno-instrument-functions"
     )
+endif()
+
+# Private CSC channel layout is isolated in grape_gpu_ppa.c and version gated.
+if(CONFIG_GRAPE_PPA_TRIANGLE_COMPUTE)
+    target_include_directories(${COMPONENT_LIB} PRIVATE "$ENV{IDF_PATH}/components/esp_hw_support/dma")
 endif()

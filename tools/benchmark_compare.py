@@ -15,7 +15,7 @@ MATCH_SETTINGS = (
     "display_name", "display_width", "display_height", "display_format",
     "telemetry_level", "function_profiling", "gpu_multicore_build", "gpu_stats",
     "profile", "warmup_iterations", "measured_iterations", "fixed_dt_us", "seed",
-    "suite_mask", "reference_frames", "service_interval_us", "service_delay_ticks",
+    "case_selection", "suite_mask", "reference_frames", "service_interval_us", "service_delay_ticks",
     "refresh_wait_available", "ppa_fill_available", "ppa_blend_available",
 )
 
@@ -28,6 +28,8 @@ def metadata(folder):
             result[key] = value  # completion is appended after the reference replay
     if result.get("schema_version") != "5":
         raise ValueError(f"{folder}: expected schema_version=5; older harness runs are not equivalent")
+    # Older v5 runs predate case selection and always ran all cases in the mask.
+    result.setdefault("case_selection", "all")
     required = set(MATCH_SETTINGS) - {"psram_frequency_mhz", "l2_cache_bytes"}
     missing = required - result.keys()
     if missing:

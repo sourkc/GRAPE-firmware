@@ -8,6 +8,12 @@ static const char *TAG = "GRAPE_DEMO";
 
 static const grape_demo_t s_demos[] = {
     {
+        .id = GRAPE_DEMO_GPU_PPA_TRIANGLE,
+        .name = "gpu_ppa_triangle",
+        .configure = NULL,
+        .run = grape_demo_gpu_ppa_triangle_run,
+    },
+    {
         .id = GRAPE_DEMO_MOVING_SQUARES,
         .name = "moving_squares",
         .configure = NULL,

@@ -2,6 +2,39 @@
 
 #include <string.h>
 
+
+/* Selection happens outside timed samples and is shared by timing and replay. */
+bool grape_benchmark_case_selected(const grape_benchmark_case_t *bench_case)
+{
+    if (!bench_case || !bench_case->group || !bench_case->name) return false;
+#if GRAPE_BENCHMARK_REGRESSION_FOCUS
+    if (strcmp(bench_case->group, "damage_plan") == 0) return true;
+    static const struct { const char *group; const char *name; } selected[] = {
+        {"baseline2d", "rgb565_copy"},
+        {"baseline2d", "rgba_tiny_edit"},
+        {"lifecycle", "surface_create_destroy_n1_s32"},
+        {"pixel_backend", "cpu_rgb565_block_a128_psram_8"},
+        {"pixel_backend", "cpu_rgb565_block_a255_psram_128"},
+        {"pixel_backend", "cpu_rgb565_block_a255_psram_8"},
+        {"pixel_backend", "cpu_rgb888_block_a255_psram_128"},
+        {"pixel_backend", "cpu_rgb888_block_a255_psram_8"},
+        {"pixel_backend", "ppa_fill_block_a255_default_128"},
+        {"pixel_backend", "ppa_fill_block_a255_default_8"},
+        {"scenes", "fragment_n50_s32"},
+        {"text.scene", "scene_move_n5_s128"},
+        {"text.scene", "scene_resize_exact_n5_s96"},
+        {"text.scene", "scene_resize_scaled_n5_s96"},
+    };
+    for (size_t i = 0; i < sizeof(selected) / sizeof(selected[0]); ++i) {
+        if (strcmp(bench_case->group, selected[i].group) == 0 &&
+            strcmp(bench_case->name, selected[i].name) == 0) return true;
+    }
+    return false;
+#else
+    return true;
+#endif
+}
+
 enum { GRAPE_BENCHMARK_FROZEN_SUITE_COUNT = 16 };
 
 static const grape_benchmark_suite_t s_suites[] = {

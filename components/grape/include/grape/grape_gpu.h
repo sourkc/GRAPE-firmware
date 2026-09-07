@@ -246,6 +246,42 @@ typedef struct {
 esp_err_t grape_gpu_context_create(grape_context_t *grape, grape_gpu_context_t **out_context);
 esp_err_t grape_gpu_context_destroy(grape_gpu_context_t *context);
 
+/* Experimental accelerator diagnostics are cumulative per GPU context and
+ * independent of ordinary pass statistics. Use from the GPU's owning task. */
+typedef struct {
+    uint64_t triangles_seen;
+    uint64_t triangles_completed;
+    uint64_t tiles_computed; /* CSC/PPA block pairs, including enlarged blocks. */
+    uint64_t large_tiles_computed; /* 32x32 or 64x64 block pairs. */
+    uint64_t pixels_computed; /* Includes padded pixels, excludes device probes. */
+    uint64_t cpu_tiles_computed; /* Blocks assigned to CPU while transfers are pending. */
+    uint64_t cpu_pixels_computed; /* Bounding-box pixels handled by CPU, including uncovered. */
+    uint64_t overlap_triangles; /* Completed triangles using both CPU and hardware blocks. */
+    uint64_t prepare_us; /* Coefficient preflight and coordinate preparation, excludes probes. */
+    uint64_t driver_us; /* Submission and cache maintenance, excludes waits and CPU rendering. */
+    uint64_t wait_us; /* Time inside blocking completion waits. */
+    uint64_t cpu_render_us; /* CPU raster chunks, including finishing a partial block. */
+    uint64_t validation_us;
+    uint64_t commit_us;
+    uint64_t fallback_unsupported;
+    uint64_t fallback_coefficients;
+    uint64_t pixels_validated;
+    uint64_t validation_mismatches;
+    uint64_t compute_us; /* Completed jobs: hardware wait, validation, CPU commit.
+                         * Excludes initial probe and coefficient preflight. */
+    uint32_t errors;
+    uint32_t timeouts;
+    esp_err_t last_error;
+    int round_bias;
+    bool ready;
+} grape_gpu_ppa_triangle_stats_t;
+
+/* Feature must be enabled. Call outside a render pass; otherwise the first
+ * eligible triangle runs this initialization/probe automatically. */
+esp_err_t grape_gpu_ppa_triangle_self_test(grape_gpu_context_t *context);
+esp_err_t grape_gpu_get_ppa_triangle_stats(const grape_gpu_context_t *context,
+                                           grape_gpu_ppa_triangle_stats_t *out);
+
 void grape_gpu_set_stats_enabled(grape_gpu_context_t *context, bool enabled);
 bool grape_gpu_stats_enabled(const grape_gpu_context_t *context);
 esp_err_t grape_gpu_get_stats(const grape_gpu_context_t *context,
